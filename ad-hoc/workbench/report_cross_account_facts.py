@@ -28,6 +28,7 @@ are client data.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import re
 import sys
@@ -44,8 +45,13 @@ from fdd_utils.ai.facts import (  # noqa: E402
     graph_summary,
     merge_graph_links,
 )
-from fdd_utils.ai.evidence import linked_fact_records  # noqa: E402
+from fdd_utils.ai.evidence import (  # noqa: E402
+    brief_fact_records,
+    compile_account_briefs,
+    linked_fact_records,
+)
 from fdd_utils.ai.prompts import PromptEngine  # noqa: E402
+from fdd_utils.ai.validator import SourceIndex, extract_amounts  # noqa: E402
 from fdd_utils.workbook import (  # noqa: E402
     extract_balance_sheet_and_income_statement,
     extract_data_from_excel,
@@ -171,6 +177,7 @@ def main() -> int:
         type_lookup=lambda key: engine.get_mapping_component(key, component="type"))
     digest_links = build_digest_graph_links(digest, base_facts)
     facts = merge_graph_links(base_facts, digest_links)
+    briefs = compile_account_briefs(dfs, facts, digest, language=language)
 
     print(f"=== {Path(args.databook).name}  language={language}  accounts={len(dfs)}  "
           f"Financials rows matched={len(financials)}")
@@ -198,6 +205,32 @@ def main() -> int:
     linked = {name: records for name, records in linked.items() if records}
     print(f"    linked evidence closure: {len(linked)} accounts, "
           f"{sum(len(records) for records in linked.values())} facts")
+    print(f"    account briefs compiled: {len(briefs)} accounts")
+    print(f"    brief figures grounded: "
+          f"{sum(len(brief_fact_records(brief)) for brief in briefs.values())} facts")
+    brief_amount_count = 0
+    ungrounded_brief_amounts = []
+    for key, brief in briefs.items():
+        statement_type = engine.get_mapping_component(key, component="type")
+        siblings = [
+            other_df for other_key, other_df in dfs.items()
+            if other_key != key
+            and statement_type
+            and engine.get_mapping_component(other_key, component="type") == statement_type
+        ]
+        source = SourceIndex.from_df(dfs[key], sibling_dfs=siblings)
+        source.facts.extend(linked_fact_records(key, facts))
+        source.facts.extend(brief_fact_records(brief))
+        source.values = [fact["value"] for fact in source.facts if fact.get("value") is not None]
+        rendered_brief = engine._account_brief_guidance(brief, language)
+        for amount in extract_amounts(rendered_brief):
+            brief_amount_count += 1
+            if source.matches(amount) is None:
+                ungrounded_brief_amounts.append((key, amount))
+    print(f"    rendered brief amounts grounded: "
+          f"{brief_amount_count - len(ungrounded_brief_amounts)}/{brief_amount_count}")
+    for key, amount in ungrounded_brief_amounts[:5]:
+        print(f"        UNGROUNDED brief amount: {key} {amount}")
 
     print("\n--- 1. every candidate relationship ---")
     by_kind: dict = {}
@@ -224,6 +257,8 @@ def main() -> int:
     print("\n--- 3. rendered prompts: leaks, substitution, size ---")
     before = after = 0
     digest_only_delta = 0
+    brief_delta = 0
+    brief_hash_changed = 0
     gained = 0
     leaks = []
     bad_before = []
@@ -240,17 +275,25 @@ def main() -> int:
             s1, u1 = engine.render_prompt(agent_name=agent, language=language, mapping_key=key,
                                           df=df, data_format="markdown",
                                           cross_account_facts=facts, **extra)
+            s2, u2 = engine.render_prompt(agent_name=agent, language=language, mapping_key=key,
+                                          df=df, data_format="markdown",
+                                          cross_account_facts=facts,
+                                          account_brief=briefs.get(key), **extra)
             sb, ub = engine.render_prompt(agent_name=agent, language=language, mapping_key=key,
                                           df=df, data_format="markdown",
                                           cross_account_facts=base_facts, **extra)
             before += len(s0) + len(u0)
-            after += len(s1) + len(u1)
+            after += len(s2) + len(u2)
             digest_only_delta += len(s1) + len(u1) - len(sb) - len(ub)
-            if len(s1) + len(u1) != len(s0) + len(u0):
+            brief_delta += len(s2) + len(u2) - len(s1) - len(u1)
+            if hashlib.sha256((s2 + u2).encode("utf-8")).digest() != hashlib.sha256(
+                    (s1 + u1).encode("utf-8")).digest():
+                brief_hash_changed += 1
+            if len(s2) + len(u2) != len(s0) + len(u0):
                 gained += 1
             bad_before += [(agent, key, m) for m in _PLACEHOLDER.findall(s0 + u0)]
-            bad_after += [(agent, key, m) for m in _PLACEHOLDER.findall(s1 + u1)]
-            rendered = s1 + u1
+            bad_after += [(agent, key, m) for m in _PLACEHOLDER.findall(s2 + u2)]
+            rendered = s2 + u2
             for edge in rejected:
                 values = [f"{v:.1f}" if abs(v) < 10 else f"{v:.0f}"
                           for v in ((edge.get("evidence") or {}).get("values") or {}).values()]
@@ -266,13 +309,15 @@ def main() -> int:
     print(f"    chars before={before:,}  after={after:,}  delta={delta:,}"
           + (f"  ({delta / gained:.0f} chars per changed prompt)" if gained else ""))
     print(f"    digest-only prompt delta={digest_only_delta}  (must be 0)")
+    print(f"    account-brief prompt delta={brief_delta:,}")
+    print(f"    account-brief prompt hashes changed: {brief_hash_changed}/{2 * len(dfs)}")
     print(f"    unsubstituted placeholders  before={len(bad_before)}  after={len(bad_after)}"
           f"  (must be equal){'  <-- REGRESSION' if len(bad_after) > len(bad_before) else ''}")
     print(f"    REJECTED relationships leaking into a rendered prompt: {len(leaks)}"
           f"{'  <-- RULE VIOLATED' if leaks else '  (rule holds)'}")
     for leak in leaks[:5]:
         print(f"        {leak}")
-    return 1 if (leaks or len(bad_after) > len(bad_before)
+    return 1 if (leaks or ungrounded_brief_amounts or len(bad_after) > len(bad_before)
                  or graph["malformed"] or digest_only_delta) else 0
 
 

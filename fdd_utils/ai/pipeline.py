@@ -395,6 +395,8 @@ class RunState:
         links         the run's typed, tested cross-tab graph. This is the same
                       list persisted in facts["links"], including failed edges;
                       prompt rendering independently allow-lists edge kinds.
+        briefs        budgeted deterministic findings per account, compiled
+                      from verified links and analyst rules before any stage
 
     The process half is `accounts`, one AccountState per account.
 
@@ -420,6 +422,7 @@ class RunState:
         except Exception:  # pragma: no cover - defensive; a missing peer is not fatal
             self.peer = None
         self.links: List[Dict[str, Any]] = []
+        self.briefs: Dict[str, Dict[str, Any]] = {}
 
         # ---- process half ----
         # Same key set create_result_shell uses. An account in mapping_keys but
@@ -1036,6 +1039,7 @@ def render_agent_prompt(
         # RunState (load_prompts_and_format, a probe) still gets it built here.
         peer_context=(run_state.peer if run_state is not None else _build_peer_context(dfs)),
         cross_account_facts=(run_state.facts if run_state is not None else None),
+        account_brief=(run_state.briefs.get(mapping_key) if run_state is not None else None),
         analysis_thresholds=analysis_thresholds,
         **_agent_prompt_kwargs(agent_name, mapping_key, prompt_manager, previous_output, agent_config=agent_config),
     )
@@ -1356,6 +1360,8 @@ def process_single_agent_item(
                         sibling_dfs=sibling_dfs,
                         shown=(existing.shown if existing is not None else None),
                         graph_facts=(run_state.facts if run_state is not None else None),
+                        account_brief=(run_state.briefs.get(mapping_key)
+                                       if run_state is not None else None),
                     )
                     source = evidence_built.source_index()
                 reviews = verify_commentary(
@@ -1918,6 +1924,12 @@ def run_ai_pipeline_with_progress(
             )
         except Exception as exc:  # graph enrichment, never a gate
             logger.logger.warning("[DigestGraph] supporting-tab links skipped: %s", exc)
+    try:
+        from .evidence import compile_account_briefs
+        run_state.briefs = compile_account_briefs(
+            dfs, run_state.facts, workbook_digest, language=language)
+    except Exception as exc:  # prompt enrichment, never a gate
+        logger.logger.warning("[AccountBrief] skipped: %s", exc)
     health = _RunHealth()
 
     resumed_from = None
@@ -2607,6 +2619,8 @@ def _apply_deterministic_verification(
                     key, df, statement_type=str(statement_type or ""), sibling_dfs=sibling_dfs,
                     shown=(existing.shown if existing is not None else None),
                     graph_facts=(run_state.facts if run_state is not None else None),
+                    account_brief=(run_state.briefs.get(key)
+                                   if run_state is not None else None),
                 )
                 if run_state is not None:
                     run_state.evidence[key] = built
@@ -3077,6 +3091,12 @@ def run_generator_reprompt(
     except Exception as exc:  # an enrichment, never a gate -- same as the full run
         logger.logger.warning("[CrossAccountFacts] skipped: %s", exc)
         _set_run_graph(run_state, {})
+    try:
+        from .evidence import compile_account_briefs
+        run_state.briefs = compile_account_briefs(
+            dfs, run_state.facts, language=language)
+    except Exception as exc:  # prompt enrichment, never a gate
+        logger.logger.warning("[AccountBrief] skipped: %s", exc)
 
     logger.logger.info(
         "Starting reprompt + validator flow with %s items | model=%s | language=%s",

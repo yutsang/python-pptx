@@ -52,7 +52,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from fdd_utils.ai import get_prompt_engine, verify_commentary  # noqa: E402
-from fdd_utils.ai.evidence import linked_fact_records  # noqa: E402
+from fdd_utils.ai.evidence import (  # noqa: E402
+    brief_fact_records,
+    compile_account_briefs,
+    linked_fact_records,
+)
 from fdd_utils.ai.facts import build_cross_account_facts  # noqa: E402
 # _to_float is private, imported deliberately: the decoy test must read cells with
 # exactly the coercion SourceIndex uses, or it would compare against a pool built
@@ -117,6 +121,18 @@ def load_results(run_dir: Path) -> Dict[str, Any]:
     with open(results_path, encoding="utf-8") as fh:
         data = yaml.safe_load(fh) or {}
     return {k: v for k, v in data.items() if isinstance(v, dict)}
+
+
+def load_run_language(run_dir: Path) -> str:
+    """Read the first archived stage language without parsing the large run log."""
+    data_path = run_dir / "data.yml"
+    if data_path.exists():
+        with open(data_path, encoding="utf-8") as fh:
+            for line in fh:
+                match = re.match(r"^\s+language:\s*(\S+)\s*$", line)
+                if match:
+                    return match.group(1)
+    return "Eng"
 
 
 def build_dfs(databook: str, entity: str, sheet: Optional[str]) -> Dict[str, Any]:
@@ -187,6 +203,7 @@ def replay_run(
     use_archived_llm_reviews: bool = True,
     direction_out: Optional[List[Dict[str, Any]]] = None,
     graph_facts: Optional[Dict[str, Any]] = None,
+    account_briefs: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Re-run verify_commentary over every account's final text.
 
@@ -219,6 +236,7 @@ def replay_run(
         source = SourceIndex.from_df(
             df, sibling_dfs=sibling_dfs_for_account(key, dfs, prompt_manager))
         source.facts.extend(linked_fact_records(key, graph_facts))
+        source.facts.extend(brief_fact_records((account_briefs or {}).get(key)))
         source.values = [fact["value"] for fact in source.facts if fact.get("value") is not None]
         reviews = verify_commentary(
             text, df,
@@ -453,6 +471,7 @@ def run_decoys(
     seed: int,
     per_account: int,
     graph_facts: Optional[Dict[str, Any]] = None,
+    account_briefs: Optional[Dict[str, Any]] = None,
 ) -> None:
     prompt_manager = get_prompt_engine()
     rng = random.Random(seed)
@@ -468,6 +487,7 @@ def run_decoys(
         siblings = sibling_dfs_for_account(key, dfs, prompt_manager)
         source = SourceIndex.from_df(df, sibling_dfs=siblings)
         source.facts.extend(linked_fact_records(key, graph_facts))
+        source.facts.extend(brief_fact_records((account_briefs or {}).get(key)))
         source.values = [fact["value"] for fact in source.facts if fact.get("value") is not None]
         values = real_cell_values(df)
         if not values:
@@ -568,10 +588,17 @@ def main() -> None:
     prompt_manager = get_prompt_engine()
     graph_facts = build_cross_account_facts(
         dfs, type_lookup=lambda key: prompt_manager.get_mapping_component(key, component="type"))
+    account_briefs = compile_account_briefs(
+        dfs,
+        graph_facts,
+        workbook_digest=None,
+        language=load_run_language(run_dir),
+    )
 
     direction: List[Dict[str, Any]] = []
     records = replay_run(results, dfs, use_archived_llm_reviews=not args.no_llm_reviews,
-                         direction_out=direction, graph_facts=graph_facts)
+                         direction_out=direction, graph_facts=graph_facts,
+                         account_briefs=account_briefs)
     agree, comparable = archived_agreement(results, records)
     print(f"\nbaseline fidelity: replay reproduces {agree}/{comparable} archived verdicts "
           f"({100.0 * agree / max(comparable, 1):.1f}%) — a gap here is code drift since the run, "
@@ -599,6 +626,7 @@ def main() -> None:
         run_decoys(
             results, dfs, seed=args.seed, per_account=args.decoy_samples,
             graph_facts=graph_facts,
+            account_briefs=account_briefs,
         )
 
 

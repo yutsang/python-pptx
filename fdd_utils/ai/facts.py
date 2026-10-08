@@ -44,6 +44,7 @@ __all__ = [
     "graph_summary",
     "merge_graph_links",
     "resolve_statement_type",
+    "supporting_breakdowns_for",
 ]
 
 _INTERNAL_COL = "__source_row_idx"
@@ -638,6 +639,10 @@ def build_digest_graph_links(
                         "multiplier": multiplier,
                         "values": {p: values[p] for p in periods},
                         "account_values": account_values,
+                        "columns_by_period": {
+                            period: col for col, period in period_by_col.items()
+                            if period in periods
+                        },
                         "name_hint": name_hint,
                         "matched_accounts": matched_accounts,
                         "ambiguous": ambiguous,
@@ -686,6 +691,9 @@ def build_digest_graph_links(
                                    for _col, period, source_value, _target in matches},
                         "account_values": {period: target_value
                                            for _col, period, _source, target_value in matches},
+                        "columns_by_period": {
+                            period: col for col, period, _source, _target in matches
+                        },
                         "name_hint": True,
                         "period_inference": "unique_value_match",
                         "matched_accounts": [account],
@@ -842,6 +850,81 @@ def digest_tieout_diagnostics(
             "best_near_match": best[1] if best else None,
         })
     return rows
+
+
+def supporting_breakdowns_for(
+    account: str,
+    workbook_digest: Optional[Dict[str, Any]],
+    graph_facts: Optional[Dict[str, Any]],
+    *,
+    max_components: int = 3,
+) -> List[Dict[str, Any]]:
+    """Largest rows behind a verified supporting-schedule total.
+
+    A detail block is returned only when all non-total labelled rows in the
+    tied column themselves sum back to the verified total. This rejects annual
+    statement tabs, nested subtotal layouts and arbitrary nearby numbers.
+    """
+    sheets = (workbook_digest or {}).get("sheets") or {}
+    out: List[Dict[str, Any]] = []
+    for edge in (graph_facts or {}).get("links") or []:
+        if (not isinstance(edge, dict) or not edge.get("passed")
+                or edge.get("kind") != "supporting_schedule_tieout"):
+            continue
+        target = str(edge.get("target") or "").split("::", 1)[0]
+        if target != str(account):
+            continue
+        evidence = edge.get("evidence") or {}
+        if evidence.get("period_inference") == "sheet_name":
+            continue
+        sheet_name = str(evidence.get("sheet") or "")
+        sheet = sheets.get(sheet_name)
+        columns = evidence.get("columns_by_period") or {}
+        values = evidence.get("values") or {}
+        periods = sorted(p for p in edge.get("periods") or [] if p in columns and p in values)
+        if not isinstance(sheet, dict) or not periods:
+            continue
+        period = periods[-1]
+        try:
+            block = int(evidence.get("block"))
+            total_row = int(evidence.get("row"))
+            column = int(columns[period])
+            total = float(values[period])
+        except (TypeError, ValueError):
+            continue
+        by_row: Dict[int, float] = {}
+        cells = sheet.get("cells") or {}
+        for row, col, raw, cell_block in zip(
+            cells.get("r") or [], cells.get("c") or [],
+            cells.get("v") or [], cells.get("block") or [],
+        ):
+            if int(cell_block) == block and int(col) == column and int(row) != total_row:
+                by_row[int(row)] = float(raw) * float(evidence.get("multiplier") or 1.0)
+        details = []
+        for row, value in by_row.items():
+            label = str((sheet.get("row_labels") or {}).get(str(row)) or "").strip()
+            if not label or _TOTAL_LABEL_RE.match(label) or abs(value) < 1e-9:
+                continue
+            details.append({"label": label, "value": value, "row": row})
+        if not details:
+            continue
+        detail_sum = sum(item["value"] for item in details)
+        if not _ties(detail_sum, total):
+            continue
+        details.sort(key=lambda item: (-abs(item["value"]), item["row"], item["label"]))
+        shown = details[:max(1, int(max_components))]
+        remainder = total - sum(item["value"] for item in shown)
+        out.append({
+            "edge_id": edge.get("edge_id"),
+            "sheet": sheet_name,
+            "block": block,
+            "period": period,
+            "total": total,
+            "component_count": len(details),
+            "components": shown,
+            "remainder": remainder,
+        })
+    return out
 
 
 def _edge_id(source: Any, target: Any, kind: Any, periods: Sequence[Any]) -> str:

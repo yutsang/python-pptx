@@ -59,6 +59,7 @@ _SECTION_MARKERS = (
     ("table_remarks", ("表格关联备注", "Table context observations", '"table_context_observations"')),
     ("supporting_context", ("补充备注", "Supporting notes", '"supporting_context"')),
     ("cross_account", ("【跨科目", "[CROSS-ACCOUNT")),
+    ("account_brief", ("本科目已核实分析简报", "Verified account brief")),
 )
 
 
@@ -182,6 +183,26 @@ class AccountEvidence:
         )
 
 
+@dataclass
+class AccountBrief:
+    mapping_key: str
+    linked_breakdowns: List[Dict[str, Any]] = field(default_factory=list)
+    observations: List[Dict[str, Any]] = field(default_factory=list)
+    references: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return coerce_plain({
+            "mapping_key": self.mapping_key,
+            "linked_breakdowns": self.linked_breakdowns,
+            "observations": self.observations,
+            "references": self.references,
+        })
+
+    @property
+    def empty(self) -> bool:
+        return not (self.linked_breakdowns or self.observations or self.references)
+
+
 # -- building ----------------------------------------------------------------
 
 def describe_shown(mapping_key: str, df: Any, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
@@ -214,6 +235,7 @@ def compile_account_evidence(
     sibling_dfs: Optional[List[Any]] = None,
     shown: Optional[Dict[str, Any]] = None,
     graph_facts: Optional[Dict[str, Any]] = None,
+    account_brief: Optional[Dict[str, Any]] = None,
 ) -> AccountEvidence:
     """Build the pool once, from the frame as it stands NOW plus verified links.
 
@@ -224,6 +246,7 @@ def compile_account_evidence(
     """
     index = SourceIndex.from_df(df, sibling_dfs=sibling_dfs)
     index.facts.extend(linked_fact_records(str(mapping_key), graph_facts))
+    index.facts.extend(brief_fact_records(account_brief))
     index.values = [fact["value"] for fact in index.facts if fact.get("value") is not None]
     return AccountEvidence(
         mapping_key=str(mapping_key),
@@ -299,6 +322,128 @@ def linked_fact_records(
         elif kind == "tab_to_financials" and source == account:
             add(edge, evidence.get("financials_values"), edge.get("target_ref"))
     return records
+
+
+def brief_fact_records(account_brief: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Figures the verified brief actually prints, with edge/rule provenance."""
+    if not isinstance(account_brief, dict):
+        return []
+    records = []
+    for breakdown in account_brief.get("linked_breakdowns") or []:
+        edge_id = str(breakdown.get("edge_id") or "")
+        sheet = str(breakdown.get("sheet") or "")
+        period = str(breakdown.get("period") or "")
+        for component in breakdown.get("components") or []:
+            records.append({
+                "value": float(component.get("value") or 0.0),
+                "kind": "linked",
+                "sheet": sheet,
+                "row_desc": str(component.get("label") or ""),
+                "col_label": period,
+                "multiplier": 1.0,
+                "row_idx": component.get("row"),
+                "edge_id": edge_id,
+                "source_ref": {"kind": "workbook_block", "sheet": sheet},
+            })
+        remainder = float(breakdown.get("remainder") or 0.0)
+        if abs(remainder) > 1e-9:
+            records.append({
+                "value": remainder,
+                "kind": "linked",
+                "sheet": sheet,
+                "row_desc": "remaining verified components",
+                "col_label": period,
+                "multiplier": 1.0,
+                "row_idx": None,
+                "edge_id": edge_id,
+                "source_ref": {"kind": "workbook_block", "sheet": sheet},
+            })
+    for observation in account_brief.get("observations") or []:
+        code = str(observation.get("code") or "")
+        basis = str(observation.get("basis") or "")
+        for value in observation.get("numbers") or []:
+            records.append({
+                "value": float(value),
+                "kind": "brief_derived",
+                "sheet": None,
+                "row_desc": f"{code}: {basis}",
+                "col_label": None,
+                "multiplier": 1.0,
+                "row_idx": None,
+                "rule_code": code,
+                "source_ref": {"kind": "analysis_rule", "node": code},
+            })
+    return records
+
+
+def compile_account_briefs(
+    dfs: Optional[Dict[str, Any]],
+    graph_facts: Optional[Dict[str, Any]],
+    workbook_digest: Optional[Dict[str, Any]] = None,
+    language: str = "",
+) -> Dict[str, Dict[str, Any]]:
+    """Budgeted deterministic findings available before any stage runs."""
+    from .analysis import analyse, views_from_frames
+    from .facts import supporting_breakdowns_for
+
+    dfs = dfs or {}
+    graph_facts = graph_facts or {}
+    labels = graph_facts.get("labels") or {}
+    briefs = {str(key): AccountBrief(str(key)) for key in dfs}
+
+    for key in briefs:
+        briefs[key].linked_breakdowns = supporting_breakdowns_for(
+            key, workbook_digest, graph_facts, max_components=3)[:1]
+
+    if str(language).strip().lower() in ("chi", "chn", "zh", "chinese"):
+        observations = analyse(views_from_frames(dfs, graph_facts))
+    else:
+        observations = []
+    for observation in observations:
+        if observation.code in {"RECEIVABLE_DAYS", "ADVANCE_COVER"}:
+            # Already rendered by the verified ratio block, with the same
+            # arithmetic and a tighter instruction against re-derivation.
+            continue
+        payload = observation.as_dict()
+        for key in observation.accounts:
+            brief = briefs.get(str(key))
+            if brief is not None and len(brief.observations) < 2:
+                brief.observations.append(payload)
+
+    for edge in graph_facts.get("links") or []:
+        if not isinstance(edge, dict) or not edge.get("passed"):
+            continue
+        kind = str(edge.get("kind") or "")
+        evidence = edge.get("evidence") or {}
+        source = str(edge.get("source") or "").split("::", 1)[0]
+        target = str(edge.get("target") or "").split("::", 1)[0]
+        if kind == "remark_reference" and source in briefs:
+            briefs[source].references.append({
+                "kind": kind,
+                "edge_id": edge.get("edge_id"),
+                "other_account": str(labels.get(target) or target),
+                "matched_name": evidence.get("matched_name"),
+                "excerpt": str(evidence.get("excerpt") or "")[:180],
+            })
+        elif kind == "shared_counterparty":
+            for own, other, own_label in (
+                (source, target, evidence.get("source_label")),
+                (target, source, evidence.get("target_label")),
+            ):
+                if own in briefs:
+                    briefs[own].references.append({
+                        "kind": kind,
+                        "edge_id": edge.get("edge_id"),
+                        "other_account": str(labels.get(other) or other),
+                        "matched_name": own_label,
+                    })
+
+    out = {}
+    for key, brief in briefs.items():
+        brief.references = brief.references[:2]
+        if not brief.empty:
+            out[key] = brief.to_dict()
+    return out
 
 
 # -- files -------------------------------------------------------------------

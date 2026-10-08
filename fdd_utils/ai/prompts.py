@@ -1584,6 +1584,97 @@ class PromptEngine:
         )
 
     @staticmethod
+    def _account_brief_guidance(account_brief: Any, language: str) -> str:
+        """Small verified brief; never the whole graph or evidence pool."""
+        if not isinstance(account_brief, dict):
+            return ""
+        lines: List[str] = []
+
+        for item in (account_brief.get("linked_breakdowns") or [])[:1]:
+            components = item.get("components") or []
+            values = [float(c.get("value") or 0.0) for c in components]
+            values += [float(item.get("total") or 0.0), float(item.get("remainder") or 0.0)]
+            try:
+                from ..financial_display_format import choose_display_unit, format_in_unit
+                divisor, unit, decimals = choose_display_unit(values, language)
+
+                def amount(value):
+                    number = format_in_unit(float(value), divisor, decimals)
+                    if unit.startswith("人民币"):
+                        return f"人民币{number}{unit.removeprefix('人民币')}"
+                    if unit.startswith("CNY"):
+                        return f"CNY{number}{unit.removeprefix('CNY')}"
+                    return f"{number} {unit}".strip()
+            except Exception:
+                def amount(value):
+                    return f"{float(value):,.0f}"
+            separator = "、" if language == "Chi" else ", "
+            component_text = separator.join(
+                f"{c.get('label')} {amount(c.get('value') or 0.0)}" for c in components)
+            if language == "Chi":
+                line = (
+                    f"支持表「{item.get('sheet')}」已于{item.get('period')}核对至本科目"
+                    f"{amount(item.get('total') or 0.0)}；最大构成包括{component_text}"
+                )
+                if abs(float(item.get("remainder") or 0.0)) > 1e-9:
+                    line += f"，其余构成合计{amount(item.get('remainder') or 0.0)}"
+                lines.append(line + "。")
+            else:
+                line = (
+                    f"Supporting sheet '{item.get('sheet')}' ties to this account at "
+                    f"{amount(item.get('total') or 0.0)} for {item.get('period')}; "
+                    f"largest components: {component_text}"
+                )
+                if abs(float(item.get("remainder") or 0.0)) > 1e-9:
+                    line += f"; remaining components total {amount(item.get('remainder') or 0.0)}"
+                lines.append(line + ".")
+
+        for observation in (account_brief.get("observations") or [])[:2]:
+            finding = str(observation.get("finding") or "").strip()
+            if finding:
+                lines.append(
+                    (f"确定性分析（{observation.get('code')}）：{finding}"
+                     if language == "Chi"
+                     else f"Deterministic analysis ({observation.get('code')}): {finding}")
+                )
+
+        for reference in (account_brief.get("references") or [])[:2]:
+            kind = str(reference.get("kind") or "")
+            other = str(reference.get("other_account") or "")
+            matched = str(reference.get("matched_name") or "")
+            if kind == "shared_counterparty":
+                lines.append(
+                    (f"「{matched}」亦出现在「{other}」科目；仅可陈述该重合，不可据此认定关联关系或因果。"
+                     if language == "Chi"
+                     else f"'{matched}' also appears in '{other}'; state only the overlap, "
+                          "not a related-party status or causal relationship.")
+                )
+            elif kind == "remark_reference":
+                excerpt = str(reference.get("excerpt") or "").strip()
+                lines.append(
+                    (f"本科目备注明确提及「{other}」：{excerpt}"
+                     if language == "Chi"
+                     else f"This account's note explicitly references '{other}': {excerpt}")
+                )
+
+        if not lines:
+            return ""
+        rule = (
+            "以下内容均由代码核实；可用于深化评论，但不得延伸出未列明的原因、关联方判断或其他数字。"
+            if language == "Chi"
+            else "The items below were verified in code. They may deepen the commentary, "
+                 "but do not infer unlisted causes, related-party status or other figures."
+        )
+        kept = [rule]
+        chars = len(rule)
+        for line in lines:
+            if chars + len(line) + 4 > 1800:
+                break
+            kept.append(f"- {line}")
+            chars += len(line) + 4
+        return "\n".join(kept)
+
+    @staticmethod
     def _variance_analysis_guidance(
         df: Optional[pd.DataFrame],
         language: str,
@@ -2509,6 +2600,7 @@ class PromptEngine:
         # and normalising it would cost more per call than building it did,
         # for a value no template ever interpolates directly.
         cross_account_facts = kwargs.pop("cross_account_facts", None)
+        account_brief = kwargs.pop("account_brief", None)
         normalized_kwargs = self._normalize_prompt_value(kwargs, language)
         format_params = {
             "key": self._normalize_prompt_value(mapping_key, language),
@@ -2544,6 +2636,9 @@ class PromptEngine:
             # then the block is appended after rendering (see below).
             "cross_account_guidance": self._cross_account_guidance(
                 cross_account_facts, mapping_key, language,
+            ),
+            "account_brief_guidance": self._account_brief_guidance(
+                account_brief, language,
             ),
             "detail_table_guidance": self._detail_table_guidance(df, language),
             "composition_guidance": self._composition_guidance(df, language),
@@ -2658,6 +2753,14 @@ class PromptEngine:
                 cross_label = "跨科目已核实事实" if language == "Chi" else "Cross-account verified fact"
                 rendered_user_prompt = self._append_markdown_section(
                     rendered_user_prompt, cross_label, cross_block)
+
+        brief_block = str(format_params.get("account_brief_guidance") or "").strip()
+        if brief_block and self.normalize_agent_name(agent_name) in ("1_Generator", "2_Auditor"):
+            placeholder = "{account_brief_guidance}"
+            if placeholder not in str(system_prompt or "") and placeholder not in str(user_prompt_template or ""):
+                brief_label = "本科目已核实分析简报" if language == "Chi" else "Verified account brief"
+                rendered_user_prompt = self._append_markdown_section(
+                    rendered_user_prompt, brief_label, brief_block)
 
         if self.normalize_agent_name(agent_name) == "1_Generator":
             previous_content = str(kwargs.get("previous_content") or "").strip()
