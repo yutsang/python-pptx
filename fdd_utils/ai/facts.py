@@ -477,6 +477,71 @@ def _sheet_names_account(sheet_name: str, sheet: Dict[str, Any], account: str, l
     return False
 
 
+def _sheet_period(sheet_name: str, sheet: Dict[str, Any]) -> Optional[str]:
+    """A period explicitly carried by a sheet name/title, not inferred."""
+    from ..financial_common import normalize_financial_date_label
+
+    for raw in (str(sheet_name).strip(), str(sheet.get("title") or "").strip()):
+        normalised = str(normalize_financial_date_label(raw) or "").strip()
+        if _ISO_RE.match(normalised):
+            return normalised
+        if re.fullmatch(r"20\d{2}", raw):
+            return f"{raw}-12-31"
+        match = re.fullmatch(r"(\d{1,2})M(\d{2})", raw, flags=re.IGNORECASE)
+        if match and 1 <= int(match.group(1)) <= 12:
+            month, year = int(match.group(1)), 2000 + int(match.group(2))
+            end = pd.to_datetime(f"{year}-{month:02d}-01") + pd.tseries.offsets.MonthEnd(0)
+            return end.strftime("%Y-%m-%d")
+    return None
+
+
+def _identity_label(value: Any) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"^\s*\d+\s*[.)、:：-]?\s*", "", text)
+    return _LABEL_PUNCT_RE.sub("", text)
+
+
+def _raw_numeric_rows(sheet: Dict[str, Any]) -> Dict[Tuple[int, int], List[Tuple[int, float]]]:
+    cells = sheet.get("cells") or {}
+    rows: Dict[Tuple[int, int], List[Tuple[int, float]]] = {}
+    for row, col, raw, block in zip(
+        cells.get("r") or [], cells.get("c") or [],
+        cells.get("v") or [], cells.get("block") or [],
+    ):
+        rows.setdefault((int(block), int(row)), []).append((int(col), float(raw)))
+    return rows
+
+
+def _ties(left: float, right: float) -> bool:
+    return abs(left - right) <= max(1.0, max(abs(left), abs(right)) * _TIE_TOLERANCE)
+
+
+def _unique_period_matches(
+    cells: Sequence[Tuple[int, float]],
+    account_values: Dict[str, float],
+    multiplier: float,
+) -> List[Tuple[int, str, float, float]]:
+    """One-to-one value matches between source cells and account periods."""
+    candidates = []
+    for col, raw in cells:
+        source_value = float(raw) * multiplier
+        if abs(source_value) < 1e-9:
+            continue
+        for period, account_value in account_values.items():
+            if isinstance(account_value, (int, float)) and abs(float(account_value)) > 1e-9:
+                if _ties(source_value, float(account_value)):
+                    candidates.append((col, str(period), source_value, float(account_value)))
+    by_col: Dict[int, int] = {}
+    by_period: Dict[str, int] = {}
+    for col, period, _source, _target in candidates:
+        by_col[col] = by_col.get(col, 0) + 1
+        by_period[period] = by_period.get(period, 0) + 1
+    return [
+        item for item in candidates
+        if by_col[item[0]] == 1 and by_period[item[1]] == 1
+    ]
+
+
 def _digest_total_rows(
     sheet: Dict[str, Any],
 ) -> Tuple[Dict[int, str], float, List[Tuple[int, int, str, Dict[str, float]]]]:
@@ -524,9 +589,7 @@ def build_digest_graph_links(
         if not isinstance(sheet, dict) or sheet.get("status") != "unmapped":
             continue
         period_by_col, multiplier, total_rows = _digest_total_rows(sheet)
-        if not period_by_col:
-            continue
-        for block, row, row_label, values in total_rows:
+        for block, row, row_label, values in total_rows if period_by_col else []:
             matched: List[Tuple[str, List[str], bool, Dict[str, float]]] = []
             for account, account_values in series.items():
                 shared = sorted(
@@ -578,6 +641,110 @@ def build_digest_graph_links(
                         "name_hint": name_hint,
                         "matched_accounts": matched_accounts,
                         "ambiguous": ambiguous,
+                    },
+                ))
+
+        # Snapshot/aging schedules often have bucket columns rather than date
+        # columns. If the sheet explicitly names one account and a labelled
+        # total cell uniquely equals one of that account's periods, the value
+        # itself identifies the period. No un-named sheet gets this privilege.
+        named_accounts = [
+            str(account) for account in series
+            if _sheet_names_account(
+                str(sheet_name), sheet, str(account), str(labels.get(account) or ""))
+        ]
+        raw_rows = _raw_numeric_rows(sheet)
+        if not period_by_col and len(named_accounts) == 1:
+            account = named_accounts[0]
+            for (block, row), cells in sorted(raw_rows.items()):
+                row_label = str((sheet.get("row_labels") or {}).get(str(row)) or "").strip()
+                if not _TOTAL_LABEL_RE.match(row_label):
+                    continue
+                matches = _unique_period_matches(cells, series.get(account) or {}, multiplier)
+                if not matches:
+                    continue
+                periods = sorted(match[1] for match in matches)
+                source = f"WorkbookSheet::{sheet_name}#block:{block}#row:{row}"
+                edges.append(_edge(
+                    source=source,
+                    target=account,
+                    kind="supporting_schedule_tieout",
+                    periods=periods,
+                    test=(
+                        f"sheet/title explicitly names one account and labelled total cells "
+                        f"uniquely tie to account periods within max(1.0, "
+                        f"{_TIE_TOLERANCE:.0%} x larger side)"
+                    ),
+                    passed=True,
+                    evidence={
+                        "sheet": str(sheet_name),
+                        "block": block,
+                        "row": row,
+                        "row_label": row_label,
+                        "multiplier": multiplier,
+                        "values": {period: source_value
+                                   for _col, period, source_value, _target in matches},
+                        "account_values": {period: target_value
+                                           for _col, period, _source, target_value in matches},
+                        "name_hint": True,
+                        "period_inference": "unique_value_match",
+                        "matched_accounts": [account],
+                        "ambiguous": False,
+                    },
+                ))
+
+        # Some workbooks split one schedule into year-named tabs. Admit a row
+        # only when its label is exactly an account name and one cell ties to
+        # that account in the period explicitly named by the sheet.
+        sheet_period = _sheet_period(str(sheet_name), sheet)
+        if sheet_period:
+            alias_to_accounts: Dict[str, set] = {}
+            for account in series:
+                for alias in (str(account), str(labels.get(account) or "")):
+                    normalised = _identity_label(alias)
+                    if len(normalised) >= 2:
+                        alias_to_accounts.setdefault(normalised, set()).add(str(account))
+            for (block, row), cells in sorted(raw_rows.items()):
+                row_label = str((sheet.get("row_labels") or {}).get(str(row)) or "").strip()
+                matching_accounts = alias_to_accounts.get(_identity_label(row_label)) or set()
+                if len(matching_accounts) != 1:
+                    continue
+                account = next(iter(matching_accounts))
+                account_value = (series.get(account) or {}).get(sheet_period)
+                if not isinstance(account_value, (int, float)) or abs(float(account_value)) < 1e-9:
+                    continue
+                tied = [
+                    (col, float(raw) * multiplier)
+                    for col, raw in cells
+                    if abs(float(raw)) > 1e-9
+                    and _ties(float(raw) * multiplier, float(account_value))
+                ]
+                if len(tied) != 1:
+                    continue
+                source = f"WorkbookSheet::{sheet_name}#block:{block}#row:{row}"
+                edges.append(_edge(
+                    source=source,
+                    target=account,
+                    kind="supporting_schedule_tieout",
+                    periods=[sheet_period],
+                    test=(
+                        f"sheet/title explicitly names the period, row label exactly names "
+                        f"the account, and one row cell ties within max(1.0, "
+                        f"{_TIE_TOLERANCE:.0%} x larger side)"
+                    ),
+                    passed=True,
+                    evidence={
+                        "sheet": str(sheet_name),
+                        "block": block,
+                        "row": row,
+                        "row_label": row_label,
+                        "multiplier": multiplier,
+                        "values": {sheet_period: tied[0][1]},
+                        "account_values": {sheet_period: float(account_value)},
+                        "name_hint": True,
+                        "period_inference": "sheet_name",
+                        "matched_accounts": [account],
+                        "ambiguous": False,
                     },
                 ))
     return edges
