@@ -1032,11 +1032,15 @@ def _financials_edges(
     absolute = str(statement_type).strip().upper() == "IS"
     agreed: List[str] = []
     differed: Dict[str, Dict[str, float]] = {}
+    tab_values: Dict[str, float] = {}
+    financials_values: Dict[str, float] = {}
     for period, fin_value in rows.items():
         tab_value = series.get(str(period))
         if not isinstance(tab_value, (int, float)) or not isinstance(fin_value, (int, float)):
             continue
         left, right = float(tab_value), float(fin_value)
+        tab_values[str(period)] = left
+        financials_values[str(period)] = right
         if absolute:
             left, right = abs(left), abs(right)
         scale = max(abs(right), abs(left))
@@ -1056,7 +1060,12 @@ def _financials_edges(
         test=("|tab - Financials| <= max(1.0, 0.5% x larger side), every date column"
               + (" (absolute values, IS)" if absolute else "")),
         passed=bool(agreed) and not differed,
-        evidence={"agreeing_periods": agreed, "differing_periods": differed},
+        evidence={
+            "agreeing_periods": agreed,
+            "differing_periods": differed,
+            "tab_values": tab_values,
+            "financials_values": financials_values,
+        },
     )]
 
 

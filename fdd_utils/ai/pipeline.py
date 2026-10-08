@@ -1355,6 +1355,7 @@ def process_single_agent_item(
                         statement_type=str(statement_type or ""),
                         sibling_dfs=sibling_dfs,
                         shown=(existing.shown if existing is not None else None),
+                        graph_facts=(run_state.facts if run_state is not None else None),
                     )
                     source = evidence_built.source_index()
                 reviews = verify_commentary(
@@ -2605,6 +2606,7 @@ def _apply_deterministic_verification(
                 built = compile_account_evidence(
                     key, df, statement_type=str(statement_type or ""), sibling_dfs=sibling_dfs,
                     shown=(existing.shown if existing is not None else None),
+                    graph_facts=(run_state.facts if run_state is not None else None),
                 )
                 if run_state is not None:
                     run_state.evidence[key] = built

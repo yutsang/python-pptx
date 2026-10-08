@@ -52,6 +52,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from fdd_utils.ai import get_prompt_engine, verify_commentary  # noqa: E402
+from fdd_utils.ai.evidence import linked_fact_records  # noqa: E402
+from fdd_utils.ai.facts import build_cross_account_facts  # noqa: E402
 # _to_float is private, imported deliberately: the decoy test must read cells with
 # exactly the coercion SourceIndex uses, or it would compare against a pool built
 # from a different set of numbers than the one it sampled from.
@@ -184,6 +186,7 @@ def replay_run(
     *,
     use_archived_llm_reviews: bool = True,
     direction_out: Optional[List[Dict[str, Any]]] = None,
+    graph_facts: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """Re-run verify_commentary over every account's final text.
 
@@ -213,10 +216,15 @@ def replay_run(
         # clause_reviews: in production they must not colour the deck or move
         # the unsupported ratio until their false-positive rate is known.
         found: List[Dict[str, Any]] = []
+        source = SourceIndex.from_df(
+            df, sibling_dfs=sibling_dfs_for_account(key, dfs, prompt_manager))
+        source.facts.extend(linked_fact_records(key, graph_facts))
+        source.values = [fact["value"] for fact in source.facts if fact.get("value") is not None]
         reviews = verify_commentary(
             text, df,
             archived if use_archived_llm_reviews else None,
             sibling_dfs=sibling_dfs_for_account(key, dfs, prompt_manager),
+            source=source,
             direction_findings=found,
         )
         if direction_out is not None:
@@ -444,6 +452,7 @@ def run_decoys(
     *,
     seed: int,
     per_account: int,
+    graph_facts: Optional[Dict[str, Any]] = None,
 ) -> None:
     prompt_manager = get_prompt_engine()
     rng = random.Random(seed)
@@ -458,6 +467,8 @@ def run_decoys(
             continue
         siblings = sibling_dfs_for_account(key, dfs, prompt_manager)
         source = SourceIndex.from_df(df, sibling_dfs=siblings)
+        source.facts.extend(linked_fact_records(key, graph_facts))
+        source.values = [fact["value"] for fact in source.facts if fact.get("value") is not None]
         values = real_cell_values(df)
         if not values:
             continue
@@ -554,10 +565,13 @@ def main() -> None:
     dfs = build_dfs(args.databook, args.entity, args.sheet)
     print(f"rebuilt {len(dfs)} dfs in {time.perf_counter() - started:.1f}s")
     check_pairing(results, dfs, args.databook, run_dir)
+    prompt_manager = get_prompt_engine()
+    graph_facts = build_cross_account_facts(
+        dfs, type_lookup=lambda key: prompt_manager.get_mapping_component(key, component="type"))
 
     direction: List[Dict[str, Any]] = []
     records = replay_run(results, dfs, use_archived_llm_reviews=not args.no_llm_reviews,
-                         direction_out=direction)
+                         direction_out=direction, graph_facts=graph_facts)
     agree, comparable = archived_agreement(results, records)
     print(f"\nbaseline fidelity: replay reproduces {agree}/{comparable} archived verdicts "
           f"({100.0 * agree / max(comparable, 1):.1f}%) — a gap here is code drift since the run, "
@@ -582,7 +596,10 @@ def main() -> None:
         })
 
     if args.decoys:
-        run_decoys(results, dfs, seed=args.seed, per_account=args.decoy_samples)
+        run_decoys(
+            results, dfs, seed=args.seed, per_account=args.decoy_samples,
+            graph_facts=graph_facts,
+        )
 
 
 if __name__ == "__main__":

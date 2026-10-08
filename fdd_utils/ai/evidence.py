@@ -22,9 +22,11 @@ What it carries:
             guidance sections were present, how many components the budget
             kept and dropped
 
-What it does not do: change any verdict. `SourceIndex.from_evidence(ev)` yields
-the same pool `from_df` would have built for the same frame at the same moment;
-the point is that the moment is one and the pool is one.
+Verified graph edges may add narrowly scoped ``kind="linked"`` facts. These
+are the far-side values behind cross-account guidance, supporting-schedule
+tie-outs and Financials tie-outs; every record names the edge and remote node.
+They can ground a quoted amount but, unlike own cells, cannot drive scale-error
+repair.
 """
 from __future__ import annotations
 
@@ -211,8 +213,9 @@ def compile_account_evidence(
     statement_type: str = "",
     sibling_dfs: Optional[List[Any]] = None,
     shown: Optional[Dict[str, Any]] = None,
+    graph_facts: Optional[Dict[str, Any]] = None,
 ) -> AccountEvidence:
-    """Build the pool once, from the frame as it stands NOW.
+    """Build the pool once, from the frame as it stands NOW plus verified links.
 
     Call this after the Generator prompt has been rendered for the account:
     rendering is what stashes the computed remainder and the budget residual on
@@ -220,6 +223,8 @@ def compile_account_evidence(
     builds the pool the three defects were built on.
     """
     index = SourceIndex.from_df(df, sibling_dfs=sibling_dfs)
+    index.facts.extend(linked_fact_records(str(mapping_key), graph_facts))
+    index.values = [fact["value"] for fact in index.facts if fact.get("value") is not None]
     return AccountEvidence(
         mapping_key=str(mapping_key),
         language=str(language or ""),
@@ -228,6 +233,72 @@ def compile_account_evidence(
         dates=list(index.date_facts),
         shown=dict(shown or {}),
     )
+
+
+def linked_fact_records(
+    mapping_key: str,
+    graph_facts: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Numeric facts across passed edges that this account is allowed to cite.
+
+    Direction is deliberate. Ratio guidance is rendered only for the source
+    account, so only that source receives the target account's values. A
+    supporting schedule points into its mapped account, and a Financials row
+    points back to the account tab. Semantic-only edges carry no numbers.
+    """
+    if not isinstance(graph_facts, dict):
+        return []
+    account = str(mapping_key)
+    records: List[Dict[str, Any]] = []
+    seen = set()
+    ratio_kinds = {
+        "receivable_days", "payable_days", "inventory_days",
+        "advance_days", "prepayment_days", "expense_to_revenue",
+    }
+
+    def add(edge: Dict[str, Any], values: Any, remote_ref: Any) -> None:
+        if not isinstance(values, dict):
+            return
+        edge_id = str(edge.get("edge_id") or "")
+        for period, raw in sorted(values.items()):
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value != value:
+                continue
+            identity = (edge_id, str(period), value)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            remote = dict(remote_ref) if isinstance(remote_ref, dict) else {}
+            sheet = remote.get("sheet") or remote.get("account") or remote.get("kind")
+            records.append({
+                "value": value,
+                "kind": "linked",
+                "sheet": str(sheet) if sheet is not None else None,
+                "row_desc": f"verified via {edge.get('kind')}",
+                "col_label": str(period),
+                "multiplier": 1.0,
+                "row_idx": None,
+                "edge_id": edge_id,
+                "source_ref": remote,
+            })
+
+    for edge in graph_facts.get("links") or []:
+        if not isinstance(edge, dict) or not edge.get("passed"):
+            continue
+        source = str(edge.get("source") or "").split("::", 1)[0]
+        target = str(edge.get("target") or "").split("::", 1)[0]
+        kind = str(edge.get("kind") or "")
+        evidence = edge.get("evidence") or {}
+        if kind in ratio_kinds and source == account:
+            add(edge, evidence.get("target_values"), edge.get("target_ref"))
+        elif kind == "supporting_schedule_tieout" and target == account:
+            add(edge, evidence.get("values"), edge.get("source_ref"))
+        elif kind == "tab_to_financials" and source == account:
+            add(edge, evidence.get("financials_values"), edge.get("target_ref"))
+    return records
 
 
 # -- files -------------------------------------------------------------------

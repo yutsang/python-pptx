@@ -44,6 +44,7 @@ from fdd_utils.ai.facts import (  # noqa: E402
     graph_summary,
     merge_graph_links,
 )
+from fdd_utils.ai.evidence import linked_fact_records  # noqa: E402
 from fdd_utils.ai.prompts import PromptEngine  # noqa: E402
 from fdd_utils.workbook import (  # noqa: E402
     extract_balance_sheet_and_income_statement,
@@ -193,6 +194,10 @@ def main() -> int:
           f"{len(linked_sheets)} sheets, {len(support)} edges")
     print(f"    shuffled-value decoy: {decoy_passed} surviving tie-outs; "
           f"false-link rate={false_rate:.1f}%")
+    linked = {name: linked_fact_records(name, facts) for name in facts.get("series") or {}}
+    linked = {name: records for name, records in linked.items() if records}
+    print(f"    linked evidence closure: {len(linked)} accounts, "
+          f"{sum(len(records) for records in linked.values())} facts")
 
     print("\n--- 1. every candidate relationship ---")
     by_kind: dict = {}
