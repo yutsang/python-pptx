@@ -1739,16 +1739,42 @@ def _synthesize_for_stage(
     if len(valued) < 2:
         _note(f"only {len(valued)} top-level component(s) with a non-zero value -- need 2")
         return None
-    total_row = None
-    for entry in row_entries:
-        if str(entry.get("row_type") or "").lower() in ("total", "subtotal"):
-            total_row = {
+    # Pick the populated grand total, not merely the last total-like row.
+    # Two real schedules append a second report block below the main one. Its
+    # trailing 合计 is classified as a total but carries no values in the
+    # analysis stage; overwriting the earlier populated 合计 with it made the
+    # presentation table (and the typed component_to_total edge) read zero in
+    # every period while the account itself was non-zero.
+    total_candidates = []
+    for position, entry in enumerate(row_entries):
+        row_type = str(entry.get("row_type") or "").lower()
+        if row_type not in ("total", "subtotal"):
+            continue
+        values = {
+            column["date"]: entry["values"].get(column["key"])
+            for column in stage_columns
+        }
+        populated = sum(
+            1 for value in values.values()
+            if isinstance(value, (int, float)) and value == value
+        )
+        nonzero = sum(
+            1 for value in values.values()
+            if isinstance(value, (int, float)) and value == value and abs(value) > 1e-9
+        )
+        total_candidates.append((
+            0 if populated else 1,
+            0 if row_type == "total" else 1,
+            -populated,
+            -nonzero,
+            -position,  # preserve the old last-row preference among true ties
+            {
                 "label": str(entry.get("description") or "").strip(),
-                "values": {
-                    column["date"]: entry["values"].get(column["key"])
-                    for column in stage_columns
-                },
-            }
+                "values": values,
+            },
+        ))
+    total_candidates.sort(key=lambda item: item[:5])
+    total_row = total_candidates[0][5] if total_candidates else None
     # Only where the sheet's own header actually differs from the ISO date --
     # a header cell that already IS a date renders identically either way, and
     # a blank one must fall back to the date rather than to "".
