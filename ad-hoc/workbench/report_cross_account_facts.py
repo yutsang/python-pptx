@@ -37,9 +37,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from fdd_utils.ai.facts import (  # noqa: E402
     build_cross_account_facts,
+    build_digest_graph_links,
     build_financials_by_key,
     cross_account_links_for,
     graph_summary,
+    merge_graph_links,
 )
 from fdd_utils.ai.prompts import PromptEngine  # noqa: E402
 from fdd_utils.workbook import (  # noqa: E402
@@ -55,7 +57,11 @@ _PLACEHOLDER = re.compile(r"\{[a-z_]+\}")
 def _edge_line(edge: dict) -> str:
     mark = "PASS" if edge["passed"] else "FAIL"
     ev = edge.get("evidence") or {}
-    if "values" in ev:
+    if edge.get("kind") == "supporting_schedule_tieout":
+        extra = (f"  row={ev.get('row')} label={ev.get('row_label')!r} "
+                 f"periods={edge.get('periods')} multiplier={ev.get('multiplier'):g} "
+                 f"ambiguous={ev.get('ambiguous')}")
+    elif "values" in ev:
         extra = (f"  values={ev['values']} ceiling={ev['band'][1]:g}"
                  f" outside={ev['outside_band']} immaterial={ev.get('immaterial')}")
     elif edge.get("kind") == "shared_counterparty":
@@ -70,6 +76,24 @@ def _edge_line(edge: dict) -> str:
     return (f"    [{mark}] {edge['source']} -> {edge['target']}"
             f"  id={edge.get('edge_id')} tier={edge.get('tier')}\n"
             f"           test: {edge['test']}\n         {extra}")
+
+
+def _decoy_facts(facts: dict) -> dict:
+    """Rotate each period's account totals; labels and graph stay untouched."""
+    decoy = dict(facts)
+    series = {name: dict(values) for name, values in (facts.get("series") or {}).items()}
+    periods = sorted({period for values in series.values() for period in values})
+    for period_idx, period in enumerate(periods):
+        names = sorted(name for name, values in series.items() if period in values)
+        if len(names) < 2:
+            continue
+        original = [series[name][period] for name in names]
+        for idx, name in enumerate(names):
+            # A different offset per period prevents moving one intact series
+            # wholesale to another account, which would not be a useful decoy.
+            series[name][period] = original[(idx + period_idx + 1) % len(original)]
+    decoy["series"] = series
+    return decoy
 
 
 def main() -> int:
@@ -99,9 +123,12 @@ def main() -> int:
     except Exception as exc:
         print(f"(no Financials sheet {args.sheet!r}: {exc}; tab-to-Financials edges skipped)")
 
-    facts = build_cross_account_facts(
+    base_facts = build_cross_account_facts(
         dfs, financials=financials,
         type_lookup=lambda key: engine.get_mapping_component(key, component="type"))
+    digest = (_res or {}).get("workbook_digest")
+    digest_links = build_digest_graph_links(digest, base_facts)
+    facts = merge_graph_links(base_facts, digest_links)
 
     print(f"=== {Path(args.databook).name}  language={language}  accounts={len(dfs)}  "
           f"Financials rows matched={len(financials)}")
@@ -116,6 +143,15 @@ def main() -> int:
     graph = graph_summary(facts)
     print(f"    typed graph: total={graph['total']} passed={graph['passed']} "
           f"failed={graph['failed']} malformed={graph['malformed']}")
+    support = [e for e in digest_links if e.get("passed")]
+    linked_sheets = {str((e.get("evidence") or {}).get("sheet")) for e in support}
+    decoy_links = build_digest_graph_links(digest, _decoy_facts(facts))
+    decoy_passed = sum(1 for e in decoy_links if e.get("passed"))
+    false_rate = (100.0 * decoy_passed / len(support)) if support else 0.0
+    print(f"    unmapped supporting tabs linked by verified total: "
+          f"{len(linked_sheets)} sheets, {len(support)} edges")
+    print(f"    shuffled-value decoy: {decoy_passed} surviving tie-outs; "
+          f"false-link rate={false_rate:.1f}%")
 
     print("\n--- 1. every candidate relationship ---")
     by_kind: dict = {}
@@ -141,6 +177,7 @@ def main() -> int:
 
     print("\n--- 3. rendered prompts: leaks, substitution, size ---")
     before = after = 0
+    digest_only_delta = 0
     gained = 0
     leaks = []
     bad_before = []
@@ -157,8 +194,12 @@ def main() -> int:
             s1, u1 = engine.render_prompt(agent_name=agent, language=language, mapping_key=key,
                                           df=df, data_format="markdown",
                                           cross_account_facts=facts, **extra)
+            sb, ub = engine.render_prompt(agent_name=agent, language=language, mapping_key=key,
+                                          df=df, data_format="markdown",
+                                          cross_account_facts=base_facts, **extra)
             before += len(s0) + len(u0)
             after += len(s1) + len(u1)
+            digest_only_delta += len(s1) + len(u1) - len(sb) - len(ub)
             if len(s1) + len(u1) != len(s0) + len(u0):
                 gained += 1
             bad_before += [(agent, key, m) for m in _PLACEHOLDER.findall(s0 + u0)]
@@ -178,13 +219,15 @@ def main() -> int:
     print(f"    prompts rendered: {2 * len(dfs)}   gained a cross-account block: {gained}")
     print(f"    chars before={before:,}  after={after:,}  delta={delta:,}"
           + (f"  ({delta / gained:.0f} chars per changed prompt)" if gained else ""))
+    print(f"    digest-only prompt delta={digest_only_delta}  (must be 0)")
     print(f"    unsubstituted placeholders  before={len(bad_before)}  after={len(bad_after)}"
           f"  (must be equal){'  <-- REGRESSION' if len(bad_after) > len(bad_before) else ''}")
     print(f"    REJECTED relationships leaking into a rendered prompt: {len(leaks)}"
           f"{'  <-- RULE VIOLATED' if leaks else '  (rule holds)'}")
     for leak in leaks[:5]:
         print(f"        {leak}")
-    return 1 if (leaks or len(bad_after) > len(bad_before) or graph["malformed"]) else 0
+    return 1 if (leaks or len(bad_after) > len(bad_before)
+                 or graph["malformed"] or digest_only_delta) else 0
 
 
 if __name__ == "__main__":

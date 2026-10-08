@@ -1908,6 +1908,15 @@ def run_ai_pipeline_with_progress(
             mark_reached(workbook_digest, dfs)
         except Exception as exc:  # a record, never a gate
             logger.logger.warning("[Digest] reach not re-marked: %s", exc)
+        try:
+            from .facts import build_digest_graph_links
+            _set_run_graph(
+                run_state,
+                run_state.facts,
+                build_digest_graph_links(workbook_digest, run_state.facts),
+            )
+        except Exception as exc:  # graph enrichment, never a gate
+            logger.logger.warning("[DigestGraph] supporting-tab links skipped: %s", exc)
     health = _RunHealth()
 
     resumed_from = None

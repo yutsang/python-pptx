@@ -37,6 +37,7 @@ import pandas as pd
 
 __all__ = [
     "build_cross_account_facts",
+    "build_digest_graph_links",
     "cross_account_links_for",
     "financials_tieout",
     "graph_summary",
@@ -60,6 +61,10 @@ _COMPANY_MARKERS = (
     " limited", " ltd", " llc", " incorporated", " inc.", " company", " co.",
 )
 _LABEL_PUNCT_RE = re.compile(r"[\s*＊()（）\[\]【】,，.。:：;；'\"“”‘’·_\-]+")
+_TOTAL_LABEL_RE = re.compile(
+    r"^(?:grand\s+total|sub\s*total|subtotal|total|合计|合計|总计|總計|小计|小計|共计|共計)$",
+    flags=re.IGNORECASE,
+)
 
 
 # --------------------------------------------------------------------------
@@ -408,6 +413,10 @@ _RATIO_CANDIDATES: Tuple[Tuple[str, str, str, str, float, float], ...] = (
 def _endpoint_ref(value: Any) -> Dict[str, str]:
     """A typed endpoint while the legacy string stays available to callers."""
     raw = str(value or "")
+    if raw.startswith("WorkbookSheet::"):
+        location = raw.split("::", 1)[1]
+        sheet = location.split("#", 1)[0]
+        return {"kind": "workbook_block", "sheet": sheet, "node": location}
     if raw.startswith("Financials::"):
         account = raw.split("::", 1)[1]
         return {"kind": "financials_row", "account": account, "node": account}
@@ -419,6 +428,149 @@ def _endpoint_ref(value: Any) -> Dict[str, str]:
             "node": node,
         }
     return {"kind": "account", "account": raw, "node": raw}
+
+
+def _digest_multiplier(sheet: Dict[str, Any]) -> float:
+    """Explicit unit lineage for an unmapped sheet; never guess a scale."""
+    markers = " ".join(str(v).lower() for v in (sheet.get("unit_markers") or []))
+    if any(v in markers for v in ("million", "百万", "百萬")):
+        return 1_000_000.0
+    if any(v in markers for v in ("'000", "千元")):
+        return 1_000.0
+    return 1.0
+
+
+def _digest_periods_by_column(sheet: Dict[str, Any]) -> Dict[int, str]:
+    """Date labels attached to numeric columns, from the digest's own cells."""
+    from ..financial_common import normalize_financial_date_label
+
+    periods: Dict[int, str] = {}
+    for col, label in (sheet.get("col_labels") or {}).items():
+        normalised = normalize_financial_date_label(label)
+        if _ISO_RE.match(str(normalised or "").strip()):
+            periods[int(col)] = str(normalised)
+    # Some supporting schedules have a title row between the date and the
+    # first numeric cell, beyond the digest's nearest-header search. Retain the
+    # nearest date-looking text in the same column as a conservative fallback.
+    for item in sheet.get("texts") or []:
+        if not isinstance(item, list) or len(item) < 3:
+            continue
+        normalised = normalize_financial_date_label(item[2])
+        if _ISO_RE.match(str(normalised or "").strip()):
+            periods.setdefault(int(item[1]), str(normalised))
+    return periods
+
+
+def _sheet_names_account(sheet_name: str, sheet: Dict[str, Any], account: str, label: str) -> bool:
+    """Whether sheet/title explicitly names an account, including short keys."""
+    text = " ".join((str(sheet_name), str(sheet.get("title") or "")))
+    for name in dict.fromkeys((str(account).strip(), str(label).strip())):
+        if not name:
+            continue
+        if _name_in_text(name, text):
+            return True
+        if (2 <= len(name) <= 3 and name.isascii() and name.isupper()
+                and re.search(r"(?<![A-Za-z0-9])" + re.escape(name)
+                              + r"(?![A-Za-z0-9])", text, flags=re.IGNORECASE)):
+            return True
+    return False
+
+
+def build_digest_graph_links(
+    workbook_digest: Optional[Dict[str, Any]],
+    facts: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Verified total-row tie-outs from unmapped supporting tabs to accounts.
+
+    This is intentionally narrower than "numbers happen to match". A source
+    must be a labelled total row inside one digest block, every comparable
+    period must tie within 2%, and a one-period match is admitted only when the
+    sheet/title also explicitly names the account. Ambiguous matches are kept
+    as failed edges and cannot be consumed later.
+    """
+    sheets = (workbook_digest or {}).get("sheets") or {}
+    series = (facts or {}).get("series") or {}
+    labels = (facts or {}).get("labels") or {}
+    if not sheets or not series:
+        return []
+
+    edges: List[Dict[str, Any]] = []
+    for sheet_name, sheet in sheets.items():
+        if not isinstance(sheet, dict) or sheet.get("status") != "unmapped":
+            continue
+        period_by_col = _digest_periods_by_column(sheet)
+        if not period_by_col:
+            continue
+        multiplier = _digest_multiplier(sheet)
+        cells = sheet.get("cells") or {}
+        rows: Dict[Tuple[int, int], Dict[str, float]] = {}
+        for row, col, raw, block in zip(
+            cells.get("r") or [], cells.get("c") or [],
+            cells.get("v") or [], cells.get("block") or [],
+        ):
+            period = period_by_col.get(int(col))
+            if period is None:
+                continue
+            rows.setdefault((int(block), int(row)), {})[period] = float(raw) * multiplier
+
+        for (block, row), values in sorted(rows.items()):
+            row_label = str((sheet.get("row_labels") or {}).get(str(row)) or "").strip()
+            if not _TOTAL_LABEL_RE.match(row_label) or not any(abs(v) > 1e-9 for v in values.values()):
+                continue
+            matched: List[Tuple[str, List[str], bool, Dict[str, float]]] = []
+            for account, account_values in series.items():
+                shared = sorted(
+                    p for p in values
+                    if isinstance(account_values.get(p), (int, float))
+                    and abs(float(account_values[p])) > 1e-9
+                )
+                name_hint = _sheet_names_account(
+                    str(sheet_name), sheet, str(account), str(labels.get(account) or ""))
+                if len(shared) < 2 and not name_hint:
+                    continue
+                differing: Dict[str, float] = {}
+                for period in shared:
+                    left, right = float(values[period]), float(account_values[period])
+                    if abs(left - right) > max(1.0, max(abs(left), abs(right)) * _TIE_TOLERANCE):
+                        differing[period] = right
+                if shared and not differing:
+                    matched.append((
+                        str(account), shared, name_hint,
+                        {p: float(account_values[p]) for p in shared},
+                    ))
+            if not matched:
+                continue
+
+            ambiguous = len(matched) > 1
+            source = f"WorkbookSheet::{sheet_name}#block:{block}#row:{row}"
+            matched_accounts = [item[0] for item in matched]
+            for account, periods, name_hint, account_values in matched:
+                edges.append(_edge(
+                    source=source,
+                    target=account,
+                    kind="supporting_schedule_tieout",
+                    periods=periods,
+                    test=(
+                        f"labelled total row ties to account within max(1.0, "
+                        f"{_TIE_TOLERANCE:.0%} x larger side) in every shared period; "
+                        "one-period ties require an explicit account name in sheet/title; "
+                        "match must be unique"
+                    ),
+                    passed=not ambiguous,
+                    evidence={
+                        "sheet": str(sheet_name),
+                        "block": block,
+                        "row": row,
+                        "row_label": row_label,
+                        "multiplier": multiplier,
+                        "values": {p: values[p] for p in periods},
+                        "account_values": account_values,
+                        "name_hint": name_hint,
+                        "matched_accounts": matched_accounts,
+                        "ambiguous": ambiguous,
+                    },
+                ))
+    return edges
 
 
 def _edge_id(source: Any, target: Any, kind: Any, periods: Sequence[Any]) -> str:
@@ -1079,7 +1231,8 @@ def cross_account_links_for(
     order = {"receivable_days": 0, "payable_days": 1, "inventory_days": 2,
              "expense_to_revenue": 3, "parent_to_children": 4,
              "component_to_total": 5, "shared_counterparty": 6,
-             "remark_reference": 7, "tab_to_financials": 8}
+             "remark_reference": 7, "supporting_schedule_tieout": 8,
+             "tab_to_financials": 9}
     found = []
     for edge in (facts.get("links") or []):
         if passed_only and not edge.get("passed"):

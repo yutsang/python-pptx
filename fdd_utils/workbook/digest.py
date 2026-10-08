@@ -195,6 +195,7 @@ def _digest_sheet(name: str, frame: Any, profile: Dict[str, Any]) -> Dict[str, A
         "kind": profile.get("sheet_kind"),
         "hidden": bool(profile.get("is_hidden")),
         "title": profile.get("title"),
+        "unit_markers": list(profile.get("unit_markers") or []),
         "shape": [int(frame.shape[0]), int(frame.shape[1])],
         "blocks": [
             {"id": i, "rows": [s[0], s[1]], "cols": [s[2], s[3]], "numeric": s[4], "text": s[5]}
