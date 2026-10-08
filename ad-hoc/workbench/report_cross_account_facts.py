@@ -58,6 +58,12 @@ def _edge_line(edge: dict) -> str:
     if "values" in ev:
         extra = (f"  values={ev['values']} ceiling={ev['band'][1]:g}"
                  f" outside={ev['outside_band']} immaterial={ev.get('immaterial')}")
+    elif edge.get("kind") == "shared_counterparty":
+        extra = (f"  label={ev.get('source_label')!r} "
+                 f"normalised={ev.get('normalised_label')!r}")
+    elif edge.get("kind") == "remark_reference":
+        extra = (f"  matched={ev.get('matched_name')!r} origin={ev.get('origin')}"
+                 f" excerpt={ev.get('excerpt')!r}")
     else:
         agreed = ev.get("tied_periods") or ev.get("agreeing_periods") or []
         extra = f"  agree={agreed} differ={ev.get('differing_periods')}"

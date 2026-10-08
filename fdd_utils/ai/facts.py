@@ -12,11 +12,13 @@ So this module reads the analysis frame first and the frame second. That is a
 correction to the plan's premise, not a stylistic choice -- built the way the
 plan described it, the fact table would have been empty on every file we have.
 
-THE RULE THIS MODULE EXISTS TO ENFORCE: a relationship that has not passed a
-numeric test never reaches a prompt. Candidates are proposed in code (an
-explicit list a few items long, never an LLM), each carries its own test, and
-every one is stored with ``passed`` either way. The prompt builder in
-prompts.py reads only ``passed=True`` edges; the rejects are kept for the
+THE RULE THIS MODULE EXISTS TO ENFORCE: a relationship that has not passed its
+deterministic test never reaches a prompt. Numeric relationships have numeric
+tests; text relationships require an exact normalised identity or an explicit
+name in source text. Candidates are proposed in code (never an LLM), each
+carries its own test, and every one is stored with ``passed`` either way. The
+prompt builder in prompts.py reads only explicitly allow-listed ``passed=True``
+edge kinds; the rejects are kept for the
 internal insight summary (N3), where a wrong hypothesis costs a reviewer
 thirty seconds instead of shipping in a client deck.
 
@@ -53,6 +55,11 @@ _DAYS_PER_MONTH = 30.44
 _STUB_RATIO = 0.6
 
 _ISO_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})$")
+_COMPANY_MARKERS = (
+    "有限公司", "有限责任公司", "股份有限公司",
+    " limited", " ltd", " llc", " incorporated", " inc.", " company", " co.",
+)
+_LABEL_PUNCT_RE = re.compile(r"[\s*＊()（）\[\]【】,，.。:：;；'\"“”‘’·_\-]+")
 
 
 # --------------------------------------------------------------------------
@@ -297,6 +304,71 @@ def _has_role(role: str, key: str, df: pd.DataFrame) -> bool:
     if token in _EXACT_ROLE_KEYS.get(role, ()):
         return True
     return any(needle in text for needle in _ROLE_NEEDLES.get(role, ()))
+
+
+def _normalised_company_label(value: Any) -> Optional[str]:
+    """A conservative identity key for named counterparties, not categories."""
+    raw = str(value or "").strip()
+    lowered = raw.lower()
+    if not raw or not any(marker in lowered for marker in _COMPANY_MARKERS):
+        return None
+    # Vendor/customer codes are presentation metadata, not part of identity.
+    # The same counterparty appears with a 10-digit code in AR/AP schedules and
+    # without it in revenue/contract-liability schedules.
+    lowered = re.sub(r"^[+-]?\d{5,}\s*", "", lowered)
+    normalised = _LABEL_PUNCT_RE.sub("", lowered)
+    return normalised if len(normalised) >= 4 else None
+
+
+def _table_labels(table: Any) -> List[str]:
+    labels: List[str] = []
+
+    def add_rows(rows: Any) -> None:
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            label = str(row.get("label") or "").strip()
+            if label:
+                labels.append(label)
+            add_rows(row.get("children"))
+
+    if isinstance(table, dict):
+        add_rows(table.get("rows"))
+    return labels
+
+
+def _text_items(value: Any, origin: str, depth: int = 0) -> List[Tuple[str, str]]:
+    """Flatten only text-bearing prompt attrs, retaining where each came from."""
+    if depth > 5 or value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [(origin, text)] if text else []
+    if isinstance(value, dict):
+        out: List[Tuple[str, str]] = []
+        for item in value.values():
+            out.extend(_text_items(item, origin, depth + 1))
+        return out
+    if isinstance(value, (list, tuple)):
+        out = []
+        for item in value:
+            out.extend(_text_items(item, origin, depth + 1))
+        return out
+    return []
+
+
+def _name_in_text(name: str, text: str) -> bool:
+    name, text = str(name or "").strip(), str(text or "")
+    if not name:
+        return False
+    if re.search(r"[\u3400-\u9fff]", name):
+        return len(name) >= 2 and name in text
+    if len(name) < 4:
+        return False
+    # The hyphen matters: without it, "Operating income" matches inside
+    # "Non-operating income" and manufactures a cross-account reference.
+    return re.search(r"(?<![A-Za-z0-9-])" + re.escape(name) + r"(?![A-Za-z0-9-])",
+                     text, flags=re.IGNORECASE) is not None
 
 
 # --------------------------------------------------------------------------
@@ -693,6 +765,93 @@ def _ratio_edges(
     return edges
 
 
+def _semantic_edges(accounts: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Exact text relationships; recorded for graph use, never prompt-quoted.
+
+    ``shared_counterparty`` requires the same company-like breakdown label in
+    two account tables. ``remark_reference`` requires a prompt-carried note to
+    name another account explicitly. Neither uses fuzzy similarity: a plausible
+    text match is not evidence.
+    """
+    edges: List[Dict[str, Any]] = []
+
+    # One hub edge per additional account avoids an N² clique when the same
+    # counterparty appears in many schedules, while keeping every account
+    # connected to the identity.
+    occurrences: Dict[str, List[Tuple[str, str]]] = {}
+    for key, account in accounts.items():
+        table = (account["df"].attrs or {}).get("presentation_detail_table")
+        seen = set()
+        for label in _table_labels(table):
+            normalised = _normalised_company_label(label)
+            if normalised and normalised not in seen:
+                occurrences.setdefault(normalised, []).append((key, label))
+                seen.add(normalised)
+    for normalised, found in sorted(occurrences.items()):
+        found = sorted(found)
+        if len(found) < 2:
+            continue
+        source_key, source_label = found[0]
+        for target_key, target_label in found[1:]:
+            shared = [
+                p for p in accounts[source_key]["periods"]
+                if p in accounts[target_key]["periods"]
+            ]
+            edges.append(_edge(
+                source=f"{source_key}::{source_label}",
+                target=f"{target_key}::{target_label}",
+                kind="shared_counterparty",
+                periods=shared,
+                test="normalised company-like breakdown label is identical on both accounts",
+                passed=True,
+                evidence={
+                    "normalised_label": normalised,
+                    "source_label": source_label,
+                    "target_label": target_label,
+                },
+            ))
+
+    aliases: Dict[str, List[str]] = {}
+    for key, account in accounts.items():
+        attrs = account["df"].attrs or {}
+        candidates = (
+            str(key),
+            str(account.get("label") or ""),
+            str(attrs.get("source_sheet_name") or ""),
+            str(attrs.get("block_title") or ""),
+        )
+        aliases[key] = list(dict.fromkeys(v.strip() for v in candidates if v.strip()))
+
+    for source_key, account in accounts.items():
+        attrs = account["df"].attrs or {}
+        notes: List[Tuple[str, str]] = []
+        for attr_name in ("supporting_notes", "table_linked_remarks"):
+            notes.extend(_text_items(attrs.get(attr_name), attr_name))
+        linked_targets = set()
+        for origin, text in notes:
+            for target_key, names in aliases.items():
+                if target_key == source_key or target_key in linked_targets:
+                    continue
+                matched = next((name for name in names if _name_in_text(name, text)), None)
+                if matched is None:
+                    continue
+                edges.append(_edge(
+                    source=source_key,
+                    target=target_key,
+                    kind="remark_reference",
+                    periods=[],
+                    test="another account's exact name appears in prompt-carried remark text",
+                    passed=True,
+                    evidence={
+                        "matched_name": matched,
+                        "origin": origin,
+                        "excerpt": text[:240],
+                    },
+                ))
+                linked_targets.add(target_key)
+    return edges
+
+
 # A tiny cache so the wiring can stay one line at a per-agent-call site
 # without rebuilding the table on every one of them. Correctness never
 # depends on a hit -- a miss simply recomputes.
@@ -789,6 +948,7 @@ def build_cross_account_facts(
             links.extend(_financials_edges(
                 name, acct["series"], financials, acct["statement_type"]))
     links.extend(_ratio_edges(accounts))
+    links.extend(_semantic_edges(accounts))
 
     totals: Dict[Tuple[str, str], float] = {}
     for name, acct in accounts.items():
@@ -918,7 +1078,8 @@ def cross_account_links_for(
         return []
     order = {"receivable_days": 0, "payable_days": 1, "inventory_days": 2,
              "expense_to_revenue": 3, "parent_to_children": 4,
-             "component_to_total": 5, "tab_to_financials": 6}
+             "component_to_total": 5, "shared_counterparty": 6,
+             "remark_reference": 7, "tab_to_financials": 8}
     found = []
     for edge in (facts.get("links") or []):
         if passed_only and not edge.get("passed"):
