@@ -810,13 +810,82 @@ def build_insight_summary(
             f"{_RESOLUTION_WARN_BAND:.0f} of the {_RESOLUTION_FLOOR:.0f} acceptance floor",
             "resolution.score", [f"resolution:{mapping_key}"], "medium")
         questions.append(f"Confirm that tab '{sheet}' is the supporting schedule for {mapping_key}.")
-    unresolved = [_sheet_name_of(s) for s in
-                  ((resolution or {}).get("unresolved_sheets") or [])] if isinstance(resolution, dict) else []
-    if unresolved:
-        add(f"{len(unresolved)} sheet(s) matched no account and are absent from the deck: "
-            f"{', '.join(unresolved[:6])}" + (" ..." if len(unresolved) > 6 else ""),
-            "resolution.unresolved_sheets",
-            [f"unresolved:{s}" for s in unresolved], "medium")
+    workbook_digest = (
+        (resolution or {}).get("workbook_digest")
+        if isinstance(resolution, dict) else None
+    )
+    if isinstance(workbook_digest, dict) and workbook_digest.get("reach_marked"):
+        try:
+            from ..workbook.digest import coverage_rows
+
+            coverage = coverage_rows(workbook_digest)
+            unanalysed = sorted(
+                (
+                    row for row in coverage
+                    if row.get("status") not in ("mapped", "financials")
+                    and int(row.get("numeric_nonzero") or 0) > 0
+                    and int(row.get("reached_nonzero") or 0) == 0
+                ),
+                key=lambda row: (-int(row.get("numeric_nonzero") or 0), str(row.get("sheet") or "")),
+            )
+            if unanalysed:
+                nonzero = sum(int(row.get("numeric_nonzero") or 0) for row in unanalysed)
+                names = [str(row.get("sheet") or "") for row in unanalysed]
+                add(
+                    f"{len(unanalysed)} populated tab(s) supplied no numeric facts to account "
+                    f"analysis ({nonzero:,} non-zero cells): {', '.join(names[:6])}"
+                    + (" ..." if len(names) > 6 else ""),
+                    "workbook_digest.coverage.unanalysed_tabs",
+                    [f"coverage:{name}" for name in names],
+                    "medium",
+                )
+                questions.append(
+                    f"What are the populated tabs {', '.join(names[:6])} used for, and should "
+                    "any of their figures be included in the account analysis?"
+                )
+
+            mapped = [row for row in coverage if row.get("status") == "mapped"]
+            mapped_nonzero = sum(int(row.get("numeric_nonzero") or 0) for row in mapped)
+            mapped_reached = sum(int(row.get("reached_nonzero") or 0) for row in mapped)
+            if mapped_nonzero and mapped_reached < mapped_nonzero:
+                gaps = sorted(
+                    mapped,
+                    key=lambda row: (
+                        -(int(row.get("numeric_nonzero") or 0)
+                          - int(row.get("reached_nonzero") or 0)),
+                        str(row.get("sheet") or ""),
+                    ),
+                )
+                gap_names = [
+                    str(row.get("sheet") or "") for row in gaps
+                    if int(row.get("numeric_nonzero") or 0) > int(row.get("reached_nonzero") or 0)
+                ]
+                add(
+                    f"{mapped_reached:,} of {mapped_nonzero:,} non-zero cells in mapped "
+                    f"schedules reached account analysis ({mapped_reached / mapped_nonzero:.0%}); "
+                    f"{mapped_nonzero - mapped_reached:,} did not. Largest gaps: "
+                    f"{', '.join(gap_names[:6])}"
+                    + (" ..." if len(gap_names) > 6 else ""),
+                    "workbook_digest.coverage.mapped_cells",
+                    [f"coverage:{name}" for name in gap_names],
+                    "medium",
+                )
+                questions.append(
+                    f"Mapped schedules exposed {mapped_reached:,} of {mapped_nonzero:,} "
+                    f"non-zero cells to account analysis. Do the unreached cells in "
+                    f"{', '.join(gap_names[:6])} contain omitted supporting breakdowns?"
+                )
+        except Exception as exc:
+            logger.debug("Insight summary: workbook coverage scan failed: %s", exc)
+    else:
+        # Archived runs pre-date WorkbookDigest. Preserve their coarser signal.
+        unresolved = [_sheet_name_of(s) for s in
+                      ((resolution or {}).get("unresolved_sheets") or [])] if isinstance(resolution, dict) else []
+        if unresolved:
+            add(f"{len(unresolved)} sheet(s) matched no account and are absent from the deck: "
+                f"{', '.join(unresolved[:6])}" + (" ..." if len(unresolved) > 6 else ""),
+                "resolution.unresolved_sheets",
+                [f"unresolved:{s}" for s in unresolved], "medium")
 
     # -- 8. Accounts that will never reach a slide ----------------------
     if mappings:
