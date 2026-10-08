@@ -1,15 +1,18 @@
-"""Zero-token regression probe for workbook coverage in the insight summary.
+"""Zero-token regression and real-workbook probe for insight coverage.
 
     python ad-hoc/databook-probes/probe_insight_coverage.py
+    python ad-hoc/databook-probes/probe_insight_coverage.py path/to/databook.xlsx
 """
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from fdd_utils.ui import build_insight_summary  # noqa: E402
+from fdd_utils.workbook import process_workbook_data  # noqa: E402
 
 
 def _sheet(
@@ -39,7 +42,37 @@ def _sheet(
     }
 
 
-def main() -> int:
+def _inspect_workbook(path: str) -> int:
+    state = process_workbook_data(
+        temp_path=path,
+        entity_name="Coverage probe",
+        selected_sheet=None,
+    )
+    insight = build_insight_summary(
+        ai_results={},
+        dfs=state.get("dfs"),
+        reconciliation=state.get("reconciliation"),
+        resolution=state.get("resolution"),
+    )
+    findings = [
+        item for item in insight.get("visible_issues") or []
+        if str(item.get("basis") or "").startswith("workbook_digest.coverage")
+    ]
+    print(f"accounts={len(state.get('dfs') or {})} coverage_findings={len(findings)}")
+    for item in findings:
+        print(f"{item['basis']}: {item['issue']}")
+        print(f"  evidence={item.get('evidence_ids') or []}")
+    print("coverage_questions:")
+    for question in insight.get("client_questions") or []:
+        if (
+            question.startswith("What are the populated tabs ")
+            or question.startswith("Mapped schedules exposed ")
+        ):
+            print(f"- {question}")
+    return 0
+
+
+def _run_regression() -> int:
     digest = {
         "reach_marked": True,
         "sheets": {
@@ -102,6 +135,13 @@ def main() -> int:
     ok = all(passed for _name, passed in tests)
     print("\n" + ("ALL CASES PASS" if ok else "FAILURES ABOVE"))
     return 0 if ok else 1
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("workbook", nargs="?")
+    args = parser.parse_args()
+    return _inspect_workbook(args.workbook) if args.workbook else _run_regression()
 
 
 if __name__ == "__main__":
