@@ -12,10 +12,21 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 from fdd_utils.ui import build_insight_summary  # noqa: E402
 
 
-def _sheet(status: str, nonzero: int, reached: int, *, reason: str = ""):
+def _sheet(
+    status: str,
+    nonzero: int,
+    reached: int,
+    *,
+    reason: str = "",
+    kind: str = "",
+    hidden: bool = False,
+):
     return {
         "status": status,
         "reason": reason,
+        "kind": kind,
+        "hidden": hidden,
+        "title": "",
         "accounts": [],
         "blocks": [],
         "coverage": {
@@ -36,6 +47,21 @@ def main() -> int:
             "Unused support": _sheet("unmapped", 20, 0, reason="no mapping resolved"),
             "Financials": _sheet("financials", 30, 0),
             "Empty notes": _sheet("unmapped", 0, 0),
+            "TB": _sheet("unmapped", 1000, 0, reason="no mapping resolved"),
+            "2025": _sheet(
+                "unmapped", 100, 0,
+                reason="no_alias_scored_above_45",
+                kind="financial_schedule",
+            ),
+            "_TM_hidden support": _sheet(
+                "unmapped", 100, 0,
+                reason="no mapping resolved",
+                hidden=True,
+            ),
+            "Duplicate support": _sheet(
+                "unmapped", 100, 0,
+                reason="sheet_taken_by_AR",
+            ),
         },
     }
     insight = build_insight_summary(
@@ -60,6 +86,10 @@ def main() -> int:
         ("populated unmapped tab named", "Unused support" in str(tabs.get("issue") or "")),
         ("empty tab excluded", "Empty notes" not in str(tabs.get("issue") or "")),
         ("Financials excluded", "Financials" not in str(tabs.get("issue") or "")),
+        ("technical/source tabs excluded", all(
+            name not in str(tabs.get("issue") or "")
+            for name in ("TB", "2025", "_TM_hidden support", "Duplicate support")
+        )),
         ("mapped cell ratio", "4 of 10" in str(cells.get("issue") or "")),
         ("stable tab evidence", "coverage:Unused support" in (tabs.get("evidence_ids") or [])),
         ("unanalysed tab question", "What are the populated tabs Unused support used for" in questions),

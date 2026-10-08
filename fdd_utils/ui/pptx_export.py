@@ -456,6 +456,22 @@ _MOVEMENT_VERBS = {
     "new_increase": "appear from nil", "new_decrease": "appear from nil as a negative",
 }
 
+# WorkbookDigest deliberately indexes every sheet, including template debris,
+# raw TBs and year-stamped import tabs. Those belong in the full coverage
+# ledger, but asking a client why "UPSLIDE_Undo" was not sent to the model
+# buries the real omissions. This filter is only for the reviewer finding:
+# retain unresolved financial schedules and names that look like supporting
+# analysis, while leaving all sheets visible in section 1c.
+_COVERAGE_TECHNICAL_NAMES = frozenset({
+    "adj", "mapping", "nav", "overview", "tb", "透视表", "封面", "下拉选项source",
+})
+_COVERAGE_SUPPORT_HINT = re.compile(
+    r"(?i)(support|detail|ledger|customer|tenant|contract|cost|revenue|income|expense|"
+    r"tax|loan|lease|receivable|payable|cash[ _-]?flow|headcount|payroll|salary|"
+    r"明细|台账|核对|清单|合同|成本|收入|费用|税|借款|租约|租户|应收|应付|资金|"
+    r"人力|人工|水电|电费|水费|现金流|盈利)"
+)
+
 
 def _is_total_label(description: str) -> bool:
     low = str(description or "").strip().lower()
@@ -470,6 +486,32 @@ def _sheet_name_of(entry: Any) -> str:
     if isinstance(entry, dict):
         return str(entry.get("sheet_name") or entry.get("name") or entry)
     return str(entry)
+
+
+def _is_actionable_coverage_tab(row: Dict[str, Any]) -> bool:
+    """Whether an unread populated tab is plausible account-support material.
+
+    The complete digest remains untouched. This only prevents raw imports,
+    template helpers and duplicate mapping candidates from becoming client
+    questions while retaining unfamiliar financial schedules and conventionally
+    named supporting tabs.
+    """
+    name = str(row.get("sheet") or "").strip()
+    low = name.lower()
+    reason = str(row.get("reason") or "")
+    if not name or row.get("hidden") or reason.startswith("sheet_taken_by_"):
+        return False
+    if (
+        low in _COVERAGE_TECHNICAL_NAMES
+        or low.startswith(("_tm_", "upslide_"))
+        or "-->" in low
+        or re.fullmatch(r"(?:20\d{2}|\d{1,2}m\d{2})", low)
+    ):
+        return False
+    if reason == "normalization_error" or row.get("kind") == "financial_schedule":
+        return True
+    title = str(row.get("title") or "")
+    return bool(_COVERAGE_SUPPORT_HINT.search(f"{name} {title}"))
 
 
 def _insight_num(value: Any) -> Optional[float]:
@@ -825,6 +867,7 @@ def build_insight_summary(
                     if row.get("status") not in ("mapped", "financials")
                     and int(row.get("numeric_nonzero") or 0) > 0
                     and int(row.get("reached_nonzero") or 0) == 0
+                    and _is_actionable_coverage_tab(row)
                 ),
                 key=lambda row: (-int(row.get("numeric_nonzero") or 0), str(row.get("sheet") or "")),
             )
@@ -832,7 +875,7 @@ def build_insight_summary(
                 nonzero = sum(int(row.get("numeric_nonzero") or 0) for row in unanalysed)
                 names = [str(row.get("sheet") or "") for row in unanalysed]
                 add(
-                    f"{len(unanalysed)} populated tab(s) supplied no numeric facts to account "
+                    f"{len(unanalysed)} populated candidate support tab(s) supplied no numeric facts to account "
                     f"analysis ({nonzero:,} non-zero cells): {', '.join(names[:6])}"
                     + (" ..." if len(names) > 6 else ""),
                     "workbook_digest.coverage.unanalysed_tabs",

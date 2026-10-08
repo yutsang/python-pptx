@@ -424,6 +424,7 @@ def coverage_rows(digest: Dict[str, Any]) -> List[Dict[str, Any]]:
         nz = cov["numeric_nonzero"]
         rows.append({
             "sheet": name, "status": s.get("status"), "accounts": s.get("accounts") or [],
+            "kind": s.get("kind"), "hidden": bool(s.get("hidden")), "title": s.get("title"),
             "blocks": len(s.get("blocks") or []),
             "numeric_nonzero": nz, "reached_nonzero": cov["reached_nonzero"],
             "reached_pct": (round(100.0 * cov["reached_nonzero"] / nz, 1) if nz else None),
