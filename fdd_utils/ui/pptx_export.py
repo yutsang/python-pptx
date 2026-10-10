@@ -390,6 +390,25 @@ def build_section_summaries(
                     record = evidence_by_account.get(key) or evidence_by_account.get(str(canonical or ""))
                     if record is not None:
                         evidence.append(record)
+                if not evidence:
+                    # Nothing to check against is not the same as nothing
+                    # passing. With an empty pool every sentence carrying an
+                    # amount is "unsupported", so a run with no evidence on disk
+                    # (no run folder, an archived result) lost its whole summary
+                    # and printed the internal grounding notice on slide 1.
+                    # The summary ships unchecked and the report says so.
+                    logger.warning(
+                        "%s executive summary: no account evidence found; "
+                        "exporting it WITHOUT amount grounding", stmt)
+                    section_summaries[stmt] = summary
+                    if grounding_out is not None:
+                        grounding_out[stmt] = {
+                            "ungrounded": "no account evidence",
+                            "accounts": list(section_accounts[stmt]),
+                            "evidence_accounts": 0, "dropped_sentences": [],
+                            "deterministic_fallback": breaker_open,
+                        }
+                    continue
                 grounded, report = PowerPointGenerator.ground_section_summary(
                     summary, evidence, is_chinese=is_chinese_db)
                 report["accounts"] = list(section_accounts[stmt])

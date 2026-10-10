@@ -2691,6 +2691,9 @@ def export_and_inspect_pptx(
           f"  [{time.perf_counter() - _summary_started_at:.1f}s]")
     for _stmt, _grounding in sorted(_summary_grounding.items()):
         _dropped = len(_grounding.get("dropped_sentences") or [])
+        if _grounding.get("ungrounded"):
+            print(f"  ⚠️  {_stmt} summary NOT grounded ({_grounding['ungrounded']}) -- exported unchecked")
+            continue
         print(
             f"  {_stmt} summary grounding: "
             f"{_grounding.get('checked_amounts', 0)} amount(s) checked against "
