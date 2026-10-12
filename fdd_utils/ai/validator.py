@@ -1582,6 +1582,10 @@ _BRACKETED = re.compile(r"[（(][^（）()]*[）)]")
 _DEDUCTED = re.compile(r"(?:扣除|减去|扣减|抵减|冲减)[^，,；;、]{0,24}$")
 
 
+#: 「原值主要包括：…」 -- the short subject a list is introduced under.
+_ENUM_SUBJECT = re.compile(r"(?:^|[。；;\n])\s*([^。；;，,\n：:\d]{2,10}?)主要(?:包括|包含|为|由)")
+
+
 def _signed_runon_amounts(span: str) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     for m in _RUNON_AMT.finditer(span):
@@ -1734,6 +1738,26 @@ def _composition_findings(mapping_key: str, text: str,
     gap = total - listed
     if abs(gap) / total <= 0.01:
         return []
+    # A list introduced under its own subject composes THAT figure, not the
+    # account: 「余额为355.8万元，系原值653.3万元减累计摊销297.5万元后的净值。
+    # 原值主要包括：1）项目管理费569.5万元；2）绿化改造工程83.9万元」 breaks down
+    # the 653.3 gross cost, correctly. Held against the 355.8 net balance it
+    # was flagged as overshooting the total -- a hallucination, so the account
+    # was regenerated twice and came back the same, because it was right. The
+    # subject has to be named in front of the verb AND carry a stated amount
+    # the items tie to; a list that merely happens to equal some other figure
+    # in the text (a prior period's balance, say) is still reported.
+    for _subject in _ENUM_SUBJECT.finditer(scan):
+        _label = _subject.group(1).strip()
+        if not _label or _label in str(mapping_key) or re.search(r"余额|科目|合计|总额|本期|期末|截至", _label):
+            continue
+        for _at in re.finditer(re.escape(_label), body):
+            _stated = _RUNON_AMT.search(body[_at.end():_at.end() + 24])
+            if not _stated or _at.start() == _subject.start(1):
+                continue
+            _value = abs(float(_stated.group(1).replace(",", ""))) * _SCALE.get(_stated.group(2), 1.0)
+            if _value and abs(_value - listed) / _value <= 0.005:
+                return []
     # A "其中" drill-down is part of the item before it, not a peer of it:
     # "…非关联公司-其他169.0万元，其中主要为某税务局166.8万元；…押金83.1万元;
     # 管理层调整36.7万元；其余13.0万元…" lists four components that hit the

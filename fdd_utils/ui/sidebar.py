@@ -5,9 +5,10 @@ from ..ai import (
     FDDConfig,
     WORKBENCH_AVAILABLE_MODELS,
     build_highlighted_commentary_html,
+    default_model_choice_key,
     get_default_config_path,
     get_prompt_engine,
-    is_provider_ready,
+    list_model_choices,
     load_yaml_config,
     parse_validator_response,
     run_ai_pipeline_with_progress,
@@ -78,79 +79,33 @@ def cleanup_stale_uploads(
     return removed
 
 
-def _build_model_choices() -> list[dict]:
-    """Model choices for the sidebar dropdown, built from config.yml so a new
-    Workbench model added to config (or a renamed local chat_model) shows up
-    without a code change. Each choice: key, model_type, model_name, label, ready.
-    """
+def _build_model_choices() -> tuple[list[dict], str | None]:
+    """(choices, default key) for the sidebar dropdown. Which models appear and
+    which one a session starts on are both config.yml's decision -- see
+    list_model_choices / default_model_choice_key."""
     try:
         config = load_yaml_config(get_default_config_path())
     except Exception:
         config = {}
-
-    choices: list[dict] = []
-    wb_ready = is_provider_ready(config, "workbench")
-    wb_models = ((config.get("workbench") or {}).get("available_models")) or WORKBENCH_AVAILABLE_MODELS
-    for entry in wb_models:
-        model_id = entry.get("id") if isinstance(entry, dict) else str(entry)
-        label = entry.get("label") if isinstance(entry, dict) else str(entry)
-        if not model_id:
-            continue
-        choices.append({
-            "key": f"workbench::{model_id}",
-            "model_type": "workbench",
-            "model_name": model_id,
-            "label": f"{label} (Workbench)",
-            "ready": wb_ready,
-        })
-
-    # DashScope CN gateway — chat models only (embedding/rerank are not
-    # commentary providers; connectivity test covers those separately).
-    ds_block = config.get("dashscope") or {}
-    ds_ready = is_provider_ready(config, "dashscope")
-    for entry in (ds_block.get("available_models") or []):
-        if isinstance(entry, dict):
-            model_id = entry.get("id")
-            label = entry.get("label") or model_id
-            kind = str(entry.get("kind") or "chat").lower()
-        else:
-            model_id = str(entry)
-            label = model_id
-            kind = "chat"
-        if not model_id or kind != "chat":
-            continue
-        choices.append({
-            "key": f"dashscope::{model_id}",
-            "model_type": "dashscope",
-            "model_name": model_id,
-            "label": f"{label} (DashScope)",
-            "ready": ds_ready,
-        })
-
-    local_ready = is_provider_ready(config, "local")
-    local_chat_model = (config.get("local") or {}).get("chat_model") or "Qwen3-32B"
-    choices.append({
-        "key": "local::default",
-        "model_type": "local",
-        "model_name": None,
-        "label": f"{local_chat_model} (Local)",
-        "ready": local_ready,
-    })
-    return choices
+    choices = list_model_choices(config)
+    return choices, default_model_choice_key(config, choices)
 
 
 def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[str], str]) -> str | None:
     with st.sidebar:
-        model_choices = _build_model_choices()
+        model_choices, default_key = _build_model_choices()
+        if not model_choices:
+            st.warning("No AI model is listed in fdd_utils/config.yml — every provider is "
+                       "hidden (listed: false) or has no available_models.")
         if "model_choice_key" not in session_state:
-            # Default to the first choice (GPT-5.5) per project policy, even if
-            # it isn't configured yet — the warning below tells the user why,
-            # rather than silently switching their default to something else.
-            session_state.model_choice_key = model_choices[0]["key"] if model_choices else None
+            # config.yml's default, even if it isn't configured yet — the
+            # warning below tells the user why, rather than silently switching
+            # their default to something else.
+            session_state.model_choice_key = default_key
         choice_by_key = {c["key"]: c for c in model_choices}
         current_key = session_state.get("model_choice_key")
         if current_key not in choice_by_key and model_choices:
-            current_key = model_choices[0]["key"]
+            current_key = default_key
 
         st.markdown("**🤖 AI Model**")
         selected_key = st.selectbox(

@@ -110,6 +110,18 @@ CASES = [
      True,
      "the stated remainder is wrong: 37.3 is left, not 27.3"),
 
+    ("长期待摊费用",
+     "截至2026年3月31日，长期待摊费用余额为355.8万元，系原值653.3万元减累计摊销297.5万元后的净值。"
+     "原值主要包括：1）项目管理费569.5万元（按5年摊销）；2）绿化改造工程83.9万元（按5年摊销）。",
+     False,
+     "the list is introduced as 原值's and ties to the 653.3 stated for it, not to the net balance"),
+
+    ("长期待摊费用",
+     "截至2026年3月31日，长期待摊费用余额为355.8万元，系原值653.3万元减累计摊销297.5万元后的净值。"
+     "原值主要包括：1）项目管理费569.5万元；2）绿化改造工程183.9万元。",
+     True,
+     "same shape, but the items do NOT tie to the stated 原值 either -- still reported"),
+
 ]
 
 

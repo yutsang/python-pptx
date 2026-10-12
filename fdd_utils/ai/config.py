@@ -136,6 +136,94 @@ def resolve_effective_model_type(config: Dict[str, Any], requested: str) -> str:
     )
 
 
+#: Providers the sidebar can offer, in display order.
+_UI_PROVIDERS = (("workbench", "Workbench"), ("dashscope", "DashScope"), ("local", "Local"))
+
+
+def _provider_model_entries(config: Dict[str, Any], provider: str) -> List[Dict[str, Any]]:
+    """A provider's models as {id, label, kind, listed}, from its available_models.
+
+    ``listed: false`` on the provider block hides every model of it from the
+    UI; the same key on one entry hides that model alone. Hidden is a UI
+    matter only: the provider stays configured and callable (CLI --model,
+    compare_models.py), which is how a model is retired from the dropdown
+    while it remains the baseline new ones are measured against.
+    """
+    block = config.get(provider) or {}
+    if not isinstance(block, dict):
+        return []
+    provider_listed = block.get("listed", True) is not False
+    raw = block.get("available_models")
+    if not raw and provider == "workbench":
+        raw = WORKBENCH_AVAILABLE_MODELS
+    if provider == "local":
+        # One server, one model: the entry is the configured chat_model, and
+        # model_name stays None so the client uses the block as it stands. A
+        # local block's own available_models was never read by the dropdown
+        # and still is not -- ids listed there are not known to be served.
+        return [{"id": None, "label": block.get("chat_model") or "Qwen3-32B", "kind": "chat",
+                 "listed": provider_listed}]
+    entries: List[Dict[str, Any]] = []
+    for entry in raw or []:
+        if isinstance(entry, dict):
+            model_id, label = entry.get("id"), entry.get("label") or entry.get("id")
+            kind = str(entry.get("kind") or "chat").lower()
+            listed = provider_listed and entry.get("listed", True) is not False
+        else:
+            model_id, label, kind, listed = str(entry), str(entry), "chat", provider_listed
+        if model_id:
+            entries.append({"id": str(model_id), "label": str(label), "kind": kind, "listed": listed})
+    return entries
+
+
+def list_model_choices(config: Dict[str, Any], include_unlisted: bool = False) -> List[Dict[str, Any]]:
+    """Chat models a user can pick, read from config.yml alone.
+
+    Each choice: key ("provider::id"), model_type, model_name, label, ready,
+    listed. Embedding and rerank entries are never choices -- they are not
+    commentary models. ``include_unlisted`` adds the models config hides from
+    the UI, for tooling that benchmarks against them.
+    """
+    choices: List[Dict[str, Any]] = []
+    for provider, provider_label in _UI_PROVIDERS:
+        ready = is_provider_ready(config, provider)
+        for entry in _provider_model_entries(config, provider):
+            if entry["kind"] != "chat" or not (entry["listed"] or include_unlisted):
+                continue
+            choices.append({
+                "key": f"{provider}::{entry['id'] or 'default'}",
+                "model_type": provider,
+                "model_name": entry["id"],
+                "label": f"{entry['label']} ({provider_label})",
+                "ready": ready,
+                "listed": entry["listed"],
+            })
+    return choices
+
+
+def default_model_choice_key(config: Dict[str, Any], choices: List[Dict[str, Any]]) -> Optional[str]:
+    """The choice a new session starts on: default.ai_provider + default.model.
+
+    With only ai_provider set, that provider's chat_model if it is a choice,
+    else its first one. With neither (or naming something not on the list),
+    the first choice -- which is what the dropdown did before this key existed.
+    """
+    if not choices:
+        return None
+    default = config.get("default") or {}
+    provider = str(default.get("ai_provider") or "").strip()
+    model = str(default.get("model") or default.get("model_name") or "").strip()
+    of_provider = [c for c in choices if c["model_type"] == provider]
+    if of_provider:
+        wanted = model or str((config.get(provider) or {}).get("chat_model") or "")
+        for choice in of_provider:
+            if wanted and choice["model_name"] == wanted:
+                return choice["key"]
+        if not model:
+            return of_provider[0]["key"]
+    return choices[0]["key"]
+
+
 def get_default_config_path() -> str:
     return package_file_path(DEFAULT_CONFIG_FILENAME)
 
