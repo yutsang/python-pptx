@@ -405,14 +405,13 @@ def compile_account_briefs(
             # arithmetic and a tighter instruction against re-derivation.
             continue
         if observation.code == "CIP_TRANSFER":
-            # Internal summary only. Its figures are sums over component rows
-            # with no tie test behind them: on a real tab they came out at
-            # 7.75亿元 transferred and 13.31亿元 gross against fixed assets
-            # carried at 6.65亿元, and from a brief they went straight onto
-            # slide 1 and into the executive summary, grounded by the brief
-            # itself. A de-duplication written without sight of that tab
-            # (analysis.py) did not change either number. Back in the prompt
-            # only when gross less depreciation ties to the account.
+            # Internal summary only. A brief's figures ground themselves, so an
+            # observation goes in a prompt only if its arithmetic is tied. This
+            # one printed "原值13.31亿元" for assets with a gross cost of 7.75亿元
+            # (label collisions between the tab's 原值 and 净值 blocks), and the
+            # model put it on slide 1 and in the executive summary. The rule now
+            # drops a gross figure that does not tie; it stays out of prompts
+            # until that has held on a real run.
             continue
         payload = observation.as_dict()
         for key in observation.accounts:

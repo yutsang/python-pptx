@@ -347,7 +347,14 @@ def statement_digest(bs_is_results: Optional[Dict[str, Any]], statement: str, is
     if not lines:
         return "", []
     title = (f"【报表数据】（单位：{unit}；各列依次为 " if is_chinese else f"[STATEMENT TABLE] (in {unit}; columns: ")
-    text = title + " | ".join(headers) + ("）" if is_chinese else ")") + "\n" + "\n".join(lines)
+    # Costs sit on the Financials sheet as negatives. Unsaid, a summary read
+    # finance costs going from 2,049 to -14,633 as "falling sharply" and called
+    # them the one line supporting profit.
+    sign_note = ""
+    if statement == "IS":
+        sign_note = ("；成本费用以负数列示，负得越多表示费用越高" if is_chinese
+                     else "; costs are shown as negatives, more negative meaning a higher cost")
+    text = title + " | ".join(headers) + sign_note + ("）" if is_chinese else ")") + "\n" + "\n".join(lines)
     return text, facts
 
 

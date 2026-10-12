@@ -1021,16 +1021,30 @@ class SourceIndex:
                 return facts
             tail = columns[-1]
             descs, row_idxs, _types = _row_provenance(analysis_df)
+            previous = analysis_df[columns[-2]].tolist() if len(columns) > 1 else []
             for pos, cell in enumerate(analysis_df[tail].tolist()):
                 value = _to_float(cell) if isinstance(cell, (int, float, str)) else None
                 if value is None or value != value or not value:
                     continue
-                facts.append(_fact(
-                    value * 12.0 / months, "annualised_cell", sheet=sheet,
-                    row_idx=row_idxs[pos] if pos < len(row_idxs) else None,
-                    row_desc=descs[pos] if pos < len(descs) else None,
-                    col_label=f"{tail}{ANNUALISED_SUFFIX}",
-                ))
+                where = dict(sheet=sheet, row_idx=row_idxs[pos] if pos < len(row_idxs) else None,
+                             row_desc=descs[pos] if pos < len(descs) else None)
+                facts.append(_fact(value * 12.0 / months, "annualised_cell",
+                                   col_label=f"{tail}{ANNUALISED_SUFFIX}", **where))
+                # ...and its change on the prior period, which the significant-
+                # movements table prints as `delta` on this basis. The first run
+                # after that table changed flagged 「较2025年度下降141.9万元」 as a
+                # hallucination twice -- 利息支出 annualised less the 2025 figure,
+                # the number the prompt had just supplied -- and spent two
+                # retries on it.
+                prior = previous[pos] if pos < len(previous) else None
+                prior = _to_float(prior) if isinstance(prior, (int, float, str)) else None
+                if prior is not None and prior == prior:
+                    delta = value * 12.0 / months - prior
+                    if abs(delta) > 1e-9:
+                        for signed, tag in ((delta, ""), (-delta, " (magnitude)")):
+                            facts.append(_fact(
+                                signed, "period_movement",
+                                col_label=f"{columns[-2]} -> {tail}{ANNUALISED_SUFFIX}{tag}", **where))
         except Exception:
             return []
         return facts
@@ -1740,6 +1754,18 @@ def _composition_findings(mapping_key: str, text: str) -> List[Tuple[str, str]]:
             f"({fmt(listed)} vs {fmt(total)}) -- a parent line and the lines "
             f"that make it up have both been listed."
         )]
+    if ratio > 1.2:
+        # More listed than the account holds is not an omission -- nothing can
+        # be "left out" of a list that already overshoots. A real bullet gave a
+        # 1,062.8万元 balance as "1）押金及保证金1,034.3万元；2）某租户585.2万元":
+        # the prior year's balance and one tenant inside it, as peers. Reported
+        # as a shortfall it only coloured the sentence; as an overshoot it is
+        # certain enough to rewrite.
+        return [(
+            "COMPOSITION_EXCEEDS",
+            f"[{mapping_key}] the listed items come to {fmt(listed)}, more than the stated total of "
+            f"{fmt(total)}: an item from another period, or a part listed beside its whole."
+        )]
     return [(
         "COMPOSITION_GAP",
         f"[{mapping_key}] composition does not reach the stated total: "
@@ -1940,7 +1966,7 @@ def _composition_reviews(final_content: str) -> List[Dict[str, Any]]:
     # code the check already knew.
     for code, message in _composition_findings("", body):
         detail = message.split("] ", 1)[-1]
-        certain = code in ("COMPOSITION_UNIT_ERROR", "COMPOSITION_DOUBLE_COUNT")
+        certain = code in ("COMPOSITION_UNIT_ERROR", "COMPOSITION_DOUBLE_COUNT", "COMPOSITION_EXCEEDS")
         # Anchor on the sentence stating the total, so the deck highlights the
         # claim rather than the whole paragraph.
         match = _STATED_TOTAL.search(body)

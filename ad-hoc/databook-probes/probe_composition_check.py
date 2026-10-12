@@ -90,6 +90,13 @@ CASES = [
      False,
      "扣除 takes the current portion OFF the loan: 3.63 - 0.37 = 3.26, not 4.00"),
 
+
+    ("长期应付款",
+     "截至2026年3月31日，长期应付款余额为1,062.8万元，主要包括：1）押金及保证金1,034.3万元；"
+     "2）某企业发展585.2万元。",
+     True,
+     "items exceed the total: the prior year's balance and one tenant inside it, listed as peers"),
+
 ]
 
 

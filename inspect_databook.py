@@ -2769,6 +2769,9 @@ def export_and_inspect_pptx(
             f"{_grounding.get('pool_facts', 0)} facts; "
             f"{_dropped} unsupported sentence(s) removed"
         )
+        for _gone in (_grounding.get("dropped_sentences") or []):
+            print(f"      removed: {str(_gone.get('sentence'))[:160]}")
+            print(f"        why:   {str(_gone.get('reason'))[:200]}")
 
     # Every fdd_utils.pptx.* module sets its OWN logger to WARNING at import,
     # and a child's level wins over the parent's -- so raising only the parent

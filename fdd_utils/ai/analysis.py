@@ -436,13 +436,7 @@ def _rule_cip_transfer(views: Dict[str, AccountView]) -> List[Observation]:
         _cp, cip_end = cip.latest()
         if not transfers:
             return out
-        # A transfer line and the lines that make it up are one transfer. Summed
-        # flat, a real tab gave 7.75亿元 for a 3.87亿元 transfer and "原值13.31亿元"
-        # for assets carried at 6.65亿元 -- each exactly double -- and once the
-        # account brief put observations in front of the model the doubled
-        # figure went onto a slide as fact, grounded by the brief that made it.
-        # No period is named either: a roll-forward tab repeats the transfer in
-        # its latest column, so "本期" dated a 2024 transfer to the current stub.
+        # A transfer line and the lines that make it up are one transfer.
         for _pass in range(4):
             if len(transfers) < 2:
                 break
@@ -452,14 +446,31 @@ def _rule_cip_transfer(views: Dict[str, AccountView]) -> List[Observation]:
                 break
             transfers.pop(name)
         moved = sum(abs(v) for v in transfers.values())
+        # Gross cost is quoted only when it ties: gross less accumulated
+        # depreciation has to come back to the account. `components` is keyed by
+        # label, and a real fixed-asset tab repeats every label three times --
+        # under 原值, 累计折旧 and 净值 -- so the last block overwrote the first
+        # and "原值" came out as 13.31亿元 for assets whose gross cost is
+        # 7.75亿元 and net 6.65亿元. (The 7.75亿元 transferred was right all along:
+        # it is both phases, 4.19亿元 by 2023 and 3.55亿元 in 2024, and it equals
+        # that gross cost. An earlier note here called it doubled; it was not.)
+        # Cumulative, and said so: a roll-forward tab carries the transfer in
+        # every later column, and "本期" dated a 2024 completion to the stub.
         gross = sum(v for v in _leaf_components(fa).values() if v > 0)
+        contra = sum(abs(v) for k, v in fa.component_latest().items() if _is_contra(k))
+        _fp, fa_net = fa.latest()
+        # With no depreciation found the "tie" is just net equal to itself, and
+        # a transfer larger than the cost it landed in is the same collision
+        # seen from the other side; neither is a gross figure to print.
+        if (not gross or not contra or moved > gross * 1.02
+                or abs(gross - contra - abs(fa_net or 0.0)) > 0.02 * max(abs(fa_net or 0.0), 1.0)):
+            gross = 0.0
         share = (moved / gross * 100.0) if gross else 0.0
         out.append(Observation(
             code="CIP_TRANSFER", severity="medium", accounts=[cip.key, fa.key],
-            finding=("%s转出%s，期末余额仅%s；%s%s。"
-                     % (cip.key, _fmt(moved), _fmt(cip_end or 0.0), fa.key,
-                        ("原值%s，转出金额约占其%.0f%%" % (_fmt(gross), share)) if gross
-                        else "未提供原值明细")),
+            finding=("%s累计结转固定资产%s，期末余额%s%s。"
+                     % (cip.key, _fmt(moved), _fmt(cip_end or 0.0),
+                        ("；%s原值%s，结转金额约占其%.0f%%" % (fa.key, _fmt(gross), share)) if gross else "")),
             question="请提供在建工程转固明细及转固时点，并确认转固后的折旧起算日与竣工结算状态。",
             numbers=[moved] + ([gross] if gross else []),
             basis="CIP transfer-out components vs FA gross components",
