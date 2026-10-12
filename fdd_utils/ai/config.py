@@ -15,6 +15,11 @@ PROVIDER_REQUIRED_KEYS = {
     # KPMG Workbench gateway (Azure OpenAI-compatible). api_key doubles as the
     # 'Ocp-Apim-Subscription-Key' header value the gateway requires.
     "workbench": ["api_key", "api_base", "api_version", "chat_model"],
+    # CN AI Workbench DashScope gateway (OpenAI-compatible chat/embeddings/rerank).
+    # Validated via ad-hoc/workbench/test_dashscope_connectivity.py — bearer auth,
+    # /v1/chat/completions. embedding + rerank ids live in available_models but
+    # are NOT used by the FDD commentary pipeline.
+    "dashscope": ["api_key", "api_base", "chat_model"],
 }
 
 # Models the internal gateway serves, in UI display order; the FIRST entry is
@@ -95,7 +100,7 @@ def validate_provider_config(provider: Dict[str, Any], model_type: str) -> None:
 
 
 def is_provider_ready(config: Dict[str, Any], model_type: str) -> bool:
-    if model_type not in ("openai", "local", "deepseek", "workbench"):
+    if model_type not in ("openai", "local", "deepseek", "workbench", "dashscope"):
         return False
     provider = config.get(model_type)
     if not isinstance(provider, dict):
@@ -115,9 +120,8 @@ def resolve_effective_model_type(config: Dict[str, Any], requested: str) -> str:
     default_pref = (config.get("default") or {}).get("ai_provider")
     if default_pref and isinstance(default_pref, str):
         preference.append(default_pref.strip())
-    # workbench first: if the user configured it, an unready *requested*
-    # provider should fall back to Workbench/GPT-5.5 before local/cloud.
-    for model_type in ("workbench", "deepseek", "openai", "local"):
+    # workbench / dashscope first: enterprise gateways before public cloud / local.
+    for model_type in ("workbench", "dashscope", "deepseek", "openai", "local"):
         if model_type not in preference:
             preference.append(model_type)
 
@@ -127,7 +131,8 @@ def resolve_effective_model_type(config: Dict[str, Any], requested: str) -> str:
 
     raise ValueError(
         "No AI provider is fully configured in fdd_utils/config.yml. "
-        "Set api_base and api_key (and chat_model) for at least one of: local, deepseek, openai."
+        "Set api_base and api_key (and chat_model) for at least one of: "
+        "local, deepseek, openai, workbench, dashscope."
     )
 
 

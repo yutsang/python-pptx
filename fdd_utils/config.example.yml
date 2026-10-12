@@ -55,16 +55,18 @@ workbench:
     # - id: "<your-deployment-id>"
     #   label: "GPT-5.5"
 
-# DashScope / Alibaba-compatible gateway. Real hostname + key live only in
-# your gitignored config.yml — never commit them here. Probe with:
+# DashScope CN AI Workbench (OpenAI-compatible). Real hostname + key live only
+# in your gitignored config.yml — never commit them here. Probe with:
 #   python ad-hoc/workbench/test_dashscope_connectivity.py
+# Then set default.ai_provider: dashscope (or pick in the Streamlit sidebar).
 dashscope:
   api_key: ""
-  api_base: ""            # e.g. https://<host>/...  (no /chat/completions suffix)
-  auth: "bearer"          # bearer | workbench
+  api_base: ""            # e.g. https://<host>/aiworkbench/openAi/v1
+  auth: "bearer"          # bearer | workbench (probe only)
   charge_code: ""
   region_override: ""
   chat_model: "dashscope_qwen3.7-max"
+  max_workers: 4
   available_models:
     - id: "dashscope_qwen3.7-max"
       kind: chat

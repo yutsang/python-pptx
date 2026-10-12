@@ -15,7 +15,7 @@ arithmetic the deck was held to.
     python ask_run.py --run 20260910_171836 --json "這個 run 可以出貨嗎？"
 
 Defaults to the newest run under fdd_utils/logs. --model picks the provider
-(local | workbench | deepseek | openai), same as inspect_databook.py. Costs a
+(local | workbench | dashscope | deepseek | openai), same as inspect_databook.py. Costs a
 handful of LLM calls (one per step, at most --max-steps); the tools are free.
 
 Output names accounts and prints figures; do not put it anywhere public.
@@ -177,7 +177,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("question")
     ap.add_argument("--run", default=None, help="run id or folder (default: newest)")
-    ap.add_argument("--model", default="local", help="local | workbench | deepseek | openai")
+    ap.add_argument("--model", default="local", help="local | workbench | dashscope | deepseek | openai")
     ap.add_argument("--model-name", default=None)
     ap.add_argument("--max-steps", type=int, default=8)
     ap.add_argument("--json", action="store_true", help="print the full result as JSON")

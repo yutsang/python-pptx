@@ -56,7 +56,7 @@ class AIClient:
         Initialize AIClient with specified model and agent configuration.
 
         Args:
-            model_type: Type of model ('openai', 'local', 'deepseek', 'workbench')
+            model_type: Type of model ('openai', 'local', 'deepseek', 'workbench', 'dashscope')
             agent_name: Name of the agent ('agent_1', 'agent_2', 'agent_3', 'agent_4')
             language: Language for prompts ('Eng' or 'Chi')
             use_heuristic: Whether to use heuristic mode instead of AI
@@ -182,7 +182,10 @@ class AIClient:
             )
             model = self.config_details['chat_model']
 
-        elif self.model_type == 'deepseek':
+        elif self.model_type in ('deepseek', 'dashscope'):
+            # Both are OpenAI-compatible bearer gateways. dashscope is the CN
+            # AI Workbench host (…/aiworkbench/openAi/v1) validated by
+            # test_dashscope_connectivity.py — same client shape as deepseek.
             client = OpenAI(
                 base_url=self.config_details['api_base'],
                 api_key=self.config_details['api_key'],
@@ -698,7 +701,7 @@ class AIClient:
                 content = self._extract_stream_response_content(response)
                 usage = getattr(response, 'usage', None)
                 
-            elif self.model_type == 'deepseek':
+            elif self.model_type in ('deepseek', 'dashscope'):
                 response = response_method(**params)
                 content = self._extract_response_content(response)
                 usage = getattr(response, 'usage', None)

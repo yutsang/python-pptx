@@ -3536,7 +3536,7 @@ def main() -> int:
                          "for that tab rather than re-running the AI pipeline to check. "
                          "Only valid when path is a single file.")
     ap.add_argument("--run-ai", action="store_true", help="also run checks 5-7 (real AI calls, costs time/tokens)")
-    ap.add_argument("--model", default="local", help="model_type for --run-ai: local | workbench | deepseek | openai")
+    ap.add_argument("--model", default="local", help="model_type for --run-ai: local | workbench | dashscope | deepseek | openai")
     ap.add_argument("--model-name", default=None, help="specific model id within the provider (e.g. GPT-5.5's id)")
     ap.add_argument("--limit", type=int, default=None,
                     help="with --run-ai, cap how many mapped accounts per file go to AI "

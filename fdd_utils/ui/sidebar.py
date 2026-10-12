@@ -104,6 +104,29 @@ def _build_model_choices() -> list[dict]:
             "ready": wb_ready,
         })
 
+    # DashScope CN gateway — chat models only (embedding/rerank are not
+    # commentary providers; connectivity test covers those separately).
+    ds_block = config.get("dashscope") or {}
+    ds_ready = is_provider_ready(config, "dashscope")
+    for entry in (ds_block.get("available_models") or []):
+        if isinstance(entry, dict):
+            model_id = entry.get("id")
+            label = entry.get("label") or model_id
+            kind = str(entry.get("kind") or "chat").lower()
+        else:
+            model_id = str(entry)
+            label = model_id
+            kind = "chat"
+        if not model_id or kind != "chat":
+            continue
+        choices.append({
+            "key": f"dashscope::{model_id}",
+            "model_type": "dashscope",
+            "model_name": model_id,
+            "label": f"{label} (DashScope)",
+            "ready": ds_ready,
+        })
+
     local_ready = is_provider_ready(config, "local")
     local_chat_model = (config.get("local") or {}).get("chat_model") or "Qwen3-32B"
     choices.append({
