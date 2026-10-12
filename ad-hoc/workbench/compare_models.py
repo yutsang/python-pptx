@@ -20,13 +20,15 @@ own Validator stage, which would have each model marking its own work.
     python ad-hoc/workbench/compare_models.py for_test/<databook>.xlsx \
         --accounts 应收账款,财务费用 --models dashscope::kimi-k2.6_chat --baseline workbench
 
-    python ad-hoc/workbench/compare_models.py for_test/<databook>.xlsx --all --parallel 5
-        every account, all five models at once.
+    python ad-hoc/workbench/compare_models.py for_test/<databook>.xlsx --all
+        every account in the workbook.
 
 Cost: one full Generator -> Auditor -> Validator pass per account per model.
-Eight accounts is roughly a third of a normal run, per model. Models run
---parallel at a time (default 3), each in its own process; the report ends
-with a projection of what every account would take.
+Eight accounts is roughly a third of a normal run, per model. Models run one
+after another, each with its own progress bar and its accounts on --workers
+threads (default: the provider's max_workers, else 4). --parallel N runs N
+models side by side instead, without bars. The report ends with a projection
+of what every account would take.
 
 What the scoreboard can and cannot say. Counted for every model alike:
 unsupported figures, arithmetic the text gets wrong, retries the feedback loop
@@ -46,6 +48,19 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
+
+# A child run draws its progress bar on the console and sends everything else
+# -- the pipeline's log lines and warnings -- to its .log file. Done on the
+# file descriptors, before anything is imported: a logging handler keeps
+# whichever stderr existed when it was created, so swapping sys.stderr later
+# would leave those lines scribbling over the bar.
+_BAR_STREAM = None
+if "--child-bar" in sys.argv:
+    try:
+        _BAR_STREAM = os.fdopen(os.dup(2), "w", errors="replace")
+        os.dup2(1, 2)
+    except OSError:
+        _BAR_STREAM = None
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, _ROOT)
@@ -241,14 +256,40 @@ def _workers(config: Dict[str, Any], provider: str, requested: Optional[int]) ->
 def _run_child(config, args, state, dfs, language, keys) -> int:
     """One model, in this process; results to --child-out as JSON."""
     from fdd_utils.ai import run_ai_pipeline_with_progress
+    from fdd_utils.ai import SUBAGENT_SEQUENCE
     provider, model = _spec(config, args.child)
     workers = _workers(config, provider, args.workers)
     started = time.time()
     payload: Dict[str, Any] = {"workers": workers, "accounts": {}}
+    bar, callback = None, None
+    if args.child_bar and _BAR_STREAM is not None:
+        import threading
+        from tqdm import tqdm
+        stages = len(SUBAGENT_SEQUENCE)
+        bar = tqdm(total=stages * len(keys), file=_BAR_STREAM, ascii=True, dynamic_ncols=True,
+                   desc=(model or provider)[:28], unit="step")
+        lock, done, size, seen = threading.Lock(), {}, {}, {"n": 0}
+
+        def callback(agent_num, agent_label, completed, total_eligible, overall_step, mapping_key):
+            # The Validator runs only on accounts asserting a cause, so a stage
+            # reports its own size; the total follows it instead of stalling
+            # short of 100% (inspect_databook.py's bar, same reason).
+            with lock:
+                bar.set_postfix_str(f"{agent_label}: {mapping_key}"[:44])
+                if total_eligible:
+                    size[agent_num] = total_eligible
+                done[agent_num] = max(done.get(agent_num, 0), completed)
+                total = sum(size.get(i, len(keys)) for i in range(1, stages + 1))
+                if total != bar.total:
+                    bar.total = total
+                moved = sum(done.values()) - seen["n"]
+                if moved > 0:
+                    bar.update(moved)
+                    seen["n"] += moved
     try:
         results = run_ai_pipeline_with_progress(
             mapping_keys=list(keys), dfs=dfs, model_type=provider, model_name=model, language=language,
-            use_multithreading=True, max_workers=workers,
+            use_multithreading=True, max_workers=workers, progress_callback=callback,
             workbook_digest=(state.get("resolution") or {}).get("workbook_digest"),
         )
         for key in keys:
@@ -257,6 +298,8 @@ def _run_child(config, args, state, dfs, language, keys) -> int:
                                         "retries": int(record.get("feedback_retries") or 0)}
     except Exception as exc:  # reported in this model's column; the others still run
         payload["error"] = f"{type(exc).__name__}: {exc}"
+    if bar is not None:
+        bar.close()
     payload["seconds"] = time.time() - started
     with open(args.child_out, "w", encoding="utf-8") as handle:
         json.dump(payload, handle, ensure_ascii=False)
@@ -273,8 +316,10 @@ def main() -> int:
     ap.add_argument("--show-config", action="store_true",
                     help="print the model blocks of config.yml with keys, addresses and comments masked; no AI call")
     ap.add_argument("--all", action="store_true", help="every account in the workbook instead of the default eight")
-    ap.add_argument("--parallel", type=int, default=3,
-                    help="how many models run at once, each in its own process (default 3; 1 = one after another)")
+    ap.add_argument("--parallel", type=int, default=1,
+                    help="how many MODELS run at once (default 1: one after another, with a progress bar each). "
+                         "Threading inside a model's run is --workers and is on regardless")
+    ap.add_argument("--child-bar", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--workers", type=int, default=None,
                     help="worker threads inside each model's run; default: <provider>.max_workers, "
                          "else processing.max_workers, else 4 -- as inspect_databook.py")
@@ -337,7 +382,7 @@ def main() -> int:
     parallel = max(1, min(int(args.parallel), len(runs)))
     print(f"language={language}  accounts ({len(keys)} of {len(dfs)}): {keys}")
     print("models: " + ", ".join(_name(config, p, m) + (" [baseline]" if (p, m) == baseline else "") for p, m in runs))
-    print(f"{parallel} model(s) at a time, each in its own process")
+    print(f"{parallel} model at a time" if parallel == 1 else f"{parallel} models at a time (no progress bars)")
 
     out_dir = os.path.join(os.path.dirname(os.path.abspath(args.databook)), "model_compare")
     os.makedirs(out_dir, exist_ok=True)
@@ -345,7 +390,7 @@ def main() -> int:
     started_all = time.time()
     outcome: Dict[str, Dict[str, Any]] = {}
 
-    def _one(index: int, provider: str, model: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+    def _one(index: int, order: int, provider: str, model: Optional[str]) -> Tuple[str, Dict[str, Any]]:
         # A process per model, not a thread: the pipeline keeps one circuit
         # breaker and one logging setup per process, so two models sharing a
         # process would trip and reset each other's breaker. Starts are spaced
@@ -362,10 +407,15 @@ def main() -> int:
             command += ["--sheet", sheet]
         if args.workers:
             command += ["--workers", str(args.workers)]
-        print(f">>> started  {name}", flush=True)
+        if parallel == 1:
+            command += ["--child-bar"]
+        print(f">>> [{order}/{len(runs)}] {name}  ({_workers(config, provider, args.workers)} worker threads)"
+              + ("  -- reading the workbook, then the bar starts" if parallel == 1 else ""), flush=True)
         began = time.time()
         with open(log_path, "w", encoding="utf-8") as log:
-            code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
+            # stderr is left on the console only for the bar; the child points
+            # its own stderr at the log (see _BAR_STREAM).
+            code = subprocess.run(command, stdout=log, stderr=None if parallel == 1 else subprocess.STDOUT,
                                   env={**os.environ, "PYTHONIOENCODING": "utf-8"}).returncode
         payload: Dict[str, Any] = {}
         if os.path.exists(json_path):
@@ -382,7 +432,7 @@ def main() -> int:
                       "workers": payload.get("workers"), "records": payload.get("accounts") or {}, "log": log_path}
 
     with ThreadPoolExecutor(max_workers=parallel) as pool:
-        futures = [pool.submit(_one, i if i < parallel else 0, p, m) for i, (p, m) in enumerate(runs)]
+        futures = [pool.submit(_one, i if 1 < parallel > i else 0, i + 1, p, m) for i, (p, m) in enumerate(runs)]
         finished = dict(f.result() for f in futures)
     wall = time.time() - started_all
     for provider, model in runs:
