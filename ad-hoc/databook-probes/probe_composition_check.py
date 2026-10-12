@@ -97,6 +97,19 @@ CASES = [
      True,
      "items exceed the total: the prior year's balance and one tenant inside it, listed as peers"),
 
+
+    ("长期应付款",
+     "截至2026年3月31日，长期应付款余额为1,062.8万元，主要包括押金及保证金1,034.3万元。"
+     "与其他应付款中账龄小于1年的租赁保证金合计1,109.2万元，两项合计构成租户租赁保证金总额。",
+     False,
+     "其他应付款 is an account name, not this account's closing 其他…合计 component"),
+
+    ("应收账款",
+     "截至2026年03月31日，应收账款余额为674.5万元，主要包括：1）租金收入434.2万元，2）物业管理费收入163.8万元，"
+     "3）水电费收入39.2万元，其余27.3万元为截止性调整及补计提。",
+     True,
+     "the stated remainder is wrong: 37.3 is left, not 27.3"),
+
 ]
 
 

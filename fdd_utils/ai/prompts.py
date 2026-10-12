@@ -896,7 +896,11 @@ class PromptEngine:
                 "**绝对不要同时列出母项和它的子项**——两者相加会重复计算。若某项下面还有更细的分解，只列该项本身的金额，细项最多用于举例说明，不另计入列举。"
                 "不要逐一罗列每个交易对手；仅在某一交易对手金额重大、账龄异常或性质特殊时才具名，"
                 "并说明为何值得一提。组成达三项或以上时使用'包括：1）…；2）…；3）…'的编号句式。"
-                "**列举前先做加法**：把你打算列出的各项金额相加，与合计核对。若两者不等，差额本身就是一个必须交代的组成项——用数据中对应的名称说明它是什么（例如截止性调整、补计提、未解释性质的余额），并把它作为最后一项列出，写成'其余X万元为…'。只列出加总不等于合计的几项而不交代差额，是不完整的披露。不要强行凑数。"
+                # No example natures here. This sentence used to offer "截止性调整、
+                # 补计提" as what a difference might be, and three real runs in a
+                # row closed 应收账款 with 「其余27.3万元为截止性调整及补计提」: the
+                # example verbatim, for a 37.3万元 difference the data never names.
+                "**列举前先做加法**：把你打算列出的各项金额相加，与合计核对。若两者不等，差额本身就是一个必须交代的组成项——它的性质只能取自数据里的行名或备注原文，并把它作为最后一项列出，写成'其余X万元为…'；数据里找不到对应名称时写'其余X万元为其他零星项目'，不得自拟性质。X必须等于合计减去已列各项之和。只列出加总不等于合计的几项而不交代差额，是不完整的披露。不要强行凑数。"
             )
         return (
             contra_eng
@@ -912,9 +916,10 @@ class PromptEngine:
             "only where its size, ageing or nature makes it worth calling out, and say why. Use a "
             "numbered form -- \"comprising: 1) ...; 2) ...; 3) ...\" -- once there are three or more "
             "components. ADD THE ITEMS UP and check them against the total BEFORE writing them. Any "
-            "difference is itself a component you have to account for: name it from the data (a "
-            "cut-off adjustment, an accrual, an unexplained balance) and list it last as \"the "
-            "remaining CNYx\". Listing items that do not reach the total, without saying what the "
+            "difference is itself a component you have to account for: take its nature only from a "
+            "row label or remark in the data and list it last as \"the remaining CNYx\"; where the "
+            "data names nothing for it, write \"the remaining CNYx of other minor items\" and do not "
+            "supply a nature of your own. x must equal the total less the items listed. Listing items that do not reach the total, without saying what the "
             "rest is, is an incomplete disclosure. Do not force a reconciliation."
         )
 

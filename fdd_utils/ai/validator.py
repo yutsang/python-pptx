@@ -1611,7 +1611,11 @@ _RESIDUAL_ITEM = re.compile(
 # total and reported 488% unaccounted for -- the 42.1 that closes it was sitting
 # in the sentence, spelled 其他 rather than 其余.
 _RESIDUAL_OTHER = re.compile(
-    r"其他[^。；;]{0,40}?合计\s*(?:约)?\s*(?:为)?\s*(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)"
+    # Not 其他应付款 / 其他应收款 / 其他流动… : those are account names. A real
+    # bullet's later sentence 「与其他应付款中账龄小于1年的租赁保证金合计1,109.2万元」
+    # was read as this account's closing component, the sum came to exactly
+    # double, and the account was regenerated twice for a sentence that was fine.
+    r"其他(?!应付|应收|流动|非流动|业务|收益|权益)[^。；;]{0,40}?合计\s*(?:约)?\s*(?:为)?\s*(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)"
 )
 #: 「分别为」 introduces the SAME line across several PERIODS, not several
 #: components. A real run summed 0 + 182.1 + 150.0 + 65.9 = 398.0万元 against a
@@ -1753,6 +1757,17 @@ def _composition_findings(mapping_key: str, text: str) -> List[Tuple[str, str]]:
             f"[{mapping_key}] composition is exactly double the stated total "
             f"({fmt(listed)} vs {fmt(total)}) -- a parent line and the lines "
             f"that make it up have both been listed."
+        )]
+    if residual and abs(gap) / total <= 0.2:
+        # The bullet closed with its own remainder and the remainder is wrong:
+        # 434.2 + 163.8 + 39.2 leaves 37.3 of 674.5, and the sentence said
+        # 「其余27.3万元」. Not an omission -- there is nothing left to omit once
+        # "the rest" has been stated -- so it is arithmetic, and rewritable.
+        stated = abs(float(residual.group(2).replace(",", ""))) * _SCALE.get(residual.group(3), 1.0)
+        return [(
+            "COMPOSITION_RESIDUAL_WRONG",
+            f"[{mapping_key}] the stated remainder of {fmt(stated)} does not close the list: the items "
+            f"before it leave {fmt(stated + gap)} of the {fmt(total)} total."
         )]
     if ratio > 1.2:
         # More listed than the account holds is not an omission -- nothing can
@@ -1966,7 +1981,8 @@ def _composition_reviews(final_content: str) -> List[Dict[str, Any]]:
     # code the check already knew.
     for code, message in _composition_findings("", body):
         detail = message.split("] ", 1)[-1]
-        certain = code in ("COMPOSITION_UNIT_ERROR", "COMPOSITION_DOUBLE_COUNT", "COMPOSITION_EXCEEDS")
+        certain = code in ("COMPOSITION_UNIT_ERROR", "COMPOSITION_DOUBLE_COUNT", "COMPOSITION_EXCEEDS",
+                           "COMPOSITION_RESIDUAL_WRONG")
         # Anchor on the sentence stating the total, so the deck highlights the
         # claim rather than the whole paragraph.
         match = _STATED_TOTAL.search(body)
