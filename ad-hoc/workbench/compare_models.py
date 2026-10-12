@@ -10,6 +10,10 @@ own Validator stage, which would have each model marking its own work.
         no AI call: what the UI dropdown offers from this machine's config.yml,
         which one a session starts on, and what a comparison would run.
 
+    python ad-hoc/workbench/compare_models.py --show-config
+        no AI call: the model blocks of config.yml as written, with every key,
+        address and comment masked -- safe to paste when a block misbehaves.
+
     python ad-hoc/workbench/compare_models.py for_test/<databook>.xlsx
         baseline + every DashScope chat model, on the default accounts.
 
@@ -124,6 +128,63 @@ def _print_list(config: Dict[str, Any]) -> None:
         c["key"] for c in everything if c["model_type"] == "dashscope") or "(no dashscope chat model in config)"))
 
 
+_SECRET_KEY = re.compile(r"key$|secret|token$|passw|base$|url|host|endpoint|charge|region|subscription|tenant|proxy", re.I)
+#: Model ids are what a pasted config is compared on, and some are long enough
+#: to look like a token. Shown unless they carry an address.
+_ID_KEY = re.compile(r"^(?:id|label|kind|model|chat_model|thinking_model|embeddings_model|ai_provider|baseline)$")
+_SECRET_VALUE = re.compile(r"://|[\w-]+\.[\w-]+\.[A-Za-z]{2,}|[A-Za-z0-9+/_=-]{24,}")
+#: Top-level blocks that decide which model runs. The rest of config.yml
+#: (agents, pptx, analysis ...) has nothing to do with it and is not printed.
+_MODEL_BLOCKS = ("default", "benchmark", "workbench", "dashscope", "local", "deepseek", "openai")
+
+
+def _print_masked_config() -> None:
+    """The model blocks of config.yml as written, line-numbered, with every
+    credential, address and comment replaced -- safe to paste.
+
+    Read as TEXT, not parsed: a parsed file has already lost what most needs
+    seeing -- a block written twice, a key indented into the wrong block.
+    Masked by key name (anything like key / base / url / charge / region), and
+    again by what the value looks like (a URL, a hostname, a long token), so a
+    credential under an unexpected key name is still hidden. Comments are
+    dropped whole: a commented-out line is where an old key tends to survive.
+    """
+    path = get_default_config_path()
+    with open(path, encoding="utf-8") as handle:
+        rows = handle.read().splitlines()
+    print(f"config: {os.path.basename(path)}  ({len(rows)} lines; model blocks only, values masked)\n")
+    showing = False
+    for number, row in enumerate(rows, 1):
+        top = re.match(r"^([A-Za-z_][\w-]*)\s*:", row)
+        if top:
+            showing = top.group(1) in _MODEL_BLOCKS
+        if not showing or not row.strip():
+            continue
+        if row.lstrip().startswith("#"):
+            continue
+        entry = re.match(r"^(\s*(?:-\s+)?)([^:#\s][^:#]*?)\s*:\s*(.*)$", row)
+        if not entry:
+            # A bare list item or a continuation line: nothing names it, so it
+            # is shown only if it does not look like an address or a token.
+            body = row.split(" #", 1)[0].rstrip()
+            print(f"{number:4d}  {'<hidden>' if _SECRET_VALUE.search(body) else body}")
+            continue
+        indent, key, value = entry.groups()
+        value = re.sub(r"\s+#.*$", "", value).strip()
+        bare = value.strip("\"'")
+        if not value:
+            shown = ""
+        elif not bare:
+            shown = "<EMPTY>"
+        elif _ID_KEY.match(key) and "://" not in bare:
+            shown = value
+        elif _SECRET_KEY.search(key) or _SECRET_VALUE.search(bare):
+            shown = f"<set, {len(bare)} chars>"
+        else:
+            shown = value
+        print(f"{number:4d}  {indent}{key}: {shown}")
+
+
 def _print_provider_state(config: Dict[str, Any]) -> None:
     """Why a provider is or is not usable, by key NAME only -- never a value.
 
@@ -209,6 +270,8 @@ def main() -> int:
     ap.add_argument("--accounts", default=None, help="comma-separated account names; default: " + ",".join(DEFAULT_ACCOUNTS))
     ap.add_argument("--models", default=None, help="comma-separated provider::id (or bare id); default: every dashscope chat model")
     ap.add_argument("--baseline", default=None, help="provider or provider::id of the model in use today")
+    ap.add_argument("--show-config", action="store_true",
+                    help="print the model blocks of config.yml with keys, addresses and comments masked; no AI call")
     ap.add_argument("--all", action="store_true", help="every account in the workbook instead of the default eight")
     ap.add_argument("--parallel", type=int, default=3,
                     help="how many models run at once, each in its own process (default 3; 1 = one after another)")
@@ -221,6 +284,9 @@ def main() -> int:
     ap.add_argument("--sheet", default=None, help="Financials sheet name; default: auto-detected")
     args = ap.parse_args()
 
+    if args.show_config:
+        _print_masked_config()
+        return 0
     config = load_yaml_config(get_default_config_path())
     if args.list or not args.databook:
         _print_list(config)
