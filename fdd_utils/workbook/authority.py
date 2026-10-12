@@ -118,7 +118,14 @@ def apply_financials_authority(
         # A tab that holds figures and matches Financials in no period is not a
         # stale tab, it is the wrong pairing. An EMPTY tab is the other case
         # entirely: nothing was ever entered, and Financials is all there is.
-        if any(tab.values()) and len(differing) == len(plan["shared"]):
+        # "Agrees" here is reconciliation's own 0.5%, not the display threshold
+        # above: a real 未分配利润 tab sits 0.1-0.2% off Financials in three
+        # periods and 22% off in the fourth -- every period visibly different,
+        # none of them a wrong pairing -- and was skipped by the stricter test.
+        broken = [p for p, pair in differing.items()
+                  if abs(abs(pair["tab"]) - abs(pair["financials"]))
+                  > max(1.0, 0.005 * max(abs(pair["tab"]), abs(pair["financials"])))]
+        if any(tab.values()) and len(broken) == len(plan["shared"]):
             logger.warning("Financials authority skipped for %s: its tab agrees with Financials in no period", account)
             continue
         df = dfs.get(account)

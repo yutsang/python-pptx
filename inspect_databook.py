@@ -2754,6 +2754,7 @@ def export_and_inspect_pptx(
         model_name=model_name,
         label=Path(databook_path).stem,
         grounding_out=_summary_grounding,
+        bs_is_results=bs_is_results,
     )
     print(f"\nExecutive summaries generated: {sorted(section_summaries) or 'NONE (band will use the spliced fallback)'}"
           f"  [{time.perf_counter() - _summary_started_at:.1f}s]")

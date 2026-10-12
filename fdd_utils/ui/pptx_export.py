@@ -287,6 +287,70 @@ def batch_extract_entity_data(
     return result
 
 
+def statement_digest(bs_is_results: Optional[Dict[str, Any]], statement: str, is_chinese: bool):
+    """(text, facts) for the statement table the slide prints beside the summary.
+
+    The summary was written from the account bullets alone, with every
+    account that has a detail table cut down to its lead-in -- on an income
+    statement that is every line that matters. What was left to summarise was
+    the two accounts without tables, so a real deck's IS summary spent its
+    length on a 16.1万元 tax charge and a 2.2万元 non-operating expense, called
+    finance costs of 1,463万元 insignificant, and never mentioned revenue or
+    the loss. The table is what the reader is looking at; the summary has to
+    start from it.
+
+    The facts go to the summary's grounding pool, or every figure quoted from
+    the table would be deleted as unsupported.
+    """
+    frame = (bs_is_results or {}).get("balance_sheet" if statement == "BS" else "income_statement")
+    if not isinstance(frame, pd.DataFrame) or frame.empty or "Description" not in frame.columns:
+        return "", []
+    from ..ai.validator import _fact
+    periods = [c for c in frame.columns if str(c) != "Description"]
+    if not periods:
+        return "", []
+    months = None
+    if statement == "IS":
+        try:
+            from ..workbook.schedules import infer_partial_year_annualization
+            inferred = infer_partial_year_annualization("IS", [str(p) for p in periods], str(periods[-1]))
+            if inferred.get("annualized"):
+                months = int(inferred.get("months") or 0) or None
+        except Exception:
+            months = None
+    divisor, unit = (1e4, "人民币万元") if is_chinese else (1e6, "CNY million")
+    headers = [str(p) for p in periods]
+    if months:
+        headers[-1] += f"（仅{months}个月，未年化）" if is_chinese else f" ({months} months only, not annualised)"
+    lines, facts = [], []
+    # A balance sheet runs to thirty lines; the summary needs its totals and
+    # its largest items, not the list.
+    keep = None
+    if len(frame) > 14:
+        latest = pd.to_numeric(frame[periods[-1]], errors="coerce").abs().fillna(0)
+        is_total = frame["Description"].astype(str).map(
+            lambda text: any(word in str(text).lower() for word in ("合计", "总计", "total")))
+        keep = set(latest.nlargest(8).index) | set(frame.index[is_total])
+    for _idx, row in frame.iterrows():
+        if keep is not None and _idx not in keep:
+            continue
+        label_text = str(row.get("Description") or "").strip()
+        values = [row.get(p) for p in periods]
+        numeric = [float(v) if isinstance(v, (int, float)) and pd.notna(v) else None for v in values]
+        if not label_text or not any(numeric):
+            continue
+        lines.append(label_text + ": " + " | ".join(
+            "-" if v is None else f"{v / divisor:,.1f}" for v in numeric))
+        for period, value in zip(periods, numeric):
+            if value:
+                facts.append(_fact(value, "cell", sheet="Financials", row_desc=label_text, col_label=str(period)))
+    if not lines:
+        return "", []
+    title = (f"【报表数据】（单位：{unit}；各列依次为 " if is_chinese else f"[STATEMENT TABLE] (in {unit}; columns: ")
+    text = title + " | ".join(headers) + ("）" if is_chinese else ")") + "\n" + "\n".join(lines)
+    return text, facts
+
+
 def build_section_summaries(
     *,
     ai_results: Dict[str, Any],
@@ -296,6 +360,7 @@ def build_section_summaries(
     model_name: Optional[str] = None,
     label: str = "",
     grounding_out: Optional[Dict[str, Any]] = None,
+    bs_is_results: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
     """One LLM-written executive summary per statement, keyed "BS"/"IS".
 
@@ -357,6 +422,7 @@ def build_section_summaries(
             if not blob:
                 continue
             joined = "\n\n".join(blob)
+            statement_text, statement_facts = statement_digest(bs_is_results, stmt, is_chinese_db)
             breaker_open = False
             try:
                 from ..ai import _PIPELINE_BREAKER
@@ -379,6 +445,7 @@ def build_section_summaries(
                     language=("chinese" if is_chinese_db else "english"),
                     model_type=model_type,
                     model_name=model_name,
+                    preface=statement_text,
                 )
             if not summary:
                 summary = PowerPointGenerator.generate_section_fallback(
@@ -390,6 +457,8 @@ def build_section_summaries(
                     record = evidence_by_account.get(key) or evidence_by_account.get(str(canonical or ""))
                     if record is not None:
                         evidence.append(record)
+                if evidence and statement_facts:
+                    evidence.append({"facts": statement_facts})
                 if not evidence:
                     # Nothing to check against is not the same as nothing
                     # passing. With an empty pool every sentence carrying an
@@ -1367,6 +1436,7 @@ def batch_run_ai_for_entity(
         model_name=model_name,
         label=str(entity_name),
         grounding_out=summary_grounding,
+        bs_is_results=state.get("bs_is_results"),
     )
     result["summary_grounding"] = summary_grounding
 

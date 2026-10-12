@@ -510,6 +510,7 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                                 model_name=session_state.get("model_name"),
                                 label="interactive UI",
                                 grounding_out=summary_grounding,
+                                bs_is_results=session_state.get("bs_is_results"),
                             )
                             session_state.summary_grounding = summary_grounding
                         session_state.section_summaries = section_summaries

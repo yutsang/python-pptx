@@ -546,6 +546,7 @@ Draft summary:
         language: str = "english",
         model_type: Optional[str] = None,
         model_name: Optional[str] = None,
+        preface: str = "",
     ) -> Optional[str]:
         """Top-level helper: generate one executive summary from concatenated
         commentary for a BS or IS section. Designed to be called from the UI
@@ -563,6 +564,10 @@ Draft summary:
             generator.model_type = model_type
             generator.model_name = model_name
             generator.language = language
+            # Sent ahead of the commentary and outside its max_input_chars cut:
+            # that cut keeps only the first few accounts' text as it is, and a
+            # statement table counted against it would leave none.
+            generator._summary_preface = str(preface or "").strip()
             result = generator._generate_ai_summary(commentary, commentary, is_chinese)
             if result is None:
                 # AI timed out or unavailable — fall back to the rule-based
@@ -686,6 +691,9 @@ Draft summary:
                     "Executive summary: no source text for this page -- neither the page "
                     "commentary nor the summary source had content, so the band falls back.")
                 return None
+            preface = str(getattr(self, "_summary_preface", "") or "")
+            if preface:
+                preface += "\n\n"
 
             if is_chinese:
                 prompt = f"""请将以下财务评论改写成适合PPT摘要框的高层执行摘要。
@@ -698,9 +706,12 @@ Draft summary:
 3. 不要逐项复述账户，不要堆叠金额细节。
 4. 语气要像管理层摘要，写成一个紧凑自然的短段落。
 5. 优先删去次要说明、重复铺垫和账户层级细节，只保留最重要的业务结论、驱动和影响，但不要为了简短而牺牲目标长度。
+6. 原始内容若以【报表数据】开头，摘要必须先概括其中金额最大的几行及其跨期走势（利润表：收入、主要成本费用、利润或亏损；资产负债表：主要资产、负债及权益），再补充科目评论中的重点。金额占比很小的科目不得作为摘要主体，也不得把报表中金额重大的项目说成'影响不大'。
+7. 报表数据中标注'仅N个月，未年化'的一列不得与完整年度直接比较增减；引用的数字必须是原始内容中出现的数字。
+8. 只陈述数据和评论支持的结论，不得添加'结构优化''有效控制''基础夯实'一类没有依据的评价。
 
 原始内容：
-{source_text[:max_input_chars]}"""
+{preface}{source_text[:max_input_chars]}"""
             else:
                 prompt = f"""Write a short executive summary for a PPT summary box based on the following financial commentary.
 
@@ -714,9 +725,12 @@ Requirements:
 4. Do not list account-by-account detail or repeat many figures.
 5. Write one compact management-style paragraph. Remove secondary detail, scene-setting language, and repeated wording, but do not sacrifice the target length just to be terse.
 6. Remove secondary detail, scene-setting language, and repeated wording.
+7. If the content opens with [STATEMENT TABLE], lead with its largest lines and how they moved across the periods (income statement: revenue, main costs, profit or loss; balance sheet: main assets, liabilities and equity) before anything from the account commentary. An immaterial account must not be the subject of the summary, and a line that is large in the table must not be called insignificant.
+8. A column marked "months only, not annualised" must not be compared with a full year as an increase or decrease; every figure quoted must appear in the content.
+9. State only what the data and commentary support; add no unsupported evaluation ("optimised", "well controlled", "solid foundation").
 
 Original content:
-{source_text[:max_input_chars]}"""
+{preface}{source_text[:max_input_chars]}"""
 
             ai_helper = AIClient(
                 model_type=model_type,
