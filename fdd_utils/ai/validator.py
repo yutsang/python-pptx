@@ -566,7 +566,10 @@ _BARE_NUMBER_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")
 #: becoming row_entries), meaning the model never sees those figures. Grounding
 #: against them certifies the model correct on numbers it was never shown —
 #: measured, half their material numbers reached the pool.
-_ATTR_KEYS_WITHHELD_FROM_PROMPTS = ("working_remark_notes",)
+# financials_authority records the tab totals the Financials figures REPLACED;
+# letting those back into the pool would ground exactly the figures the
+# override exists to keep out of the deck.
+_ATTR_KEYS_WITHHELD_FROM_PROMPTS = ("working_remark_notes", "financials_authority")
 
 
 def _attr_text_blob(df) -> str:

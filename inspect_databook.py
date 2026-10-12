@@ -1845,8 +1845,9 @@ def check_every_period_tieout(bs_is_results: Dict[str, Any], dfs: Dict[str, pd.D
         for period, pair in sorted(evidence["differing_periods"].items()):
             print(f"      {period}: Tab={pair['tab']:,.0f}  Financials={pair['financials']:,.0f}")
     if broken:
-        print("\n  The commentary is written from the tab and the statement table is drawn from "
-              "Financials, so each line above is a place the two can disagree in the deck.")
+        print("\n  The statement table is drawn from Financials. An AI run sets each of these account "
+              "totals to the Financials figure (differences of 500 or more, i.e. visible on a slide), "
+              "unless the tab agrees with Financials in no period at all.")
     else:
         print("  ✅ Every tab agrees with Financials on every period it carries.")
     return edges
@@ -2149,6 +2150,13 @@ def ai_input_frames(
               f"what the Streamlit app would send for this workbook.")
         return fallback_dfs or {}, "Eng", None
     dfs = state.get("dfs") or {}
+    _authority = state.get("financials_authority") or {}
+    if _authority:
+        print(f"\nℹ️  Deck follows Financials: {len(_authority)} account total(s) set to the Financials "
+              f"figure where the tab disagreed (the tab's detail rows are unchanged):")
+        for _account, _periods in sorted(_authority.items()):
+            for _period, _pair in sorted(_periods.items()):
+                print(f"    {_account} {_period}: tab {_pair['tab']:,.0f} -> Financials {_pair['financials']:,.0f}")
     if not dfs:
         print("\n⚠️  process_workbook_data returned no frames; the AI run falls back to "
               "section 1's single-period frames (prompts will not match the app's).")

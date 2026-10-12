@@ -38,6 +38,7 @@ from ..financial_common import (
     visible_descriptions,
 )
 from ..workbook import INTERNAL_ROW_KEY
+from ..workbook.authority import authority_note
 
 _DEFAULT_PROMPTS_FILE = "fdd_utils/prompts.yml"
 _DEFAULT_MAPPINGS_FILE = "fdd_utils/mappings.yml"
@@ -2686,7 +2687,12 @@ class PromptEngine:
             "common_formatting": style_pack.common_formatting_rules(),
             "fdd_judgement": style_pack.fdd_judgement_rules(),
             "common_data_rules": style_pack.common_data_rules(data_format),
-            "period_reference_guidance": self._period_reference_guidance(df, language),
+            # The statement-basis note rides on the period guidance rather than
+            # a placeholder of its own: every stage's template already carries
+            # this one, and it is empty for an account nothing was overridden on.
+            "period_reference_guidance": " ".join(
+                part for part in (self._period_reference_guidance(df, language), authority_note(df, language)) if part
+            ),
             "variance_analysis_guidance": self._variance_analysis_guidance(
                 df, language, peer_context=kwargs.get("peer_context"), mapping_key=mapping_key,
                 thresholds=kwargs.get("analysis_thresholds"),
