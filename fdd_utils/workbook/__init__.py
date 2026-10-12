@@ -66,9 +66,11 @@ from .mapping import (  # noqa: F401
     split_accounts_by_type,
 )
 from .analysis import (  # noqa: F401
+    ANNUALISED_SUFFIX,
     MATERIAL_PCT_CHANGE,
     build_significant_movements,
     build_trend_summary,
+    partial_tail_months,
     _TOTAL_KEYWORDS,
     _change_direction,
     _period_analysis_columns,

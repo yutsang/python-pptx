@@ -55,6 +55,36 @@ workbench:
     # - id: "<your-deployment-id>"
     #   label: "GPT-5.5"
 
+# DashScope / Alibaba-compatible gateway. Real hostname + key live only in
+# your gitignored config.yml — never commit them here. Probe with:
+#   python ad-hoc/workbench/test_dashscope_connectivity.py
+dashscope:
+  api_key: ""
+  api_base: ""            # e.g. https://<host>/...  (no /chat/completions suffix)
+  auth: "bearer"          # bearer | workbench
+  charge_code: ""
+  region_override: ""
+  chat_model: "dashscope_qwen3.7-max"
+  available_models:
+    - id: "dashscope_qwen3.7-max"
+      kind: chat
+      label: "Qwen3.7-Max"
+    - id: "dashscope_deepseek-v4-pro-0813"
+      kind: chat
+      label: "DeepSeek-V4-Pro"
+    - id: "kimi-k2.6_chat"
+      kind: chat
+      label: "Kimi-K2.6"
+    - id: "dashscope_deepseek-v4-flash-0731"
+      kind: chat
+      label: "DeepSeek-V4-Flash"
+    - id: "text_v4_embedding"
+      kind: embedding
+      label: "Text-V4-Embedding"
+    - id: "qwen3_rerank"
+      kind: rerank
+      label: "Qwen3-Rerank"
+
 agents:
   # allow_thinking: false sends enable_thinking=false to Qwen3 for structured
   # stages (skips <think> for speed + clean JSON). Omit / true keeps thinking on.

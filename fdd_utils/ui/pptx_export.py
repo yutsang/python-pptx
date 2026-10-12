@@ -757,8 +757,9 @@ def build_insight_summary(
         if attrs.get("supporting_notes") or attrs.get("adjacent_detail_rows"):
             continue
         try:
-            trend = build_trend_summary(analysis) or {}
-            for item in build_significant_movements(analysis) or []:
+            _stype = str((attrs.get("integrity") or {}).get("statement_type") or "")
+            trend = build_trend_summary(analysis, statement_type=_stype) or {}
+            for item in build_significant_movements(analysis, statement_type=_stype) or []:
                 description = str(item.get("description") or "").strip()
                 if _is_total_label(description):
                     # The account's own total already has its own finding (the

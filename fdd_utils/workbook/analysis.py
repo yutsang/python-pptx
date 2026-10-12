@@ -35,6 +35,45 @@ def _period_analysis_columns(analysis_df: pd.DataFrame) -> List[Any]:
     return [col for col in analysis_df.columns[1:] if str(col) != INTERNAL_ROW_KEY]
 
 
+#: Suffix a part-year column carries once it has been scaled to twelve months.
+#: The same wording schedules.py gives the annualised projection column, so a
+#: reader meets one name for the one idea.
+ANNUALISED_SUFFIX = " annualised"
+
+
+def partial_tail_months(analysis_df: pd.DataFrame, statement_type: Optional[str] = None) -> Optional[int]:
+    """Months the LAST period column covers when it is a part-year, else None.
+
+    Only an income-statement frame can have one: a balance is a point in time
+    and a March balance is as good as a December one, while three months of
+    revenue against twelve is not a comparison at all.
+
+    Read from the frame's own date columns, NOT attrs["annualization_months"].
+    That attribute describes the selected projection column: an account whose
+    latest period is nil projects an EARLIER year, so it carries no months even
+    though its analysis frame ends on the same part-year column as every other
+    account's.
+    """
+    if analysis_df is None or getattr(analysis_df, "empty", True):
+        return None
+    if statement_type is None:
+        statement_type = ((getattr(analysis_df, "attrs", None) or {}).get("integrity") or {}).get("statement_type")
+    if str(statement_type or "").strip().upper() != "IS":
+        return None
+    periods = [str(col) for col in _period_analysis_columns(analysis_df) if not str(col).endswith("_formatted")]
+    if len(periods) < 2:
+        return None
+    from .schedules import infer_partial_year_annualization  # local: analysis<->schedules cycle
+    try:
+        inferred = infer_partial_year_annualization("IS", periods, periods[-1])
+    except Exception:
+        return None
+    months = inferred.get("months")
+    if inferred.get("annualized") and isinstance(months, (int, float)) and 0 < months < 12:
+        return int(months)
+    return None
+
+
 def _trend_direction(values: List[float]) -> str:
     deltas = [curr - prev for prev, curr in zip(values, values[1:])]
     positive = any(delta > 0 for delta in deltas)
@@ -62,7 +101,16 @@ def _select_trend_focus_row(analysis_df: pd.DataFrame) -> Optional[pd.Series]:
     return analysis_df.iloc[-1]
 
 
-def build_trend_summary(analysis_df: pd.DataFrame) -> Dict[str, Any]:
+def build_trend_summary(analysis_df: pd.DataFrame, statement_type: Optional[str] = None) -> Dict[str, Any]:
+    """The account's own line across every period, as figures the model quotes.
+
+    A part-year tail is put on a twelve-month basis before anything is derived
+    from it. Left raw, three months of an income-statement line sat beside
+    three full years and the summary reported the step down to it as the
+    series' "largest_decrease" -- a fall that is nothing but the shorter
+    period. The raw figure is kept alongside, named, because the period's own
+    amount is what a sentence about that period states.
+    """
     focus_row = _select_trend_focus_row(analysis_df)
     if focus_row is None or len(analysis_df.columns) < 3:
         return {}
@@ -72,6 +120,11 @@ def build_trend_summary(analysis_df: pd.DataFrame) -> Dict[str, Any]:
         return {}
     periods = [str(col) for col in period_cols]
     values = [float(focus_row[col] or 0) for col in period_cols]
+    tail_months = partial_tail_months(analysis_df, statement_type)
+    raw_end_value = values[-1]
+    if tail_months:
+        values[-1] = raw_end_value * 12.0 / tail_months
+        periods[-1] = periods[-1] + ANNUALISED_SUFFIX
     deltas = [
         {
             "from_period": periods[idx],
@@ -88,7 +141,7 @@ def build_trend_summary(analysis_df: pd.DataFrame) -> Dict[str, Any]:
     if largest_decrease and largest_decrease["delta"] >= 0:
         largest_decrease = None
 
-    return {
+    summary = {
         "focus_description": str(focus_row.iloc[0]),
         "series_direction": _trend_direction(values),
         "start_period": periods[0],
@@ -99,6 +152,16 @@ def build_trend_summary(analysis_df: pd.DataFrame) -> Dict[str, Any]:
         "largest_increase": largest_increase,
         "largest_decrease": largest_decrease,
     }
+    if tail_months:
+        # Only on a part-year frame, so every other account's summary -- and
+        # the prompt rendered from it -- is byte-for-byte what it was.
+        summary["end_period_months"] = tail_months
+        summary["raw_end_value"] = raw_end_value
+        summary["basis"] = (
+            f"end_value and every change into {periods[-1]} are on a 12-month basis "
+            f"(x12/{tail_months}); raw_end_value is the {tail_months}-month figure as reported"
+        )
+    return summary
 
 
 def _change_direction(prev_value: float, curr_value: float) -> str:
@@ -119,7 +182,19 @@ def _change_direction(prev_value: float, curr_value: float) -> str:
 MATERIAL_PCT_CHANGE = 30.0
 
 
-def build_significant_movements(analysis_df: pd.DataFrame, max_items: int = 3) -> List[Dict[str, Any]]:
+def build_significant_movements(analysis_df: pd.DataFrame, max_items: int = 3,
+                                statement_type: Optional[str] = None) -> List[Dict[str, Any]]:
+    """The lines that moved most between adjacent periods, percentage supplied.
+
+    The step into a part-year tail is measured on a twelve-month basis. It was
+    measured raw, and the prompt requires every material entry here to appear
+    in the commentary with percent_change quoted as supplied -- so a real deck
+    said revenue "annualised to 3,675.8万元, down 67.0% on 2,787.2万元" (the
+    annualised figure is the larger of the two; -67.0% is three months over
+    twelve), with finance costs "down 75.0%" and administrative expenses "down
+    72.9%" the same way, each followed by a cause for a fall that never
+    happened. The model was quoting what it had been handed.
+    """
     if analysis_df is None or analysis_df.empty or len(analysis_df.columns) < 3:
         return []
 
@@ -127,10 +202,15 @@ def build_significant_movements(analysis_df: pd.DataFrame, max_items: int = 3) -
     if len(period_cols) < 2:
         return []
     periods = [str(col) for col in period_cols]
+    tail_months = partial_tail_months(analysis_df, statement_type)
+    if tail_months:
+        periods[-1] = periods[-1] + ANNUALISED_SUFFIX
     movement_candidates: List[Dict[str, Any]] = []
     for _, row in analysis_df.iterrows():
         description = str(row.iloc[0]).strip()
         row_values = [float(row[col] or 0) for col in period_cols]
+        if tail_months:
+            row_values[-1] = row_values[-1] * 12.0 / tail_months
         best_movement = None
         for idx in range(len(row_values) - 1):
             prev_value = row_values[idx]
@@ -201,6 +281,12 @@ def build_significant_movements(analysis_df: pd.DataFrame, max_items: int = 3) -
                 ),
             }
         )
+        if tail_months:
+            # Present on every row of a part-year frame, absent everywhere
+            # else: a column that exists on some rows only prints as NaN.
+            significant[-1]["basis"] = (
+                f"annualised x12/{tail_months}" if item["to_period"] == periods[-1] else "as reported"
+            )
         if len(significant) >= max_items:
             break
     return significant

@@ -27,7 +27,10 @@ from ..financial_display_format import (
     stringify_display_dataframe,
 )
 from ..financial_json_converter import df_to_json_str
-from ..workbook import build_significant_movements, build_trend_summary, find_mapping_key
+from ..workbook import (
+    ANNUALISED_SUFFIX, build_significant_movements, build_trend_summary, find_mapping_key,
+    partial_tail_months,
+)
 from ..financial_common import (
     get_pipeline_result_text,
     load_yaml_file,
@@ -461,6 +464,53 @@ class PromptEngine:
         formatted_analysis_df.attrs.update(df.attrs)
         formatted_analysis_df.attrs.update(unit_attrs)
         return formatted_analysis_df
+
+    @staticmethod
+    def _with_annualised_tail_column(formatted_df: Optional[pd.DataFrame], analysis_df: Optional[pd.DataFrame],
+                                     statement_type: str) -> Optional[pd.DataFrame]:
+        """Put the part-year tail's twelve-month figures in the table the model reads.
+
+        The partial-period instruction has always said the annualised figures
+        are "pre-calculated in the '<period> annualised' column", and no table
+        in the prompt had such a column: the analysis table carries the raw
+        part-year amounts, and the only annualised figures anywhere were inside
+        the side-remark rows, in base units, for the rows that happen to have a
+        remark. Told to compare on a basis it was not given, the model built its
+        own -- the annualised total it could find against a raw component, or a
+        raw component against a full year.
+
+        Added to the RENDERED copy only. The analysis frame itself is read by
+        code that takes its last column to be the latest period, and by the
+        verifier's pool, which gets these figures from validator.py instead.
+        """
+        if not isinstance(formatted_df, pd.DataFrame) or formatted_df.empty:
+            return formatted_df
+        if not isinstance(analysis_df, pd.DataFrame) or len(analysis_df) != len(formatted_df):
+            return formatted_df
+        months = partial_tail_months(analysis_df, statement_type)
+        if not months:
+            return formatted_df
+        period_cols = [
+            col for col in list(analysis_df.columns)[1:]
+            if str(col) != INTERNAL_ROW_KEY and not str(col).endswith("_formatted")
+        ]
+        if not period_cols:
+            return formatted_df
+        tail = period_cols[-1]
+        shown = [col for col in formatted_df.columns if str(col) == str(tail)]
+        if not shown:
+            return formatted_df
+        divisor = formatted_df.attrs.get("display_unit_divisor")
+        decimals = int(formatted_df.attrs.get("display_unit_decimals") or 0)
+        annualised = (pd.to_numeric(analysis_df[tail], errors="coerce") * 12.0 / months).tolist()
+        if divisor:
+            cells = [format_in_unit(value, float(divisor), decimals) for value in annualised]
+        else:
+            cells = [None if pd.isna(value) else round(float(value), 0) for value in annualised]
+        out = formatted_df.copy()
+        out.attrs = dict(formatted_df.attrs)
+        out.insert(list(out.columns).index(shown[0]) + 1, f"{tail}{ANNUALISED_SUFFIX}", cells)
+        return out
 
     @staticmethod
     def _label_with_unit(label: str, unit_label: str, language: str) -> str:
@@ -2132,11 +2182,16 @@ class PromptEngine:
                 partial_note = ""
                 if is_partial:
                     months_int = int(annualization_months)
-                    annualized_label = f"{period_label}（年化）"
+                    # Names the column by the header it actually has. This
+                    # used to say 【<期间>（年化）】列, a header no table carried.
+                    annualized_label = f"{effective_date}{ANNUALISED_SUFFIX}"
                     partial_note = (
                         f"最新期间为截至{effective_date}的{months_int}个月（期间标签：{period_label}），属于不完整年度。"
-                        f"跨期比较时，请优先使用年化后数据（x12/{months_int}，已预计算为【{annualized_label}】列）进行同口径对比，"
-                        "并在评论中注明该数据已年化。"
+                        f"分析期间表中【{effective_date}】列是这{months_int}个月的实际发生额（未年化），"
+                        f"【{annualized_label}】列是系统已换算好的年化金额（x12/{months_int}）。"
+                        "与完整年度比较时只能使用年化列，且金额与百分比必须同口径："
+                        "趋势摘要和重大变动中标注 annualised 的金额及百分比已按年化口径算好，直接引用，"
+                        f"不得用未年化的{months_int}个月金额去除全年金额得出增减幅度。引用年化金额时注明'年化'。"
                     )
                 return (
                     "这是利润表科目。首句必须以构成开篇，描述该科目主要包含哪些项目"
@@ -2177,11 +2232,16 @@ class PromptEngine:
             partial_note = ""
             if is_partial:
                 months_int = int(annualization_months)
-                annualized_label = f"{period_label} annualised"
+                # Names the column by the header it actually has. This used to
+                # say '<label> annualised', a header no table carried.
+                annualized_label = f"{effective_date}{ANNUALISED_SUFFIX}"
                 partial_note = (
                     f" The latest period covers {months_int} months ending {effective_date} (period label: {period_label}) — this is a partial year. "
-                    f"For cross-year comparisons, use the annualized figures (×12/{months_int}), pre-calculated in the '{annualized_label}' column, "
-                    f"and note the annualization in the commentary."
+                    f"In the analysis-periods table the '{effective_date}' column is the {months_int}-month amount as reported (NOT annualised) and the "
+                    f"'{annualized_label}' column is the same line on a 12-month basis (×12/{months_int}), already computed. "
+                    f"A comparison against a full year may only use the annualised column, and its amount and percentage must share one basis: "
+                    f"the figures and percentages marked annualised in the trend summary and significant movements are already on that basis — quote them. "
+                    f"Never divide the raw {months_int}-month amount by a full-year amount to state a change. Say 'annualised' whenever an annualised figure is quoted."
                 )
             return (
                 f"This is an income-statement item. The FIRST sentence must lead with COMPOSITION — describe what the line mainly comprises "
@@ -2227,6 +2287,11 @@ class PromptEngine:
         rhs_remark_summary = self.summarize_rhs_remarks(adjacent_detail_rows, language)
         format_language = language or str(df.attrs.get("report_language") or "").strip()
         formatted_analysis_df = self._format_analysis_prompt_df(analysis_df, format_language)
+        # From the account's own attrs: analysis_df is a filtered copy, and a
+        # copy is not guaranteed to carry them.
+        analysis_statement_type = str((df.attrs.get("integrity") or {}).get("statement_type") or "")
+        formatted_analysis_df = self._with_annualised_tail_column(
+            formatted_analysis_df, analysis_df, analysis_statement_type)
         normalized_prompt_df = self._normalize_prompt_dataframe(df, language)
         normalized_analysis_df = self._normalize_prompt_dataframe(formatted_analysis_df, language)
         normalized_supporting_notes = self._normalize_prompt_value(supporting_notes, language)
@@ -2246,9 +2311,12 @@ class PromptEngine:
         analysis_label = self._label_with_unit(analysis_label, unit_label, language)
         normalized_analysis_label = self._normalize_prompt_value(analysis_label, language)
         normalized_mapping_key = self._normalize_prompt_value(mapping_key, language)
-        trend_summary = build_trend_summary(analysis_df) if isinstance(analysis_df, pd.DataFrame) and not analysis_df.empty else {}
+        trend_summary = (
+            build_trend_summary(analysis_df, statement_type=analysis_statement_type)
+            if isinstance(analysis_df, pd.DataFrame) and not analysis_df.empty else {}
+        )
         significant_movements = (
-            build_significant_movements(analysis_df)
+            build_significant_movements(analysis_df, statement_type=analysis_statement_type)
             if isinstance(analysis_df, pd.DataFrame) and not analysis_df.empty
             else []
         )

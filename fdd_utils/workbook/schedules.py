@@ -2022,8 +2022,10 @@ def normalize_financial_schedule(
         row_entries=row_entries,
         analysis_stage=analysis_stage,
     )
-    trend_summary = build_trend_summary(prompt_analysis_df)
-    significant_movements = build_significant_movements(prompt_analysis_df)
+    # statement_type by argument: the frame's own attrs are not attached until
+    # the end of this function, and without it a part-year tail is not seen.
+    trend_summary = build_trend_summary(prompt_analysis_df, statement_type=statement_type or "")
+    significant_movements = build_significant_movements(prompt_analysis_df, statement_type=statement_type or "")
     supporting_notes = [
         note
         for note in _extract_supporting_notes(df, desc_col_idx, columns, data_start_row, data_end_row)
