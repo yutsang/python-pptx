@@ -1852,6 +1852,66 @@ def check_every_period_tieout(bs_is_results: Dict[str, Any], dfs: Dict[str, pd.D
     return edges
 
 
+def explain_tieout_differences(edges: List[Dict[str, Any]], digest: Optional[Dict[str, Any]],
+                               dfs: Dict[str, pd.DataFrame], per_target: int = 6) -> None:
+    """Where else in the workbook each disagreeing figure sits.
+
+    4a says a tab and Financials differ; it cannot say why. The workbook
+    usually can: the Financials figure is some other tab's total, or the gap
+    itself is a labelled line on an adjustment tab or the tab's own Check row.
+    Every cell of every sheet is already indexed, so this looks the three
+    numbers up -- the Financials value, the tab value and the gap -- and prints
+    the labels beside each hit. It reports positions; it does not conclude.
+    """
+    broken = [e for e in (edges or []) if (e.get("evidence") or {}).get("differing_periods")]
+    sheets = (digest or {}).get("sheets") or {}
+    if not broken or not sheets:
+        return
+    _hr("4a-why. WHERE EACH DISAGREEING FIGURE ALSO APPEARS — every tab searched, values in 元 or 千元")
+
+    def hits(target: float, skip: set) -> List[str]:
+        if abs(target) < 1000:      # too small to be distinctive; would match noise
+            return []
+        found = []
+        for name, entry in sheets.items():
+            if name in skip:
+                continue
+            cells = entry["cells"]
+            row_labels, col_labels = entry.get("row_labels", {}), entry.get("col_labels", {})
+            for r, c, v in zip(cells["r"], cells["c"], cells["v"]):
+                if not v:
+                    continue
+                if abs(abs(v) - abs(target)) <= max(0.5, abs(target) * 1e-6):
+                    scale = "元"
+                elif abs(abs(v) * 1000 - abs(target)) <= max(1.0, abs(target) * 1e-6):
+                    scale = "千元"
+                else:
+                    continue
+                found.append(f"{name!r} row {r + 1} col {c + 1} = {v:,.2f} ({scale})  "
+                             f"row label={row_labels.get(str(r))!r}  column label={col_labels.get(str(c))!r}")
+        return found
+
+    financial_sheets = {n for n, e in sheets.items() if e.get("status") == "financials"}
+    for edge in broken:
+        account = str(edge.get("source") or "")
+        own = (getattr(dfs.get(account), "attrs", {}) or {}).get("source_sheet_name") or account
+        for period, pair in sorted(edge["evidence"]["differing_periods"].items()):
+            tab_value, fin_value = float(pair["tab"]), float(pair["financials"])
+            gap = abs(abs(tab_value) - abs(fin_value))
+            print(f"\n  {account} {period}: Tab={tab_value:,.0f}  Financials={fin_value:,.0f}  gap={gap:,.0f}")
+            for title, target, skip in (
+                ("the Financials figure, outside the Financials sheet", fin_value, financial_sheets),
+                ("the tab figure, outside its own tab", tab_value, {own}),
+                ("the gap itself, anywhere", gap, set()),
+            ):
+                found = hits(target, skip)
+                print(f"    {title}: {len(found)} cell(s)")
+                for line in found[:per_target]:
+                    print(f"      {line}")
+                if len(found) > per_target:
+                    print(f"      ... and {len(found) - per_target} more")
+
+
 # ---------------------------------------------------------------------------
 # 5-7. AI-dependent checks
 # ---------------------------------------------------------------------------
@@ -3140,6 +3200,11 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             )
     except Exception as _exc:
         print(f"\n  (statement-table unit check skipped: {type(_exc).__name__}: {_exc})")
+
+    try:
+        explain_tieout_differences(period_tieout, extraction_resolution.get("workbook_digest"), dfs)
+    except Exception as _exc:
+        print(f"\n  (tie-out explanation skipped: {type(_exc).__name__}: {_exc})")
 
     combined_bs_recon = pd.concat(bs_recon_parts, ignore_index=True) if bs_recon_parts else None
     combined_is_recon = pd.concat(is_recon_parts, ignore_index=True) if is_recon_parts else None

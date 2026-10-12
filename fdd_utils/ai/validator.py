@@ -1518,6 +1518,22 @@ _ENUM_ITEM = re.compile(r"[1-9]）\s*[^；;]*?(-?[\d,]+(?:\.\d+)?)\s*(万元|亿
 _ENUM_RUNON = re.compile(r"(?:主要(?:包括|包含|为|系)|包括|包含)([^。]*)")
 _RUNON_AMT = re.compile(r"(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 _BRACKETED = re.compile(r"[（(][^（）()]*[）)]")
+# A component introduced by 扣除 is taken OFF the ones before it. 「长期借款余额为
+# 3.26亿元，主要包括工行借款3.63亿元，扣除一年内到期的非流动负债0.37亿元」 is
+# 3.63 - 0.37 = 3.26 and ties exactly; added, it came to 4.00亿元 and a real run
+# reported "-7,400.0万元 (23%) unaccounted for". Bounded to the clause the
+# amount sits in, so a 扣除 earlier in the sentence does not reach a later item.
+_DEDUCTED = re.compile(r"(?:扣除|减去|扣减|抵减|冲减)[^，,；;、]{0,24}$")
+
+
+def _signed_runon_amounts(span: str) -> List[Tuple[str, str]]:
+    out: List[Tuple[str, str]] = []
+    for m in _RUNON_AMT.finditer(span):
+        value, unit = m.group(1), m.group(2)
+        if not value.startswith("-") and _DEDUCTED.search(span[:m.start()]):
+            value = "-" + value
+        out.append((value, unit))
+    return out
 # "其余X万元为…" is the closing component _composition_guidance explicitly asks
 # for ("收尾必须写成'其余X万元为…'"). Not counting it made the checker
 # contradict the instruction: a bullet that complied was flagged for the very
@@ -1603,8 +1619,8 @@ def _composition_findings(mapping_key: str, text: str) -> List[Tuple[str, str]]:
             # guard below -- and shipped as "93% unaccounted for", the run's only
             # high-severity clause flag. A bracketed figure that repeats nothing
             # is kept: it may be a component in its own right.
-            outside = _RUNON_AMT.findall(_BRACKETED.sub(" ", span))
-            inside = [a for b in _BRACKETED.findall(span) for a in _RUNON_AMT.findall(b)]
+            outside = _signed_runon_amounts(_BRACKETED.sub(" ", span))
+            inside = [a for b in _BRACKETED.findall(span) for a in _signed_runon_amounts(b)]
             items = outside + [a for a in inside if a not in outside]
     # The closing "其余X万元为…" is a component like any other. Added here
     # rather than inside the two patterns above because it can sit in either

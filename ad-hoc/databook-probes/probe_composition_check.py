@@ -83,6 +83,13 @@ CASES = [
      "期限1年，利率6%。",
      False,
      "one component, restated in brackets as its own currency conversion -- not two"),
+
+    ("长期借款",
+     "截至2026年03月31日，长期借款余额为3.26亿元，主要包括工行借款3.63亿元，"
+     "扣除一年内到期的非流动负债0.37亿元。",
+     False,
+     "扣除 takes the current portion OFF the loan: 3.63 - 0.37 = 3.26, not 4.00"),
+
 ]
 
 
