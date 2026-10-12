@@ -1649,8 +1649,28 @@ def run_agent_stage(
 
 def set_final_fallbacks(results: Dict[str, Dict[str, str]]):
     """Populate `final` from the latest successful agent output."""
+    from .validator import _composition_reviews, patch_stated_remainder
     for key in results:
-        results[key]["final"] = get_pipeline_result_text(results[key])
+        final = get_pipeline_result_text(results[key])
+        # The one deterministic rewrite: a stated remainder that does not close
+        # its own list (see patch_stated_remainder for why this is not a retry).
+        try:
+            patched, note = patch_stated_remainder(final) if not str(key).startswith("__") else (final, None)
+        except Exception:
+            patched, note = final, None
+        if note:
+            for stage in ("subagent_4", "subagent_2"):
+                if results[key].get(stage) == final:
+                    results[key][stage] = patched
+            validation = results[key].get("agent_4_validation")
+            if isinstance(validation, dict):
+                validation["final_content"] = patched
+                kept = [r for r in (validation.get("clause_reviews") or [])
+                        if not (isinstance(r, dict) and str(r.get("code", "")).startswith("COMPOSITION_"))]
+                validation["clause_reviews"] = kept + _composition_reviews(patched)
+            results[key]["remainder_patch"] = note
+            final = patched
+        results[key]["final"] = final
 
 
 def settle_subtable_selection(

@@ -1637,7 +1637,39 @@ def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
     return [message for _code, message in _composition_findings(mapping_key, text)]
 
 
-def _composition_findings(mapping_key: str, text: str) -> List[Tuple[str, str]]:
+def patch_stated_remainder(text: str) -> Tuple[str, Optional[str]]:
+    """Rewrite a wrong 「其余X」 to the figure it has to be.
+
+    A stated remainder has exactly one right value -- the total less the items
+    listed before it -- so this is arithmetic, not a judgement, and asking the
+    model again does not get it: a real 应付账款 bullet wrote 「其余60.6万元」
+    for 26.6万元, was sent back twice with the correct figure in the feedback,
+    and returned 60.6万元 both times. Only the number changes; the words the
+    model put after it are left as they are. Returns (text, note), note None
+    when nothing was changed.
+    """
+    body = str(text or "")
+    details: Dict[str, Any] = {}
+    findings = _composition_findings("", body, details=details)
+    if not findings or findings[0][0] != "COMPOSITION_RESIDUAL_WRONG" or not details:
+        return body, None
+    start, end = details["span"]
+    written = body[start:end]
+    decimals = len(written.split(".", 1)[1]) if "." in written else 0
+    scale = _SCALE.get(details["unit"], 1.0)
+    correct = details["correct"]
+    if correct <= 0 or details.get("negative"):
+        return body, None
+    replacement = f"{correct / scale:,.{decimals}f}"
+    patched = body[:start] + replacement + body[end:]
+    # Never leave it worse: the patched text must itself add up.
+    if _composition_findings("", patched):
+        return body, None
+    return patched, f"remainder {written}{details['unit']} -> {replacement}{details['unit']}"
+
+
+def _composition_findings(mapping_key: str, text: str,
+                          details: Optional[Dict[str, Any]] = None) -> List[Tuple[str, str]]:
     """Does an enumerated composition actually reach the total it states?
 
     The model is asked to add its items up before writing them and to account
@@ -1764,6 +1796,9 @@ def _composition_findings(mapping_key: str, text: str) -> List[Tuple[str, str]]:
         # 「其余27.3万元」. Not an omission -- there is nothing left to omit once
         # "the rest" has been stated -- so it is arithmetic, and rewritable.
         stated = abs(float(residual.group(2).replace(",", ""))) * _SCALE.get(residual.group(3), 1.0)
+        if details is not None:
+            details.update(span=(residual.start(2), residual.end(2)), unit=residual.group(3),
+                           correct=stated + gap, negative=bool(residual.group(1)))
         return [(
             "COMPOSITION_RESIDUAL_WRONG",
             f"[{mapping_key}] the stated remainder of {fmt(stated)} does not close the list: the items "
@@ -2066,8 +2101,10 @@ def _composition_reviews(final_content: str) -> List[Dict[str, Any]]:
     # code the check already knew.
     for code, message in _composition_findings("", body):
         detail = message.split("] ", 1)[-1]
-        certain = code in ("COMPOSITION_UNIT_ERROR", "COMPOSITION_DOUBLE_COUNT", "COMPOSITION_EXCEEDS",
-                           "COMPOSITION_RESIDUAL_WRONG")
+        certain = code in ("COMPOSITION_UNIT_ERROR", "COMPOSITION_DOUBLE_COUNT", "COMPOSITION_EXCEEDS")
+        # COMPOSITION_RESIDUAL_WRONG is deliberately NOT here: it is corrected
+        # in code when the final text is settled (patch_stated_remainder), and
+        # regenerating for it bought the same wrong figure twice.
         # Anchor on the sentence stating the total, so the deck highlights the
         # claim rather than the whole paragraph.
         match = _STATED_TOTAL.search(body)

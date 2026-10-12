@@ -776,8 +776,18 @@ class _SplittingMixin:
         text = (commentary or "").strip()
         idx = text.lower().find(handoff.lower())
         if idx < 0:
+            # The model did not write the handoff phrase. The cap on what sits
+            # above the table stays, but what it cuts off now goes BELOW the
+            # table instead of nowhere. It used to be returned as (lead, ""),
+            # so on a real deck 营业收入 -- 281 characters, no handoff -- stopped
+            # at 「…拉低出租率；」 and lost the second phase's occupancy, and
+            # 营业成本 lost its whole account of who is paid what, each beside a
+            # half-empty slide.
             lead_limit = 220 if is_chinese else 340
-            return _truncate_text_at_boundary(text, lead_limit, is_chinese), ""
+            lead_in = _truncate_text_at_boundary(text, lead_limit, is_chinese)
+            rest = text[len(lead_in):].strip() if text.startswith(lead_in) else ""
+            post_limit = 450 if is_chinese else 700
+            return lead_in, _truncate_text_at_boundary(rest, post_limit, is_chinese)
         split_at = idx + len(handoff)
         lead_in = text[:split_at].strip()
         post_table = text[split_at:].strip()

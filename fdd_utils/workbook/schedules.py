@@ -800,6 +800,24 @@ def _is_pure_working_artifact(note: str, block_title: str = "") -> bool:
     return len(residue.strip()) < 2
 
 
+def _reads_as_sentence(description: str) -> bool:
+    """A label long enough to be prose and punctuated like it. 、 is not counted:
+    it separates the items of a real line name (卸货平台、楼梯间、墙面…漏水维修)."""
+    label = str(description or "").strip()
+    return len(label) >= 12 and any(mark in label for mark in "，。；,;")
+
+
+def _note_with_values(description: str, values: Dict[str, Optional[float]]) -> str:
+    label = str(description or "").strip()
+    parts = []
+    for key, value in values.items():
+        if value:
+            part = f"{str(key).split('|', 1)[-1]}: {value:,.0f}"
+            if part not in parts:
+                parts.append(part)
+    return f"{label} | " + " | ".join(parts) if parts else label
+
+
 def _build_working_remark_note(description: str, values: Dict[str, Optional[float]]) -> Optional[str]:
     label = str(description or "").strip()
     if not _looks_like_working_remark(label):
@@ -1971,6 +1989,7 @@ def normalize_financial_schedule(
     row_entries: List[Dict[str, Any]] = []
     working_remark_notes: List[str] = []
     last_label = None
+    _seen_account_total = False
     for row_idx in range(data_start_row, data_end_row):
         description = _cell_text(df.iloc[row_idx, desc_col_idx])
         numeric_values = {column["key"]: _coerce_numeric(df.iloc[row_idx, column["col_idx"]]) for column in columns}
@@ -1990,6 +2009,20 @@ def normalize_financial_schedule(
         if working_remark_note:
             working_remark_notes.append(working_remark_note)
             continue
+        # Below the account's total, a "description" that reads as a sentence is
+        # a preparer's note with a figure beside it, not a line of the account.
+        # A real tab carried 「还款计划在管报package里提供了，和管理层做的重分类金额
+        # 一致」 with 362,794,258 next to it -- the whole loan, under a 37,047,250
+        # total -- and three decks running explained that row: "新增3.63亿元",
+        # "另有3.63亿元…重分类", "一项3.63亿元的负债为新增分类项". The text itself
+        # still reaches the model through supporting_notes; only its use as a
+        # data row ends. On four other workbooks this removes three rows, all
+        # of them questions to management.
+        if _seen_account_total and _reads_as_sentence(effective_description):
+            working_remark_notes.append(_note_with_values(effective_description, values))
+            continue
+        if _row_type(effective_description) == "total":
+            _seen_account_total = True
         row_entries.append(
             {
                 "row_idx": row_idx,
