@@ -1787,9 +1787,122 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
         out.append(_combine_verdict(clause, det, llm, highlight_min_conf, span=(start, end)))
     out.extend(_composition_reviews(final_content))
     out.extend(_date_reviews(final_content, df, source=source))
+    try:
+        out.extend(_percent_claim_reviews(final_content))
+    except Exception:
+        pass  # a new detector must never cost an account its other verdicts
     if direction_findings is not None:
         direction_findings.extend(collect_direction_findings(final_content, df))
     return out
+
+
+_PCT_CLAIM = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_PCT_UP = re.compile(r"增长|增加|上升|增幅|回升|升幅|increase|rose|up\b", re.IGNORECASE)
+_PCT_DOWN = re.compile(r"下降|减少|降幅|降低|下滑|decrease|fell|declin|down\b", re.IGNORECASE)
+_PCT_VERSUS = re.compile(r"较|相比|对比|比|与|against|compared|versus|\bon\b", re.IGNORECASE)
+_PCT_FROM = re.compile(r"(?:由|从|自|from)\s*[^，,。；;]{0,12}$", re.IGNORECASE)
+_PCT_TO = re.compile(r"至|到|\bto\b", re.IGNORECASE)
+_NEGATIVE_LEAD = re.compile(r"(?:负|-|−)\s*$")
+_PCT_SENTENCE = re.compile(r"(?:[^。；;！？!?\n.]|\.(?!\s+[A-Z]))+")
+
+
+def percent_claim_findings(text: str) -> List[Dict[str, Any]]:
+    """Sentences whose own two amounts do not make the percentage they state.
+
+    「年化后为3,675.8万元，较2025年度的2,787.2万元下降67.0%」 needs no source data
+    to be wrong: 3,675.8 is the larger figure. Every amount in it grounds, so
+    amount-grounding passes it, and it shipped on the most important line of a
+    real income statement, with a cause attached to the fall it invented.
+
+    Deliberately narrow, because a hit costs a regeneration. A sentence is
+    judged only when it has ONE readable comparison:
+      * a percentage with a direction word directly in front of it;
+      * exactly the two nearest amounts before that word, at most 40 characters
+        apart, joined either by 较/比/与 (current, then base) or by 由…至
+        (base, then current);
+      * no 分别 / respectively, which makes it a series, not a pair.
+    Anything else is left alone. The percentage may be off by what the amounts'
+    own display rounding allows plus one point; beyond that, or pointing the
+    wrong way between two positive figures, it is reported with the arithmetic.
+    """
+    findings: List[Dict[str, Any]] = []
+    body = str(text or "")
+    # Whole sentences, not segment_clauses' comma-level clauses: the two
+    # amounts of 「…为A，较B下降X%」 sit either side of a comma.
+    for sentence in _PCT_SENTENCE.finditer(body):
+        clause, start, end = sentence.group(0), sentence.start(), sentence.end()
+        if _PERIOD_SERIES.search(clause):
+            continue
+        amounts = extract_amount_spans(clause)
+        if len(amounts) < 2:
+            continue
+        for pct_match in _PCT_CLAIM.finditer(clause):
+            lead = clause[max(0, pct_match.start() - 8):pct_match.start()]
+            ups, downs = list(_PCT_UP.finditer(lead)), list(_PCT_DOWN.finditer(lead))
+            if bool(ups) == bool(downs):
+                continue
+            word_at = pct_match.start() - len(lead) + (ups or downs)[-1].start()
+            before = [a for a in amounts if a[2] <= word_at]
+            if len(before) < 2:
+                continue
+            first, second = before[-2], before[-1]
+            between = clause[first[2]:second[1]]
+            tail = clause[second[2]:word_at]
+            if len(between) > 40 or len(tail) > 8 or re.search(r"\d", tail):
+                continue
+            if _PCT_VERSUS.search(between):
+                current, base = first, second
+            elif _PCT_FROM.search(clause[:first[1]]) and _PCT_TO.search(between):
+                base, current = first, second
+            else:
+                continue
+
+            def signed(amount):
+                negative = bool(_NEGATIVE_LEAD.search(clause[max(0, amount[1] - 3):amount[1]]))
+                return -amount[0] if negative else amount[0]
+
+            a, b = signed(current), signed(base)
+            if not b or (a < 0) != (b < 0):
+                continue
+            stated = float(pct_match.group(1))
+            ha = display_half_ulp(clause[current[1]:current[2]])
+            hb = display_half_ulp(clause[base[1]:base[2]])
+            mags = [abs((abs(a) + da) - (abs(b) + db)) / (abs(b) + db) * 100
+                    for da in (-ha, ha) for db in (-hb, hb) if abs(b) + db > 0]
+            if not mags:
+                continue
+            actual = (abs(a) - abs(b)) / abs(b) * 100
+            off = stated < min(mags) - 1.0 or stated > max(mags) + 1.0
+            wrong_way = a > 0 and b > 0 and abs(actual) > 1.0 and (actual > 0) != bool(ups)
+            if not off and not wrong_way:
+                continue
+            findings.append({
+                "clause": clause,
+                "span": [int(start), int(end)],
+                "code": "PCT_ARITHMETIC",
+                "stated_pct": stated,
+                "actual_pct": round(actual, 1),
+                "reason": (
+                    f"{clause[current[1]:current[2]]} against {clause[base[1]:base[2]]} is "
+                    f"{'an increase' if actual > 0 else 'a decrease'} of {abs(actual):.1f}%, not "
+                    f"{'an increase' if ups else 'a decrease'} of {stated:g}% as written. If one of "
+                    "the two is a part-year amount and the other a full year, they are not "
+                    "comparable: use the annualised figure and its own percentage."
+                ),
+            })
+            break
+    return findings
+
+
+def _percent_claim_reviews(final_content: str) -> List[Dict[str, Any]]:
+    """percent_claim_findings as clause reviews. "hallucination", so the retry
+    gate sees it: the sentence states a movement its own figures deny, and only
+    a rewrite fixes that."""
+    return [{
+        "clause": f["clause"], "supported": False, "category": "hallucination",
+        "reason": f["reason"], "code": f["code"], "span": f["span"],
+        "conf": _CONF_DET_HALLUCINATION,
+    } for f in percent_claim_findings(final_content)]
 
 
 def _composition_reviews(final_content: str) -> List[Dict[str, Any]]:
