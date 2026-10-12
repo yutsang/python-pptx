@@ -1835,6 +1835,10 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
         out.extend(_percent_claim_reviews(final_content))
     except Exception:
         pass  # a new detector must never cost an account its other verdicts
+    try:
+        out.extend(_movement_claim_reviews(final_content, df))
+    except Exception:
+        pass
     if direction_findings is not None:
         direction_findings.extend(collect_direction_findings(final_content, df))
     return out
@@ -1936,6 +1940,87 @@ def percent_claim_findings(text: str) -> List[Dict[str, Any]]:
             })
             break
     return findings
+
+
+_MOVE_CLAIM = re.compile(
+    r"较[^，,。；;]{0,14}?(?:新增|增加|增长|减少|下降|上升)\s*(?:约|了)?\s*$"
+    r"|(?:increased?|decreased?|rose|fell|up|down)\s+(?:by\s+)?$", re.IGNORECASE)
+
+
+def movement_claim_findings(text: str, df) -> List[Dict[str, Any]]:
+    """An amount written as a CHANGE that is not the change of any line.
+
+    「较上年末新增3.63亿元」 shipped three runs in a row for an account whose
+    balance was 0.37亿元 in both periods. 3.63亿元 is on the sheet -- it is the
+    whole loan -- so amount-grounding accepts it; what no check asked is whether
+    it is a movement. A figure introduced by 较…增加/减少 has to be the
+    difference between two periods of ONE line of this account's analysis
+    frame: any two periods, not only neighbours, and the part-year tail on
+    either basis. Nothing else is tested, and an account whose frame has fewer
+    than two periods is left alone.
+    """
+    attrs = getattr(df, "attrs", None) or {}
+    analysis = attrs.get("prompt_analysis_df")
+    if analysis is None or not hasattr(analysis, "columns"):
+        return []
+    skip = set(SourceIndex._non_amount_cols(analysis))
+    columns = [c for c in list(analysis.columns)[1:] if c not in skip]
+    if len(columns) < 2:
+        return []
+    months = None
+    try:
+        from ..workbook.analysis import partial_tail_months
+        months = partial_tail_months(analysis, (attrs.get("integrity") or {}).get("statement_type"))
+    except Exception:
+        months = None
+    differences: List[float] = []
+    table = [analysis[c].tolist() for c in columns]
+    for pos in range(len(analysis.index)):
+        row = []
+        for series in table:
+            cell = series[pos]
+            value = _to_float(cell) if isinstance(cell, (int, float, str)) else None
+            if value is not None and value == value:
+                row.append(float(value))
+        if months and row:
+            row.append(row[-1] * 12.0 / months)
+        for i in range(len(row)):
+            for j in range(i + 1, len(row)):
+                if abs(row[i] - row[j]) > 1e-9:
+                    differences.append(abs(row[i] - row[j]))
+    if not differences:
+        return []
+
+    findings: List[Dict[str, Any]] = []
+    body = str(text or "")
+    for sentence in _PCT_SENTENCE.finditer(body):
+        clause = sentence.group(0)
+        for value, start, end in extract_amount_spans(clause):
+            if not _MOVE_CLAIM.search(clause[max(0, start - 22):start]):
+                continue
+            tolerance = max(1000.0, 2 * display_half_ulp(clause[start:end]), 0.005 * abs(value))
+            if any(abs(abs(value) - d) <= tolerance for d in differences):
+                continue
+            findings.append({
+                "clause": clause,
+                "span": [int(sentence.start()), int(sentence.end())],
+                "code": "MOVEMENT_UNSUPPORTED",
+                "reason": (
+                    f"{clause[start:end]} is written as a change, but it is not the difference between "
+                    "any two periods of any line of this account. A balance or a component is not a "
+                    "movement: state the change from the two period figures, or drop it."
+                ),
+            })
+            break
+    return findings
+
+
+def _movement_claim_reviews(final_content: str, df) -> List[Dict[str, Any]]:
+    return [{
+        "clause": f["clause"], "supported": False, "category": "hallucination",
+        "reason": f["reason"], "code": f["code"], "span": f["span"],
+        "conf": _CONF_DET_HALLUCINATION,
+    } for f in movement_claim_findings(final_content, df)]
 
 
 def _percent_claim_reviews(final_content: str) -> List[Dict[str, Any]]:
