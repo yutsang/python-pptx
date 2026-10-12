@@ -994,6 +994,44 @@ class SourceIndex:
             return facts
         return facts
 
+    @classmethod
+    def _annualised_tail_facts(cls, df, analysis_df, sheet) -> List[Dict[str, Any]]:
+        """Each analysis row's part-year tail on a twelve-month basis.
+
+        The prompt now prints these in an '<period> annualised' column and the
+        trend summary and significant movements quote them, so a bullet that
+        says 「年化后3,675.8万元」 is repeating a figure it was handed. Without
+        them here it grounded only by landing within 5% of some other cell.
+        Synthetic, so its own kind and out of _OWN_HARD_KINDS: it grounds a
+        clause and is never a repair source.
+        """
+        facts: List[Dict[str, Any]] = []
+        try:
+            from ..workbook.analysis import ANNUALISED_SUFFIX, partial_tail_months
+            statement_type = ((getattr(df, "attrs", None) or {}).get("integrity") or {}).get("statement_type")
+            months = partial_tail_months(analysis_df, statement_type)
+            if not months:
+                return facts
+            skip = set(cls._non_amount_cols(analysis_df))
+            columns = [c for c in list(analysis_df.columns)[1:] if c not in skip]
+            if not columns:
+                return facts
+            tail = columns[-1]
+            descs, row_idxs, _types = _row_provenance(analysis_df)
+            for pos, cell in enumerate(analysis_df[tail].tolist()):
+                value = _to_float(cell) if isinstance(cell, (int, float, str)) else None
+                if value is None or value != value or not value:
+                    continue
+                facts.append(_fact(
+                    value * 12.0 / months, "annualised_cell", sheet=sheet,
+                    row_idx=row_idxs[pos] if pos < len(row_idxs) else None,
+                    row_desc=descs[pos] if pos < len(descs) else None,
+                    col_label=f"{tail}{ANNUALISED_SUFFIX}",
+                ))
+        except Exception:
+            return []
+        return facts
+
     @staticmethod
     def _non_amount_cols(df) -> tuple:
         """Columns that are not financial amounts and must never enter the pool.
@@ -1093,6 +1131,7 @@ class SourceIndex:
                                        sheet=cls_sheet, row_desc=desc + " [as displayed]"))
             if own:
                 facts += cls._period_movement_facts(analysis_df, cls_sheet)
+                facts += cls._annualised_tail_facts(df, analysis_df, cls_sheet)
         # Also ground against numbers cited in the supporting notes / remarks
         # (df.attrs), e.g. registered capital "7000万美元" that never appears in
         # the numeric table. Without this they were false-flagged as hallucinations.
