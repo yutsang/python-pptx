@@ -16,8 +16,13 @@ own Validator stage, which would have each model marking its own work.
     python ad-hoc/workbench/compare_models.py for_test/<databook>.xlsx \
         --accounts 应收账款,财务费用 --models dashscope::kimi-k2.6_chat --baseline workbench
 
+    python ad-hoc/workbench/compare_models.py for_test/<databook>.xlsx --all --parallel 5
+        every account, all five models at once.
+
 Cost: one full Generator -> Auditor -> Validator pass per account per model.
-Eight accounts is roughly a third of a normal run, per model.
+Eight accounts is roughly a third of a normal run, per model. Models run
+--parallel at a time (default 3), each in its own process; the report ends
+with a projection of what every account would take.
 
 What the scoreboard can and cannot say. Counted for every model alike:
 unsupported figures, arithmetic the text gets wrong, retries the feedback loop
@@ -29,10 +34,13 @@ Output quotes account figures; do not paste it anywhere public.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
+import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -105,6 +113,7 @@ def _print_list(config: Dict[str, Any]) -> None:
         print(f"    {choice['label']:34s} {choice['key']:48s} {'ready' if choice['ready'] else 'NOT CONFIGURED'}")
     if not hidden:
         print("    (none)")
+    _print_provider_state(config)
     try:
         provider, model = _baseline(config, None)
         print(f"\nA comparison would use as baseline: {_name(config, provider, model)}"
@@ -113,6 +122,40 @@ def _print_list(config: Dict[str, Any]) -> None:
         print(f"\n{exc}")
     print("and as candidates: " + (", ".join(
         c["key"] for c in everything if c["model_type"] == "dashscope") or "(no dashscope chat model in config)"))
+
+
+def _print_provider_state(config: Dict[str, Any]) -> None:
+    """Why a provider is or is not usable, by key NAME only -- never a value.
+
+    A block can hold real credentials and still read as unconfigured: one
+    required key spelt differently, or the block written twice. YAML keeps
+    only the LAST of two same-named top-level blocks and says nothing, so
+    adding a second `workbench:` to carry `listed: false` silently discards
+    the first one's api_key, api_base and available_models.
+    """
+    from fdd_utils.ai.config import PROVIDER_REQUIRED_KEYS
+    print("\nProvider blocks in this file (key names only):")
+    for provider in ("workbench", "dashscope", "local", "deepseek", "openai"):
+        block = config.get(provider)
+        if not isinstance(block, dict):
+            print(f"    {provider:10s} no such block")
+            continue
+        missing = [k for k in PROVIDER_REQUIRED_KEYS.get(provider, []) if not str(block.get(k) or "").strip()]
+        models = block.get("available_models") or []
+        print(f"    {provider:10s} {'ready' if not missing else 'NOT READY -- empty or absent: ' + ', '.join(missing)}"
+              f"   | listed={block.get('listed', True)}  available_models={len(models)}"
+              f"  keys present: {', '.join(sorted(str(k) for k in block))}")
+    try:
+        with open(get_default_config_path(), encoding="utf-8") as handle:
+            tops = re.findall(r"^([A-Za-z_][\w-]*)\s*:", handle.read(), flags=re.M)
+    except OSError:
+        tops = []
+    repeated = sorted({k for k in tops if tops.count(k) > 1})
+    for key in repeated:
+        print(f"    !! '{key}:' is written {tops.count(key)} times at the top level. YAML keeps only the LAST one; "
+              f"everything in the earlier block(s) is ignored. Merge them into one.")
+    if "benchmark" not in tops:
+        print("    (no top-level 'benchmark:' block -- the baseline is the first configured of workbench / local / ...)")
 
 
 def _score(text: str, df) -> Dict[str, Any]:
@@ -128,6 +171,37 @@ def _score(text: str, df) -> Dict[str, Any]:
     }
 
 
+def _workers(config: Dict[str, Any], provider: str, requested: Optional[int]) -> int:
+    """inspect_databook.py's rule, so a model is timed here as it would run there."""
+    return int(requested or (config.get(provider) or {}).get("max_workers")
+               or (config.get("processing") or {}).get("max_workers") or 4)
+
+
+def _run_child(config, args, state, dfs, language, keys) -> int:
+    """One model, in this process; results to --child-out as JSON."""
+    from fdd_utils.ai import run_ai_pipeline_with_progress
+    provider, model = _spec(config, args.child)
+    workers = _workers(config, provider, args.workers)
+    started = time.time()
+    payload: Dict[str, Any] = {"workers": workers, "accounts": {}}
+    try:
+        results = run_ai_pipeline_with_progress(
+            mapping_keys=list(keys), dfs=dfs, model_type=provider, model_name=model, language=language,
+            use_multithreading=True, max_workers=workers,
+            workbook_digest=(state.get("resolution") or {}).get("workbook_digest"),
+        )
+        for key in keys:
+            record = results.get(key) if isinstance(results.get(key), dict) else {}
+            payload["accounts"][key] = {"text": str(record.get("final") or "").strip(),
+                                        "retries": int(record.get("feedback_retries") or 0)}
+    except Exception as exc:  # reported in this model's column; the others still run
+        payload["error"] = f"{type(exc).__name__}: {exc}"
+    payload["seconds"] = time.time() - started
+    with open(args.child_out, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False)
+    return 1 if payload.get("error") else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("databook", nargs="?", help="path to the .xlsx (omit with --list)")
@@ -135,6 +209,14 @@ def main() -> int:
     ap.add_argument("--accounts", default=None, help="comma-separated account names; default: " + ",".join(DEFAULT_ACCOUNTS))
     ap.add_argument("--models", default=None, help="comma-separated provider::id (or bare id); default: every dashscope chat model")
     ap.add_argument("--baseline", default=None, help="provider or provider::id of the model in use today")
+    ap.add_argument("--all", action="store_true", help="every account in the workbook instead of the default eight")
+    ap.add_argument("--parallel", type=int, default=3,
+                    help="how many models run at once, each in its own process (default 3; 1 = one after another)")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="worker threads inside each model's run; default: <provider>.max_workers, "
+                         "else processing.max_workers, else 4 -- as inspect_databook.py")
+    ap.add_argument("--child", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--child-out", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--entity", default="", help="entity name, as for inspect_databook.py")
     ap.add_argument("--sheet", default=None, help="Financials sheet name; default: auto-detected")
     args = ap.parse_args()
@@ -159,7 +241,6 @@ def main() -> int:
                              f"refusing to run '{_name(config, provider, model)}' on a substitute.")
 
     import pandas as pd
-    from fdd_utils.ai import run_ai_pipeline_with_progress
     from fdd_utils.workbook import process_workbook_data
 
     sheet = args.sheet
@@ -170,44 +251,83 @@ def main() -> int:
                                   selected_sheet=sheet, debug=False)
     dfs = state.get("dfs") or {}
     language = state.get("language", "Eng")
-    wanted = [a.strip() for a in (args.accounts.split(",") if args.accounts else DEFAULT_ACCOUNTS) if a.strip()]
+    if args.all:
+        wanted = list(dfs)
+    else:
+        wanted = [a.strip() for a in (args.accounts.split(",") if args.accounts else DEFAULT_ACCOUNTS) if a.strip()]
     keys = [a for a in wanted if a in dfs]
     missing = [a for a in wanted if a not in dfs]
     if not keys and not args.accounts:
         # The defaults are Chinese tab names; a workbook keyed in English has none.
         keys, missing = list(dfs)[:len(DEFAULT_ACCOUNTS)], []
+
+    if args.child:
+        return _run_child(config, args, state, dfs, language, keys)
+
     if missing:
         print(f"not in this workbook, skipped: {missing}")
     if not keys:
         raise SystemExit(f"none of the requested accounts is in this workbook. Available: {sorted(dfs)}")
-    print(f"language={language}  accounts={keys}")
+    parallel = max(1, min(int(args.parallel), len(runs)))
+    print(f"language={language}  accounts ({len(keys)} of {len(dfs)}): {keys}")
     print("models: " + ", ".join(_name(config, p, m) + (" [baseline]" if (p, m) == baseline else "") for p, m in runs))
+    print(f"{parallel} model(s) at a time, each in its own process")
 
+    out_dir = os.path.join(os.path.dirname(os.path.abspath(args.databook)), "model_compare")
+    os.makedirs(out_dir, exist_ok=True)
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    started_all = time.time()
     outcome: Dict[str, Dict[str, Any]] = {}
+
+    def _one(index: int, provider: str, model: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+        # A process per model, not a thread: the pipeline keeps one circuit
+        # breaker and one logging setup per process, so two models sharing a
+        # process would trip and reset each other's breaker. Starts are spaced
+        # because a run folder is named to the second.
+        name = _name(config, provider, model)
+        time.sleep(index * 2.0)
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
+        json_path = os.path.join(out_dir, f"compare_{stamp}_{safe}.json")
+        log_path = os.path.join(out_dir, f"compare_{stamp}_{safe}.log")
+        command = [sys.executable, os.path.abspath(__file__), args.databook,
+                   "--child", f"{provider}::{model or 'default'}", "--child-out", json_path,
+                   "--accounts", ",".join(keys), "--entity", args.entity]
+        if sheet:
+            command += ["--sheet", sheet]
+        if args.workers:
+            command += ["--workers", str(args.workers)]
+        print(f">>> started  {name}", flush=True)
+        began = time.time()
+        with open(log_path, "w", encoding="utf-8") as log:
+            code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT,
+                                  env={**os.environ, "PYTHONIOENCODING": "utf-8"}).returncode
+        payload: Dict[str, Any] = {}
+        if os.path.exists(json_path):
+            with open(json_path, encoding="utf-8") as handle:
+                payload = json.load(handle)
+            os.remove(json_path)
+        error = payload.get("error")
+        if code != 0 and not payload:
+            with open(log_path, encoding="utf-8", errors="replace") as handle:
+                tail = [line.strip() for line in handle.read().splitlines() if line.strip()][-3:]
+            error = f"process exited {code}: " + " | ".join(tail)
+        print(f"<<< finished {name}  {time.time() - began:.0f}s" + (f"  FAILED: {error[:200]}" if error else ""), flush=True)
+        return name, {"seconds": payload.get("seconds", time.time() - began), "error": error,
+                      "workers": payload.get("workers"), "records": payload.get("accounts") or {}, "log": log_path}
+
+    with ThreadPoolExecutor(max_workers=parallel) as pool:
+        futures = [pool.submit(_one, i if i < parallel else 0, p, m) for i, (p, m) in enumerate(runs)]
+        finished = dict(f.result() for f in futures)
+    wall = time.time() - started_all
     for provider, model in runs:
         name = _name(config, provider, model)
-        workers = (config.get(provider) or {}).get("max_workers") or (1 if provider == "local" else 4)
-        print(f"\n>>> {name}  ({len(keys)} accounts, {workers} worker(s))", flush=True)
-        started = time.time()
-        try:
-            results = run_ai_pipeline_with_progress(
-                mapping_keys=list(keys), dfs=dfs, model_type=provider, model_name=model, language=language,
-                use_multithreading=True, max_workers=int(workers),
-                workbook_digest=(state.get("resolution") or {}).get("workbook_digest"),
-            )
-            error = None
-        except Exception as exc:  # one gateway failing must not cost the others' runs
-            results, error = {}, f"{type(exc).__name__}: {exc}"
-            print(f"    FAILED: {error}")
-        elapsed = time.time() - started
+        run = finished[name]
         per_account: Dict[str, Any] = {}
         for key in keys:
-            record = results.get(key) if isinstance(results.get(key), dict) else {}
-            text = str(record.get("final") or "").strip()
-            per_account[key] = {"text": text, "retries": int(record.get("feedback_retries") or 0),
-                                "generator": str(record.get("subagent_1") or "").strip(), **_score(text, dfs[key])}
-        outcome[name] = {"seconds": elapsed, "error": error, "accounts": per_account}
-        print(f"    {elapsed:.0f}s")
+            record = run["records"].get(key) or {}
+            text = str(record.get("text") or "").strip()
+            per_account[key] = {"text": text, "retries": int(record.get("retries") or 0), **_score(text, dfs[key])}
+        outcome[name] = {**run, "accounts": per_account}
 
     lines: List[str] = []
     out = lines.append
@@ -222,6 +342,29 @@ def main() -> int:
             sum(a["retries"] for a in accounts), sum(len(a["hallucination"]) for a in accounts),
             sum(len(a["other"]) for a in accounts), sum(a["figures"] for a in accounts),
             sum(a["chars"] for a in accounts), "   ERROR: " + run["error"][:60] if run["error"] else ""))
+    out("")
+    total_accounts = len(dfs)
+    out(f"TIME -- this run: {wall:.0f}s wall for {len(keys)} account(s) x {len(outcome)} model(s), {parallel} at a time")
+    out(f"        projected for every account in the workbook ({total_accounts}), from each model's own pace here:")
+    projected = []
+    for name, run in outcome.items():
+        if run["error"]:
+            out("          %-46s failed -- no pace to project from" % name[:46])
+            continue
+        each = run["seconds"] / max(len(keys), 1) * total_accounts
+        projected.append(each)
+        out("          %-46s %5.1f s/account at %s worker(s) -> about %4.1f min" % (
+            name[:46], run["seconds"] / max(len(keys), 1), run.get("workers") or "?", each / 60))
+    if projected:
+        # Models running side by side finish when the slowest lane does; with
+        # fewer lanes than models the lanes fill longest-first.
+        lanes = [0.0] * parallel
+        for each in sorted(projected, reverse=True):
+            lanes[lanes.index(min(lanes))] += each
+        out(f"        all {len(outcome)} models: about {max(lanes) / 60:.0f} min at --parallel {parallel}, "
+            f"{sum(projected) / 60:.0f} min one after another")
+        out("        (a straight scale-up: a full run has more large accounts and more retries than this sample,")
+        out("         and each run here re-reads the workbook, which is counted in the wall time but not per model)")
     out("")
     out("empty   = accounts that came back with no commentary")
     out("retries = feedback-loop regenerations (each one is three more calls)")
@@ -255,12 +398,10 @@ def main() -> int:
 
     report = "\n".join(lines)
     print("\n" + report)
-    out_dir = os.path.join(os.path.dirname(os.path.abspath(args.databook)), "model_compare")
-    os.makedirs(out_dir, exist_ok=True)
-    out_path = os.path.join(out_dir, time.strftime("compare_%Y%m%d_%H%M%S.txt"))
+    out_path = os.path.join(out_dir, f"compare_{stamp}.txt")
     with open(out_path, "w", encoding="utf-8") as handle:
         handle.write(report + "\n")
-    print(f"\nsaved: {out_path}")
+    print(f"\nsaved: {out_path}   (one .log per model beside it)")
     return 0
 
 

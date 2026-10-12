@@ -8,6 +8,12 @@ default:
   ai_provider: "dashscope"
   model: "dashscope_qwen3.7-max"   # an id from that provider's available_models
 
+# Which model compare_models.py puts first and marks [baseline]. Without this
+# block it is the first configured of workbench / local / openai / deepseek.
+# A provider name alone means that provider's chat_model.
+# benchmark:
+#   baseline: "dashscope::dashscope_deepseek-v4-flash-0731"
+
 openai:
   api_key: ""
   api_base: ""
