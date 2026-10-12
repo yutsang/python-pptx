@@ -436,12 +436,27 @@ def _rule_cip_transfer(views: Dict[str, AccountView]) -> List[Observation]:
         _cp, cip_end = cip.latest()
         if not transfers:
             return out
+        # A transfer line and the lines that make it up are one transfer. Summed
+        # flat, a real tab gave 7.75亿元 for a 3.87亿元 transfer and "原值13.31亿元"
+        # for assets carried at 6.65亿元 -- each exactly double -- and once the
+        # account brief put observations in front of the model the doubled
+        # figure went onto a slide as fact, grounded by the brief that made it.
+        # No period is named either: a roll-forward tab repeats the transfer in
+        # its latest column, so "本期" dated a 2024 transfer to the current stub.
+        for _pass in range(4):
+            if len(transfers) < 2:
+                break
+            name, value = max(transfers.items(), key=lambda kv: abs(kv[1]))
+            others = sum(abs(v) for k, v in transfers.items() if k != name)
+            if others <= 0 or abs(abs(value) - others) > max(abs(value), others) * 0.02:
+                break
+            transfers.pop(name)
         moved = sum(abs(v) for v in transfers.values())
-        gross = sum(v for k, v in fa.component_latest().items() if v > 0 and not _is_contra(k))
+        gross = sum(v for v in _leaf_components(fa).values() if v > 0)
         share = (moved / gross * 100.0) if gross else 0.0
         out.append(Observation(
             code="CIP_TRANSFER", severity="medium", accounts=[cip.key, fa.key],
-            finding=("%s本期转出%s，期末余额仅%s；%s%s。"
+            finding=("%s转出%s，期末余额仅%s；%s%s。"
                      % (cip.key, _fmt(moved), _fmt(cip_end or 0.0), fa.key,
                         ("原值%s，转出金额约占其%.0f%%" % (_fmt(gross), share)) if gross
                         else "未提供原值明细")),
