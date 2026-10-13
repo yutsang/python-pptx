@@ -1740,6 +1740,17 @@ def _composition_findings(mapping_key: str, text: str,
     # lands at 1.93, just outside the "exactly double" guard below. Blanked
     # rather than cut so every other offset in the clause is unchanged.
     scan = body if not m else body[:m.start()] + " " * (m.end() - m.start()) + body[m.end():]
+    # The total has to be stated BEFORE the list it is held against. 「在建工程
+    # 无余额，账面构成包括…5.94亿元、…1.17亿元、…-7.75亿元，其余0.64亿元为…。
+    # 2023年末在建工程余额为2.94亿元，系…」: the list closes on a nil balance
+    # that is given in words, and the only figure the total pattern finds is a
+    # different period's, two sentences later. Held against that one the list
+    # was reported as leaving 100% unaccounted for, three runs in a row.
+    if m:
+        _first_item = min((found.start() for found in (_ENUM_ITEM.search(scan), _ENUM_RUNON.search(scan)) if found),
+                          default=None)
+        if _first_item is not None and m.start() > _first_item:
+            return []
     items = _ENUM_ITEM.findall(scan)
     if not items:
         run = _ENUM_RUNON.search(scan)

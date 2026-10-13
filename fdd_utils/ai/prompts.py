@@ -690,6 +690,22 @@ class PromptEngine:
             components = list(analysis_df.attrs.get("component_descriptions") or [])
         if len(components) < 2:
             return ""
+        # Where the latest total was set from the Financials sheet the tab's
+        # components no longer add up to it, by construction, and this block's
+        # closing rule ("finish with 其余X万元为…, X = total less the items")
+        # then demands a remainder that is nothing but the gap between two
+        # sheets. 未分配利润 came back with 「其余9.2万元为其他零星项目」 and,
+        # on another run, 「其余-7,067.7万元为其他零星项目」. The statement-basis
+        # note already tells the model the detail does not sum; an instruction
+        # to make it sum cannot sit beside that.
+        try:
+            from ..workbook.authority import AUTHORITY_KEY
+            overridden = set((analysis_df.attrs.get(AUTHORITY_KEY) or df.attrs.get(AUTHORITY_KEY) or {}))
+            dated = [str(c) for c in analysis_df.columns[1:] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(c))]
+            if dated and max(dated) in overridden:
+                return ""
+        except Exception:
+            pass
 
         # The abstract rule is already below in both languages and has been for
         # a while. It does not work: a seven-entity run broke it on roughly
@@ -1970,6 +1986,10 @@ class PromptEngine:
         # Skipped for the revenue account comparing against itself, and
         # when the account's own pct couldn't be computed (tiny base or a
         # sign flip -- the flip already gets its own treatment below).
+        # Worded for "this account", not "the expense": the same line goes to
+        # every income-statement account, and 投资收益 came back as 「费用与收入
+        # 变动不成比例」 -- an income line called an expense, in the model's
+        # words because they were the prompt's.
         peer_line_chi = peer_line_eng = ""
         revenue_key = (peer_context or {}).get("revenue_key") if peer_context else None
         is_revenue_account = bool(revenue_key) and bool(mapping_key) and revenue_key == mapping_key
@@ -1982,7 +2002,7 @@ class PromptEngine:
             if abs(gap) >= disproportion_gap_pp:
                 peer_line_chi = (
                     f"同期营业收入变动为{rev_pct:+.0f}%，本科目为{pct:+.0f}%，两者相差{gap:+.0f}个百分点，"
-                    "属于费用与收入变动不成比例的情形，请在评论中明确指出这一不对称，并在有依据时说明原因。"
+                    "属于本科目与营业收入变动不成比例的情形，请在评论中明确指出这一不对称，并在有依据时说明原因。"
                 )
                 peer_line_eng = (
                     f"Revenue moved {rev_pct:+.0f}% over the same period against this account's "
@@ -2069,7 +2089,7 @@ class PromptEngine:
             if peer_line_chi:
                 parts.append(
                     peer_line_chi if (is_material or flipped)
-                    else "【费用与收入变动不成比例提示】" + cap_note_chi + peer_line_chi
+                    else "【与收入变动不成比例提示】" + cap_note_chi + peer_line_chi
                 )
             parts.extend(earlier_lines_chi)
             return " ".join(part for part in parts if part)

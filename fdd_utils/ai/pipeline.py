@@ -715,58 +715,74 @@ def humanise_report_language(text: str) -> str:
     return body
 
 
-def nil_account_commentary(mapping_key: str, df: Any, language: str, statement_type: str = "",
-                           prompt_manager: Any = None) -> str:
-    """The whole commentary for an account that is nil in every period, or "".
+def nil_account_status(mapping_key: str, df: Any, language: str, statement_type: str = "",
+                       prompt_manager: Any = None) -> Tuple[str, str]:
+    """(commentary, "") for an account that is nil in every period, else
+    ("", why not) -- the reason is for the diagnostics, so an account that
+    looks nil and is still sent to the model can be explained without a guess.
 
     An account with no figure in any period and no note against it has exactly
     one thing to say, and five models put through the same four such accounts
     said it five ways, most of them padded and some invented: 「其他收益主要包括
     政府补助及个税手续费返还等项目」 for an account with nothing in it, 「未形成
-    具体构成」, 「年化后亦未发生」, 「该科目对利润表无影响」. Each also cost a
-    Generator and an Auditor request to produce. So it is written here.
+    具体构成」, 「年化后亦未发生」, 「在示意性调整后口径下未形成具体发生额」.
+    Each also cost a Generator and an Auditor request. So it is written here.
 
-    Deliberately narrow. "" -- and the account goes to the model as before --
-    unless EVERY numeric cell of the analysis frame is zero or empty (a nil
-    total over non-nil components is something to explain), no remark, side
-    note or adjacent detail row exists, and the total was not set from the
-    Financials sheet (then the tab is empty but the account is not).
+    Deliberately narrow: every numeric cell of the analysis frame zero or
+    empty (a nil total over non-nil components is something to explain), no
+    remark, side note or adjacent detail row, and the total not set from the
+    Financials sheet (then the tab is empty but the account is not). Empty
+    cells count as nil only under a labelled total row: a frame with no total
+    and no figures is more likely a schedule that failed to extract than an
+    account with nothing in it, and 「无余额」 would then be a false statement.
     """
     try:
         if not isinstance(df, pd.DataFrame) or df.empty:
-            return ""
+            return "", "no frame"
         attrs = df.attrs or {}
         analysis = attrs.get("prompt_analysis_df")
         analysis = analysis if isinstance(analysis, pd.DataFrame) and not analysis.empty else df
-        if attrs.get("financials_authority") or (analysis.attrs or {}).get("financials_authority"):
-            return ""
-        for note_key in ("supporting_notes", "working_remark_notes", "table_linked_remarks"):
-            if attrs.get(note_key) or (analysis.attrs or {}).get(note_key):
-                return ""
-        if prompt_manager is not None and prompt_manager.filter_adjacent_detail_rows(df):
-            return ""
-        periods = [c for c in analysis.columns[1:]
-                   if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(c)) and not str(c).endswith("_formatted")]
+        inner = analysis.attrs or {}
+        periods = [c for c in analysis.columns[1:] if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(c))]
         if not periods:
-            return ""
+            return "", "no period columns"
         values = analysis[periods].apply(pd.to_numeric, errors="coerce")
-        if values.notna().sum().sum() == 0 or (values.fillna(0.0).abs() > 1e-9).any().any():
-            return ""
+        if (values.fillna(0.0).abs() > 1e-9).any().any():
+            return "", "has figures"
+        if attrs.get("financials_authority") or inner.get("financials_authority"):
+            return "", "total set from Financials"
+        for note_key in ("supporting_notes", "working_remark_notes", "table_linked_remarks"):
+            found = attrs.get(note_key) or inner.get(note_key)
+            if found:
+                return "", "%s: %s" % (note_key, str(found)[:80])
+        if prompt_manager is not None:
+            adjacent = prompt_manager.filter_adjacent_detail_rows(df)
+            if adjacent:
+                return "", "adjacent detail rows: %s" % str(adjacent)[:80]
+        if values.notna().sum().sum() == 0:
+            row_types = inner.get("row_types_by_description") or attrs.get("row_types_by_description") or {}
+            if not any(str(kind) in ("total", "subtotal") for kind in row_types.values()):
+                return "", "no figures and no total row (unextracted?)"
         year, month, day = (int(part) for part in str(max(periods)).split("-"))
         is_flow = str(statement_type or (attrs.get("integrity") or {}).get("statement_type") or "").upper() == "IS"
         name = str(mapping_key)
         if str(language) == "Chi":
             if is_flow:
-                return f"{name}于报告期内各期间均未发生。"
-            return f"截至{year}年{month}月{day}日，{name}无余额，报告期内各期末亦均无余额。"
+                return f"{name}于报告期内各期间均未发生。", ""
+            return f"截至{year}年{month}月{day}日，{name}无余额，报告期内各期末亦均无余额。", ""
         month_name = ("January", "February", "March", "April", "May", "June", "July", "August",
                       "September", "October", "November", "December")[month - 1]
         if is_flow:
-            return f"no {name.lower()} was recorded in any of the periods presented."
+            return f"no {name.lower()} was recorded in any of the periods presented.", ""
         return (f"there was no balance as at {day} {month_name} {year}, nor at any earlier "
-                f"period end presented.")
-    except Exception:
-        return ""  # a shortcut must never be why an account has no commentary
+                f"period end presented."), ""
+    except Exception as exc:
+        return "", "error: %s" % exc  # a shortcut must never be why an account has no commentary
+
+
+def nil_account_commentary(mapping_key: str, df: Any, language: str, statement_type: str = "",
+                           prompt_manager: Any = None) -> str:
+    return nil_account_status(mapping_key, df, language, statement_type, prompt_manager)[0]
 
 
 def humanise_zero_balance(text: str, statement_type: str = "") -> str:
@@ -2985,6 +3001,13 @@ def _run_feedback_loop_for_key(
             key, retry_num, max_retries, ratio, threshold, len(unsupported),
         )
 
+        # Why this retry was bought, kept with the account: a run report that
+        # says "retried twice" and not over what cannot be acted on.
+        results[key].setdefault("feedback_retry_reasons", []).append([
+            "%s: %s" % (review.get("code") or review.get("category") or "?", str(review.get("reason") or "")[:200])
+            for review in sorted((r for r in (unsupported or []) if isinstance(r, dict)),
+                                 key=lambda r: r.get("category") != "hallucination")[:4]
+        ])
         feedback_text = format_validator_feedback_for_reprompt(
             (results[key].get("agent_4_validation") or {}).get("clause_reviews", []),
             ai_helper.language,

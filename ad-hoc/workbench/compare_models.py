@@ -221,7 +221,7 @@ def _print_masked_config() -> None:
         print(f"{number:4d}  {indent}{key}: {shown}")
 
 
-def _print_costs(config: Dict[str, Any], last: int) -> None:
+def _print_costs(config: Dict[str, Any], last: int, only: Optional[List[str]] = None) -> None:
     """What the newest runs spent, from the token counts each call recorded.
 
     Every call is filed in <run>/data.yml with the provider's own prompt and
@@ -243,6 +243,8 @@ def _print_costs(config: Dict[str, Any], last: int) -> None:
     root = os.path.join(_ROOT, "fdd_utils", "logs")
     folders = [f for f in sorted(glob.glob(os.path.join(root, "run_*")))
                if os.path.exists(os.path.join(f, "data.yml"))][-last:]
+    if only is not None:
+        folders = [f for f in only if f and os.path.exists(os.path.join(f, "data.yml"))]
     if not folders:
         print(f"no run with a data.yml under {root}")
         return
@@ -424,7 +426,9 @@ def _run_child(config, args, state, dfs, language, keys) -> int:
             record = results.get(key) if isinstance(results.get(key), dict) else {}
             text = str(record.get("final") or "").strip()
             run_folder = (results.get("__run__") or {}).get("run_folder")
+            payload["run_folder"] = run_folder
             payload["accounts"][key] = {"text": text, "retries": int(record.get("feedback_retries") or 0),
+                                        "retry_reasons": record.get("feedback_retry_reasons") or [],
                                         "reviews": _reviews(text, dfs[key], run_folder, key)}
     except Exception as exc:  # reported in this model's column; the others still run
         payload["error"] = f"{type(exc).__name__}: {exc}"
@@ -576,7 +580,8 @@ def main() -> int:
             error = f"process exited {code}: " + (" | ".join(tail) or f"it wrote nothing -- see {log_path}")
         print(f"<<< finished {name}  {time.time() - began:.0f}s" + (f"  FAILED: {error[:200]}" if error else ""), flush=True)
         return name, {"seconds": payload.get("seconds", time.time() - began), "error": error,
-                      "workers": payload.get("workers"), "records": payload.get("accounts") or {}, "log": log_path}
+                      "workers": payload.get("workers"), "records": payload.get("accounts") or {}, "log": log_path,
+                      "run_folder": payload.get("run_folder")}
 
     with ThreadPoolExecutor(max_workers=parallel) as pool:
         futures = [pool.submit(_one, i if 1 < parallel > i else 0, i + 1, p, m) for i, (p, m) in enumerate(runs)]
@@ -590,6 +595,7 @@ def main() -> int:
             record = run["records"].get(key) or {}
             text = str(record.get("text") or "").strip()
             per_account[key] = {"text": text, "retries": int(record.get("retries") or 0),
+                                "retry_reasons": record.get("retry_reasons") or [],
                                 **_score(text, record.get("reviews") or [])}
         outcome[name] = {**run, "accounts": per_account}
 
@@ -636,6 +642,38 @@ def main() -> int:
     out("other   = unsupported inference (a stated cause with no source) -- not a defect by itself")
     out("figures = amounts and percentages quoted; a low count next to the baseline means thinner commentary")
     out("")
+    import contextlib
+    import io
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        _print_costs(config, 0, only=[run.get("run_folder") for run in outcome.values()])
+    out("COST -- these runs, from the token counts each call recorded")
+    for line in buffer.getvalue().splitlines():
+        out(line)
+    out("")
+    out("WRITTEN IN CODE (no request made) -- accounts with no figure in any period")
+    try:
+        from fdd_utils.ai import get_prompt_engine
+        from fdd_utils.ai.pipeline import nil_account_status
+        engine = get_prompt_engine()
+        looked = 0
+        for key in keys:
+            try:
+                kind = engine.get_mapping_component(key, component="type") or ""
+            except Exception:
+                kind = ""
+            text, why_not = nil_account_status(key, dfs[key], language, kind, engine)
+            if text:
+                looked += 1
+                out(f"  {key}: {text}")
+            elif why_not != "has figures":
+                looked += 1
+                out(f"  {key}: sent to the model -- {why_not}")
+        if not looked:
+            out("  (none: every account has a figure somewhere)")
+    except Exception as exc:
+        out(f"  (could not be listed: {type(exc).__name__}: {exc})")
+    out("")
     out("%-14s " % "per account" + " ".join("%-22s" % n.split("::", 1)[1][:22] for n in outcome))
     for key in keys:
         cells = []
@@ -656,6 +694,9 @@ def main() -> int:
             out(f"\n--- {name}{'  [baseline]' if name == _name(config, *baseline) else ''}"
                 f"  ({a['chars']} chars, {a['retries']} retries) ---")
             out(a["text"] or "(empty)")
+            for number, reasons in enumerate(a.get("retry_reasons") or [], 1):
+                for reason in reasons or ["(no flagged clause recorded)"]:
+                    out(f"    [retry {number} was for] {str(reason)[:230]}")
             for review in a["hallucination"] + a["other"]:
                 out(f"    [{review.get('category')}] {str(review.get('clause'))[:110]}")
                 out(f"        {str(review.get('reason'))[:240]}")
