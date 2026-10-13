@@ -63,6 +63,13 @@ if "--child-bar" in sys.argv:
     try:
         _BAR_STREAM = os.fdopen(os.dup(2), "w", errors="replace")
         os.dup2(1, 2)
+        # sys.stderr has to be rebuilt on the redirected descriptor. On a
+        # Windows console it is bound to the console HANDLE, not to fd 2, and
+        # that handle is gone after the dup2: the next write to it fails, the
+        # message is lost and the interpreter exits 120. That turned a one-line
+        # "dashscope is not configured" into "process exited 120:" and nothing
+        # else, on every model.
+        sys.stderr = os.fdopen(2, "w", encoding="utf-8", errors="replace", closefd=False)
     except OSError:
         _BAR_STREAM = None
 
@@ -465,12 +472,24 @@ def main() -> int:
         _print_list(config)
         return 0
 
-    baseline = _baseline(config, args.baseline)
-    if args.models:
+    if args.child:
+        # One model, named by the parent. The comparison's other models are not
+        # this process's business: it used to rebuild the DEFAULT list here
+        # (every DashScope model) and check each was configured, so with the
+        # DashScope keys blanked every child quit before its first call --
+        # whichever model it had been asked to run.
+        baseline = _spec(config, args.child)
+        candidates = []
+    else:
+        baseline = _baseline(config, args.baseline)
+    if args.child:
+        pass
+    elif args.models:
         candidates = [_spec(config, m) for m in args.models.split(",") if m.strip()]
     else:
         candidates = [(c["model_type"], c["model_name"])
-                      for c in list_model_choices(config, include_unlisted=True) if c["model_type"] == "dashscope"]
+                      for c in list_model_choices(config, include_unlisted=True)
+                      if c["model_type"] == "dashscope" and c["ready"]]
     runs: List[Tuple[str, Optional[str]]] = [baseline] + [c for c in candidates if c != baseline]
     for provider, model in runs:
         if not is_provider_ready(config, provider):
@@ -554,7 +573,7 @@ def main() -> int:
         if code != 0 and not payload:
             with open(log_path, encoding="utf-8", errors="replace") as handle:
                 tail = [line.strip() for line in handle.read().splitlines() if line.strip()][-3:]
-            error = f"process exited {code}: " + " | ".join(tail)
+            error = f"process exited {code}: " + (" | ".join(tail) or f"it wrote nothing -- see {log_path}")
         print(f"<<< finished {name}  {time.time() - began:.0f}s" + (f"  FAILED: {error[:200]}" if error else ""), flush=True)
         return name, {"seconds": payload.get("seconds", time.time() - began), "error": error,
                       "workers": payload.get("workers"), "records": payload.get("accounts") or {}, "log": log_path}
