@@ -204,25 +204,31 @@ class PromptEngine:
     #:   auditor_no_formatting the Auditor is not sent the register/formatting rules
     #:   validator_no_style    the Validator is sent neither
     #:
-    #: TRIED, all four together, 2026-10-13: GPT-5.5 (reasoning high), one real
-    #: 31-account Chinese workbook, against the same run with none. Input fell
-    #: 827,082 -> 640,694 tokens (-22.5%), and the deck got worse in ways that
-    #: trace to the AUDITOR losing its rules, since the Generator kept its own:
-    #:   * dates came back as 2026-03-31 in 8 accounts (0 without the cuts) --
-    #:     the Auditor rewrites the draft and copied the data's column labels;
-    #:   * literal 「0万元」/「0.0万元」, 「备注显示」, 「#6028#美元资本金户」;
-    #:   * signed figures (「未弥补亏损-6,372.7万元」) and an invented
-    #:     「其余9.2万元为其他零星项目」 closing a list that did not need one;
-    #:   * filler where analysis had been: 其他非流动资产 250 chars against 165,
-    #:     ending 「由于该科目全部由待抵扣进项税构成，上述下降主要体现为待抵扣
-    #:     进项税余额减少」; 应收账款 lost both of its risk notes (292 -> 169).
-    #: Retries 2 -> 4. And the saving was the cheap kind: the Auditor's style
-    #: text is identical on every account, so the gateway was already serving
-    #: it from its prompt cache -- cached input fell 199,168 -> 77,056 and the
-    #: input actually paid for at full price fell only 10%.
-    #: So auditor_no_judgement / auditor_no_formatting stay OFF. They are kept
-    #: as switches for a retest on another model, not as a recommendation.
-    #: dedupe_guidance and validator_no_style were not separated by that run.
+    #: TRIED 2026-10-13 on GPT-5.5 (reasoning high), one real 31-account Chinese
+    #: workbook, three full runs:
+    #:   none                               in 827,082  cached 199,168  full-price 627,914
+    #:   all four                           in 640,694  cached  77,056  full-price 563,638
+    #:   dedupe_guidance+validator_no_style in 750,441  cached 320,000  full-price 430,441
+    #: Both trimmed runs came back worse in the same way: dates as 2026-03-31 in
+    #: 8 and 10 accounts (0 with no trim), literal 「0.0万元」, 「备注显示」,
+    #: signed figures, 「其余-7,067.7万元为其他零星项目」, analysis replaced by
+    #: filler or dropped (营业收入 and 财务费用 lost nearly all their figures).
+    #:
+    #: The first run was read as the AUDITOR's doing and recorded that way. The
+    #: second, with the Auditor's rules restored, shows the same defects -- so
+    #: that reading was wrong. What the two runs share is validator_no_style
+    #: (and dedupe_guidance). The Validator is not a checker only: it returns
+    #: final_content, which becomes the account's text wherever it runs, and it
+    #: runs selectively -- which fits defects in a third of the accounts rather
+    #: than all of them, as a Generator-side cause would give. Without the
+    #: formatting rules it writes dates and zeros the way the data table spells
+    #: them. So: validator_no_style stays OFF. The auditor_* pair was never
+    #: tested apart from it and is unproven either way; it also buys little,
+    #: because that text is identical on every account and the gateway already
+    #: serves it from its prompt cache (see the cached column above).
+    #: dedupe_guidance is what raised the cache hits (it takes the per-account
+    #: blocks out of the system prompt); whether it is clean ALONE is the open
+    #: test.
     PROMPT_TRIMS = ("dedupe_guidance", "auditor_no_judgement", "auditor_no_formatting", "validator_no_style")
 
     def _prompt_trims(self) -> frozenset:
