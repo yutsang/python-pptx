@@ -2017,6 +2017,14 @@ def percent_claim_findings(text: str) -> List[Dict[str, Any]]:
             tail = clause[second[2]:word_at]
             if len(between) > 40 or len(tail) > 8 or re.search(r"\d", tail):
                 continue
+            # 「余额为670.6万元，本期较上年末下降526.9万元，降幅78.6%」: the second
+            # amount is the CHANGE, announced by its own movement verb, not a
+            # second balance. Read as two balances it became "670.6 against
+            # 526.9 is an increase of 27.3%" -- on a sentence whose arithmetic
+            # is exactly right (526.9 / 670.6 = 78.6%) -- and bought two retries.
+            if (_PCT_UP.search(clause[max(0, second[1] - 6):second[1]])
+                    or _PCT_DOWN.search(clause[max(0, second[1] - 6):second[1]])):
+                continue
             if _PCT_VERSUS.search(between):
                 current, base = first, second
             elif _PCT_FROM.search(clause[:first[1]]) and _PCT_TO.search(between):

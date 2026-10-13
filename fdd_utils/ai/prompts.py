@@ -226,9 +226,15 @@ class PromptEngine:
     #: tested apart from it and is unproven either way; it also buys little,
     #: because that text is identical on every account and the gateway already
     #: serves it from its prompt cache (see the cached column above).
-    #: dedupe_guidance is what raised the cache hits (it takes the per-account
-    #: blocks out of the system prompt); whether it is clean ALONE is the open
-    #: test.
+    #:
+    #: Fourth run, dedupe_guidance ALONE: in 802,538 (-3.0%), cached 180,736,
+    #: full-price 621,802 (-1%). Every date in the long form, no 「0.0万元」, no
+    #: 「备注显示」 -- so the defects above were validator_no_style's, and
+    #: dedupe_guidance is clean on this model. It is also worth only 3%. The
+    #: 320,000 cached in the third run was NOT its doing, as first claimed: that
+    #: run started ten minutes after another one sending the same prefixes and
+    #: rode a warm gateway cache; started cold, the figure is no better than
+    #: with no trim at all.
     PROMPT_TRIMS = ("dedupe_guidance", "auditor_no_judgement", "auditor_no_formatting", "validator_no_style")
 
     def _prompt_trims(self) -> frozenset:
