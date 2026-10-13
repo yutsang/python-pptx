@@ -14,6 +14,10 @@ own Validator stage, which would have each model marking its own work.
         no AI call: the model blocks of config.yml as written, with every key,
         address and comment masked -- safe to paste when a block misbehaves.
 
+    python ad-hoc/workbench/compare_models.py --costs
+        no AI call: tokens and yuan spent by the newest five runs, per model
+        and per stage, from the counts each call already logged.
+
     python ad-hoc/workbench/compare_models.py for_test/<databook>.xlsx
         baseline + every DashScope chat model, on the default accounts.
 
@@ -200,6 +204,73 @@ def _print_masked_config() -> None:
         print(f"{number:4d}  {indent}{key}: {shown}")
 
 
+def _print_costs(config: Dict[str, Any], last: int) -> None:
+    """What the newest runs spent, from the token counts each call recorded.
+
+    Every call is filed in <run>/data.yml with the provider's own prompt and
+    completion token counts (or the pipeline's estimate when the provider
+    sent none -- the SOURCE column says which). Priced with price_in /
+    price_out on the model's available_models entry, read as yuan per million
+    tokens. A model with no price in config.yml gets tokens and no cost.
+    """
+    import glob
+    import yaml
+    prices: Dict[str, Tuple[float, float]] = {}
+    for block in config.values():
+        for entry in (block.get("available_models") or []) if isinstance(block, dict) else []:
+            if isinstance(entry, dict) and entry.get("price_in") is not None:
+                prices[str(entry.get("id"))] = (float(entry["price_in"]), float(entry.get("price_out") or 0))
+    root = os.path.join(_ROOT, "fdd_utils", "logs")
+    folders = [f for f in sorted(glob.glob(os.path.join(root, "run_*")))
+               if os.path.exists(os.path.join(f, "data.yml"))][-last:]
+    if not folders:
+        print(f"no run with a data.yml under {root}")
+        return
+    print("price = yuan per million tokens, from config.yml; in/out = tokens\n")
+    print("%-20s %-34s %5s %10s %9s %8s  %s" % ("run", "model", "calls", "in", "out", "yuan", "source"))
+    for folder in folders:
+        with open(os.path.join(folder, "data.yml"), encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        calls: List[Dict[str, Any]] = []
+
+        def walk(node: Any) -> None:
+            if isinstance(node, dict):
+                if "token_usage_source" in node and "model" in node:
+                    calls.append(node)
+                    return
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+
+        walk(data)
+        by_model: Dict[str, List[Dict[str, Any]]] = {}
+        for call in calls:
+            by_model.setdefault(str(call.get("model")), []).append(call)
+        for model, group in by_model.items():
+            def tokens(call: Dict[str, Any], real: str, estimate: str) -> int:
+                return int(call.get(real) if call.get(real) is not None else (call.get(estimate) or 0))
+            spent_in = sum(tokens(c, "prompt_tokens", "estimated_prompt_tokens") for c in group)
+            spent_out = sum(tokens(c, "completion_tokens", "estimated_output_tokens") for c in group)
+            price = prices.get(model)
+            cost = "%8.2f" % ((spent_in * price[0] + spent_out * price[1]) / 1e6) if price else "       -"
+            sources = sorted({str(c.get("token_usage_source")) for c in group})
+            print("%-20s %-34s %5d %10d %9d %s  %s" % (os.path.basename(folder), model[:34], len(group),
+                                                         spent_in, spent_out, cost, ",".join(sources)))
+            stages: Dict[str, List[int]] = {}
+            for call in group:
+                row = stages.setdefault(str(call.get("agent_name")), [0, 0, 0])
+                row[0] += 1
+                row[1] += tokens(call, "prompt_tokens", "estimated_prompt_tokens")
+                row[2] += tokens(call, "completion_tokens", "estimated_output_tokens")
+            for stage, (count, used_in, used_out) in sorted(stages.items()):
+                part = "%8.2f" % ((used_in * price[0] + used_out * price[1]) / 1e6) if price else "       -"
+                print("%-20s   %-32s %5d %10d %9d %s" % ("", stage[:32], count, used_in, used_out, part))
+    print("\nsource: provider_usage = counted by the gateway; anything else is this pipeline's own estimate.")
+    print("The executive summaries are written at export, not in these runs, and are not in the totals.")
+
+
 def _print_provider_state(config: Dict[str, Any]) -> None:
     """Why a provider is or is not usable, by key NAME only -- never a value.
 
@@ -337,6 +408,8 @@ def main() -> int:
     ap.add_argument("--baseline", default=None, help="provider or provider::id of the model in use today")
     ap.add_argument("--show-config", action="store_true",
                     help="print the model blocks of config.yml with keys, addresses and comments masked; no AI call")
+    ap.add_argument("--costs", type=int, nargs="?", const=5, default=None, metavar="N",
+                    help="print tokens and cost of the newest N runs (default 5) from their logs; no AI call")
     ap.add_argument("--all", action="store_true", help="every account in the workbook instead of the default eight")
     ap.add_argument("--parallel", type=int, default=1,
                     help="how many MODELS run at once (default 1: one after another, with a progress bar each). "
@@ -355,6 +428,9 @@ def main() -> int:
         _print_masked_config()
         return 0
     config = load_yaml_config(get_default_config_path())
+    if args.costs:
+        _print_costs(config, args.costs)
+        return 0
     if args.list or not args.databook:
         _print_list(config)
         return 0
