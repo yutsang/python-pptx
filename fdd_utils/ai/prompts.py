@@ -191,6 +191,82 @@ class PromptEngine:
             pass
         return True
 
+    #: Per-account guidance computed in code and substituted into the templates.
+    _GUIDANCE_KEYS = (
+        "period_reference_guidance", "variance_analysis_guidance", "analytical_lens_guidance",
+        "detail_table_guidance", "composition_guidance", "data_insight_guidance",
+    )
+    #: Named cuts to what a prompt carries; none is on unless asked for.
+    #:   dedupe_guidance       the six guidance blocks once per request (see
+    #:                         _dedupe_guidance) instead of two or three times
+    #:   auditor_no_judgement  the Auditor is not sent the "how much to write /
+    #:                         what is worth analysing" rules
+    #:   auditor_no_formatting the Auditor is not sent the register/formatting rules
+    #:   validator_no_style    the Validator is sent neither
+    PROMPT_TRIMS = ("dedupe_guidance", "auditor_no_judgement", "auditor_no_formatting", "validator_no_style")
+
+    def _prompt_trims(self) -> frozenset:
+        """Which PROMPT_TRIMS are on: processing.prompt_trim (a list) in
+        config.yml, or FDD_PROMPT_TRIM (comma-separated) in the environment,
+        which wins so one run can be compared without editing the file.
+
+        The prompts were grown for a much weaker local model, and measured on
+        a 24-account run the account's own DATA is 30% of a Generator request
+        and 25% of an Auditor one; the rest is instruction. How much of that a
+        current model still needs is not something to argue about, so each cut
+        is a switch that changes nothing until it has been run side by side
+        (ad-hoc/workbench/compare_models.py) and read.
+        """
+        import os as _os
+        override = _os.environ.get("FDD_PROMPT_TRIM")
+        if override is not None:
+            chosen = [part.strip() for part in override.split(",")]
+        else:
+            chosen = []
+            try:
+                from ..financial_common import load_yaml_file
+                for candidate in ("fdd_utils/config.yml", "fdd_utils/config.example.yml"):
+                    cfg = load_yaml_file(candidate)
+                    if cfg:
+                        value = (cfg.get("processing") or {}).get("prompt_trim") or []
+                        chosen = [value] if isinstance(value, str) else list(value)
+                        break
+            except Exception:
+                chosen = []
+        return frozenset(str(name).strip() for name in chosen if str(name).strip() in self.PROMPT_TRIMS)
+
+    def _dedupe_guidance(self, system_prompt: str, user_prompt: str, language: str) -> Tuple[str, str]:
+        """Each guidance block once per request, in the user prompt.
+
+        35 of the 37 Generator templates in mappings.yml carry all six
+        placeholders in the system prompt AND in the user prompt, and the
+        default Chinese template carries them twice in the user prompt alone
+        (once as the block, once inside 「按照{…}中的报告重点」), so the model
+        reads the same permitted-dates, unit, movement and lens text two or
+        three times per account. Nothing in git says why; the templates date
+        from the local-model period, when repeating an instruction was how it
+        was made to stick.
+
+        Kept in the USER prompt because that is where the account's data is,
+        and because every one of these blocks is account-specific: taking them
+        out of the system prompt leaves it closer to identical across
+        accounts, which is what a provider's prompt cache keys on. A template
+        that has a block only in its system prompt keeps it there.
+        """
+        again = "上述指引" if language == "Chi" else "the guidance above"
+        referred = False
+        for key in self._GUIDANCE_KEYS:
+            token = "{%s}" % key
+            if token not in user_prompt:
+                continue
+            system_prompt = system_prompt.replace(token, "")
+            head, _, tail = user_prompt.partition(token)
+            if token in tail:
+                tail = tail.replace(token, "" if referred else again, 1).replace(token, "")
+                referred = True
+            user_prompt = head + token + tail
+        return re.sub(r"[ \t]{2,}", " ", system_prompt), re.sub(r"[ \t]{2,}", " ", user_prompt)
+
     def resolve_mapping_key(self, mapping_key: str) -> str:
         return self.get_mapping_component(mapping_key) or mapping_key
 
@@ -2808,6 +2884,17 @@ class PromptEngine:
                 patterns_text = framing + patterns_text
             format_params["patterns"] = patterns_text
 
+        trims = self._prompt_trims()
+        stage = self.normalize_agent_name(agent_name)
+        if "dedupe_guidance" in trims:
+            system_prompt, user_prompt_template = self._dedupe_guidance(
+                str(system_prompt or ""), str(user_prompt_template or ""), language)
+        if (stage == "2_Auditor" and "auditor_no_judgement" in trims) or (
+                stage == "4_Validator" and "validator_no_style" in trims):
+            format_params["fdd_judgement"] = ""
+        if (stage == "2_Auditor" and "auditor_no_formatting" in trims) or (
+                stage == "4_Validator" and "validator_no_style" in trims):
+            format_params["common_formatting"] = ""
         rendered_system_prompt = self._safe_format(system_prompt, format_params)
         rendered_user_prompt = self._safe_format(user_prompt_template, format_params)
 

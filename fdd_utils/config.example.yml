@@ -148,6 +148,12 @@ processing:
   #   python inspect_databook_to_pptx.py --databook X --pptx Y --style-profile
   #   python inspect_databook_to_pptx.py --databook X --pptx Y --check-claims
   inject_mapping_patterns: true
+  # Cuts to what each request carries, for measuring what a current model
+  # still needs of prompts written for a much weaker one. Empty = every prompt
+  # exactly as before. Names (PromptEngine.PROMPT_TRIMS): dedupe_guidance,
+  # auditor_no_judgement, auditor_no_formatting, validator_no_style.
+  # FDD_PROMPT_TRIM=name,name in the environment overrides this for one run.
+  prompt_trim: []
   # Input-token budget per LLM call. A 65-component account rendered past a
   # 32,768-token provider limit three runs in a row and shipped no commentary.
   # When the estimated prompt exceeds max_input_tokens - headroom_tokens, the
