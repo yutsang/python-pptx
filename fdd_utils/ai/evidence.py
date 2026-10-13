@@ -413,6 +413,18 @@ def compile_account_briefs(
             # drops a gross figure that does not tie; it stays out of prompts
             # until that has held on a real run.
             continue
+        if observation.code == "NEGATIVE_BALANCE":
+            # Internal summary and client questions only. The rule knows a
+            # component's sign differs from its account's and nothing about
+            # why, and on one real workbook all three of its findings were
+            # ordinary: the current portion deducted from a long-term loan, a
+            # contra row on an amortisation schedule (「收益」 -722.7万元), and a
+            # straight-line rent adjustment on one tenant. Given to the model
+            # as a verified brief, each was written up as a misclassification
+            # -- 「与科目性质不符，建议核实其归类是否恰当」, 「方向与应收账款科目
+            # 相反」 -- by four different models, and once in the executive
+            # summary. A reviewer can weigh it; a prompt cannot.
+            continue
         payload = observation.as_dict()
         for key in observation.accounts:
             brief = briefs.get(str(key))

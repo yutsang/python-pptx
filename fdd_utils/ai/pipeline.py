@@ -715,6 +715,60 @@ def humanise_report_language(text: str) -> str:
     return body
 
 
+def nil_account_commentary(mapping_key: str, df: Any, language: str, statement_type: str = "",
+                           prompt_manager: Any = None) -> str:
+    """The whole commentary for an account that is nil in every period, or "".
+
+    An account with no figure in any period and no note against it has exactly
+    one thing to say, and five models put through the same four such accounts
+    said it five ways, most of them padded and some invented: 「其他收益主要包括
+    政府补助及个税手续费返还等项目」 for an account with nothing in it, 「未形成
+    具体构成」, 「年化后亦未发生」, 「该科目对利润表无影响」. Each also cost a
+    Generator and an Auditor request to produce. So it is written here.
+
+    Deliberately narrow. "" -- and the account goes to the model as before --
+    unless EVERY numeric cell of the analysis frame is zero or empty (a nil
+    total over non-nil components is something to explain), no remark, side
+    note or adjacent detail row exists, and the total was not set from the
+    Financials sheet (then the tab is empty but the account is not).
+    """
+    try:
+        if not isinstance(df, pd.DataFrame) or df.empty:
+            return ""
+        attrs = df.attrs or {}
+        analysis = attrs.get("prompt_analysis_df")
+        analysis = analysis if isinstance(analysis, pd.DataFrame) and not analysis.empty else df
+        if attrs.get("financials_authority") or (analysis.attrs or {}).get("financials_authority"):
+            return ""
+        for note_key in ("supporting_notes", "working_remark_notes", "table_linked_remarks"):
+            if attrs.get(note_key) or (analysis.attrs or {}).get(note_key):
+                return ""
+        if prompt_manager is not None and prompt_manager.filter_adjacent_detail_rows(df):
+            return ""
+        periods = [c for c in analysis.columns[1:]
+                   if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(c)) and not str(c).endswith("_formatted")]
+        if not periods:
+            return ""
+        values = analysis[periods].apply(pd.to_numeric, errors="coerce")
+        if values.notna().sum().sum() == 0 or (values.fillna(0.0).abs() > 1e-9).any().any():
+            return ""
+        year, month, day = (int(part) for part in str(max(periods)).split("-"))
+        is_flow = str(statement_type or (attrs.get("integrity") or {}).get("statement_type") or "").upper() == "IS"
+        name = str(mapping_key)
+        if str(language) == "Chi":
+            if is_flow:
+                return f"{name}于报告期内各期间均未发生。"
+            return f"截至{year}年{month}月{day}日，{name}无余额，报告期内各期末亦均无余额。"
+        month_name = ("January", "February", "March", "April", "May", "June", "July", "August",
+                      "September", "October", "November", "December")[month - 1]
+        if is_flow:
+            return f"no {name.lower()} was recorded in any of the periods presented."
+        return (f"there was no balance as at {day} {month_name} {year}, nor at any earlier "
+                f"period end presented.")
+    except Exception:
+        return ""  # a shortcut must never be why an account has no commentary
+
+
 def humanise_zero_balance(text: str, statement_type: str = "") -> str:
     """Rewrite the mechanical zero-balance forms the deliverable never uses.
 
@@ -1163,6 +1217,16 @@ def _build_peer_context(dfs: Optional[Dict[str, pd.DataFrame]]) -> Optional[Dict
     return None
 
 
+def _nil_accounts_enabled(ai_helper) -> bool:
+    """processing.deterministic_nil_accounts, default on."""
+    try:
+        value = ((getattr(ai_helper, "full_config", None) or {}).get("processing") or {}).get(
+            "deterministic_nil_accounts")
+        return True if value is None else bool(value)
+    except Exception:
+        return True
+
+
 def process_single_agent_item(
     agent_name: str,
     mapping_key: str,
@@ -1254,6 +1318,32 @@ def process_single_agent_item(
             raise RuntimeError("Circuit breaker open for this stage")
 
         response = None
+        # An account that is nil throughout is written in code (see
+        # nil_account_commentary): the Generator's text is that sentence and
+        # the later stages pass it through unchanged. Not on a retry or a
+        # reprompt -- a user comment or a rejected draft means someone wants
+        # something else said.
+        _nil_text = ""
+        if not str(user_comment or "").strip() and _nil_accounts_enabled(ai_helper):
+            _nil_type = ""
+            try:
+                _nil_type = prompt_manager.get_mapping_component(mapping_key, component="type") or ""
+            except Exception:
+                pass
+            _nil_text = nil_account_commentary(mapping_key, df, ai_helper.language, _nil_type, prompt_manager)
+            if _nil_text and agent_name != "subagent_1" and str(previous_output or "").strip() != _nil_text:
+                _nil_text = ""
+            if _nil_text and agent_name == "subagent_1" and str(previous_output or "").strip():
+                _nil_text = ""
+        if _nil_text:
+            response = {"content": _nil_text, "mode": "deterministic", "duration": 0.0}
+            try:
+                response.update(ai_helper._build_logging_metadata(
+                    user_prompt="", system_prompt="", content=_nil_text, duration=0.0, mode="deterministic",
+                    prompt_tokens=0, completion_tokens=0, total_tokens=0))
+            except Exception:
+                pass
+            response["token_usage_source"] = "deterministic"
         last_exc: Optional[Exception] = None
         # Exponential backoff between retries: 0s, 1s, 2s — gives the API a
         # brief moment to recover without compounding total wall-time too much.
@@ -1261,6 +1351,8 @@ def process_single_agent_item(
         # several extra minutes on a stressed run; (0, 1, 2) saves ~4s/call.
         retry_backoffs = [0.0, 1.0, 2.0]
         for attempt in range(1, 4):  # 1 initial + 2 retries
+            if response is not None:
+                break
             if attempt > 1 and retry_backoffs[attempt - 1] > 0:
                 time.sleep(retry_backoffs[attempt - 1])
             try:

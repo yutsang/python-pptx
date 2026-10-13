@@ -148,6 +148,10 @@ processing:
   #   python inspect_databook_to_pptx.py --databook X --pptx Y --style-profile
   #   python inspect_databook_to_pptx.py --databook X --pptx Y --check-claims
   inject_mapping_patterns: true
+  # An account with no figure in any period and no remark against it gets its
+  # one sentence from code instead of from the model (no request is made).
+  # false sends those accounts to the model as before.
+  deterministic_nil_accounts: true
   # Cuts to what each request carries, for measuring what a current model
   # still needs of prompts written for a much weaker one. Empty = every prompt
   # exactly as before. Names (PromptEngine.PROMPT_TRIMS): dedupe_guidance,

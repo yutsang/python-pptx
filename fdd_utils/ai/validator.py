@@ -1958,6 +1958,10 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
         out.extend(_movement_claim_reviews(final_content, df))
     except Exception:
         pass
+    try:
+        out.extend(_balance_claim_reviews(final_content, df))
+    except Exception:
+        pass
     if direction_findings is not None:
         direction_findings.extend(collect_direction_findings(final_content, df))
     return out
@@ -2140,6 +2144,96 @@ def movement_claim_findings(text: str, df) -> List[Dict[str, Any]]:
             })
             break
     return findings
+
+
+_STATED_BALANCE = re.compile(
+    r"截至\s*(\d{4})\s*[年\-/.]\s*(\d{1,2})\s*[月\-/.]\s*(\d{1,2})\s*日?[，,]?"
+    r"[^。；;，,\d]{0,24}?(?:余额|账面净值|账面价值|净值)(?:合计)?\s*(?:为|是|共计)?\s*"
+    r"(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)"
+)
+
+
+def balance_claim_findings(text: str, df) -> List[Dict[str, Any]]:
+    """「截至X，…余额为A」 where A is not what the account stood at on X.
+
+    Every other check takes a figure and asks whether it exists somewhere in
+    the account's numbers. This one asks whether the balance the sentence
+    OPENS with is the account's balance. One real draft opened 「其他流动负债
+    余额为74.4万元」 for an account standing at 37.2万元: the model had added
+    the accrued-interest line to the two loans it is made of, and 74.4 passed
+    grounding untouched because nothing checks a sum nobody stated as one.
+
+    Quiet when the stated figure equals ANY line of the frame at that date --
+    then the sentence is giving a named line's balance (a gross cost, a
+    sub-account), which is not this check's business -- and when the frame has
+    no total row or no column for the date.
+    """
+    findings: List[Dict[str, Any]] = []
+    if df is None or not str(text or "").strip():
+        return findings
+    try:
+        import pandas as pd
+        from .facts import _total_row_index, _value_columns
+        analysis = (getattr(df, "attrs", None) or {}).get("prompt_analysis_df")
+        analysis = analysis if isinstance(analysis, pd.DataFrame) and not analysis.empty else df
+        periods = _value_columns(analysis)
+        total_idx = _total_row_index(
+            analysis, (analysis.attrs or {}).get("row_types_by_description") or {}, periods)
+    except Exception:
+        return findings
+    if total_idx is None:
+        return findings
+    for match in _STATED_BALANCE.finditer(str(text)):
+        period = "%04d-%02d-%02d" % (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+        if period not in analysis.columns:
+            continue
+        column = pd.to_numeric(analysis[period], errors="coerce")
+        total = column.get(total_idx)
+        if total is None or pd.isna(total):
+            continue
+        raw = match.group(4)
+        scale = _SCALE.get(match.group(5), 1.0)
+        stated = abs(float(raw.replace(",", ""))) * scale
+        # Half a step of the figure as printed, plus 0.5% for a total that was
+        # itself rounded on the way into the frame.
+        slack = 0.5 * scale * 10 ** -len(raw.partition(".")[2]) + 0.005 * abs(float(total))
+        if abs(stated - abs(float(total))) <= slack:
+            continue
+        if any(abs(stated - abs(float(v))) <= slack for v in column.dropna()):
+            continue
+        # A power of ten apart is a question about units -- the frame's or the
+        # sentence's -- and the scale checks own that; calling it a wrong
+        # balance here would flag every account of a frame held in thousands.
+        ratio = stated / abs(float(total)) if float(total) else 0.0
+        if not ratio or any(abs(ratio - k) / k <= 0.02 for k in (10.0, 100.0, 1e3, 1e4, 0.1, 0.01, 1e-3, 1e-4)):
+            continue
+        start = str(text).rfind("。", 0, match.start()) + 1
+        end = str(text).find("。", match.end())
+        end = end + 1 if end >= 0 else len(str(text))
+        findings.append({
+            "clause": str(text)[start:end].strip(), "span": [int(start), int(end)],
+            "code": "BALANCE_MISMATCH",
+            "reason": (
+                f"the sentence gives a balance of {raw}{match.group(5)} at {period}; the account's total "
+                f"at that date is {abs(float(total)) / scale:,.{len(raw.partition('.')[2])}f}{match.group(5)}, "
+                "and no line of the schedule carries the stated figure. A part may have been added to "
+                "the whole it belongs to."
+            ),
+        })
+    return findings
+
+
+def _balance_claim_reviews(final_content: str, df) -> List[Dict[str, Any]]:
+    """balance_claim_findings as clause reviews. "reasoning" for now -- shown,
+    not retried -- because two of the last three checks to be made retriable on
+    the day they were written turned out wrong more often than right on a
+    model whose sentences they had not seen. Promote it once a real run has
+    shown what it fires on."""
+    return [{
+        "clause": f["clause"], "supported": False, "category": "reasoning",
+        "reason": f["reason"], "code": f["code"], "span": f["span"],
+        "conf": _CONF_DET_HALLUCINATION,
+    } for f in balance_claim_findings(final_content, df)]
 
 
 def _movement_claim_reviews(final_content: str, df) -> List[Dict[str, Any]]:
