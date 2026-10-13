@@ -1649,6 +1649,13 @@ def closing_remainder(text: str) -> Optional[float]:
     for match in _RESIDUAL_ITEM.finditer(body):
         start = body.rfind("。", 0, match.start()) + 1
         before = [(float(v.replace(",", "")), u, v) for v, u in _RUNON_AMT.findall(body[start:match.start()])]
+        if len(before) == 2:
+            # The total stated one sentence earlier: 「余额为1,062.8万元，系…保证金。
+            # 该科目主要包括：1）甲585.2万元；2）乙298.0万元；3）其余179.6万元为…」.
+            stated_total = _STATED_TOTAL.search(body[:start])
+            if stated_total:
+                before.insert(0, (float(stated_total.group(1).replace(",", "")), stated_total.group(2),
+                                  stated_total.group(1)))
         if len(before) < 3:
             continue
         scale = _SCALE.get(match.group(3), 1.0)
@@ -2175,7 +2182,21 @@ def _composition_reviews(final_content: str) -> List[Dict[str, Any]]:
     # code the check already knew.
     for code, message in _composition_findings("", body):
         detail = message.split("] ", 1)[-1]
-        certain = code in ("COMPOSITION_UNIT_ERROR", "COMPOSITION_DOUBLE_COUNT", "COMPOSITION_EXCEEDS")
+        # COMPOSITION_EXCEEDS was here for one day. On the first run that put
+        # five models through all 31 accounts it fired four times and was wrong
+        # four times, each costing two regenerations that came back the same:
+        #   * a drill-down inside a drill-down (「计提867.4万元及第三方9.9万元；
+        #     计提中主要为…731.3万元，其中…725.0万元」);
+        #   * a period comparison beside the total (「合计366.1万元，年化后
+        #     1,464.3万元，较2025年度1,463.3万元基本持平」);
+        #   * an earlier period's breakdown after the latest balance (「2025年末
+        #     余额为16.6万元…2023年末余额23.6万元则主要为…16.1万元及…7.3万元」);
+        #   * gross items with the deduction stated after them (「主要包括…5.49
+        #     亿元、…，受结转固定资产4.19亿元影响后净额为2.94亿元」) -- which was
+        #     the one text of the five that had the right period's figures.
+        # It was built on one model's habits and does not survive another's
+        # sentence shapes. It still reports; it no longer buys a retry.
+        certain = code in ("COMPOSITION_UNIT_ERROR", "COMPOSITION_DOUBLE_COUNT")
         # COMPOSITION_RESIDUAL_WRONG is deliberately NOT here: it is corrected
         # in code when the final text is settled (patch_stated_remainder), and
         # regenerating for it bought the same wrong figure twice.
