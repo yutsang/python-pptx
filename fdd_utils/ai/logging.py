@@ -226,6 +226,10 @@ class PipelineRunLogger:
             "estimated_total_tokens": result.get("estimated_total_tokens"),
             "expected_max_output_tokens": expected_max_output_tokens,
             "token_usage_source": token_usage_source,
+            # Set only when response_cache answered: what the original call
+            # used, i.e. what this one did not spend.
+            "saved_prompt_tokens": result.get("saved_prompt_tokens"),
+            "saved_completion_tokens": result.get("saved_completion_tokens"),
             # Prompt-cache counters, when the provider reports them. Prompt
             # tokens are ~96% of spend here and both later stages send a
             # byte-identical system prompt on every account, so whether any of

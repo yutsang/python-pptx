@@ -280,6 +280,13 @@ def _print_costs(config: Dict[str, Any], last: int) -> None:
             share = "%4.0f%%" % (100.0 * system / estimated) if estimated else "    -"
             print("%-20s %-32s %5d %9d %8d %s %s %s  %s" % (os.path.basename(folder), model[:32], len(group),
                                                             spent_in, spent_out, cached, share, cost, ",".join(sources)))
+            reused = [c for c in group if c.get("token_usage_source") == "response_cache"]
+            if reused:
+                kept_in = sum(int(c.get("saved_prompt_tokens") or 0) for c in reused)
+                kept_out = sum(int(c.get("saved_completion_tokens") or 0) for c in reused)
+                kept = " = %.2f yuan" % ((kept_in * price[0] + kept_out * price[1]) / 1e6) if price else ""
+                print("%-20s   %d of %d call(s) answered from response_cache -- not spent: %d in, %d out%s" % (
+                    "", len(reused), len(group), kept_in, kept_out, kept))
             stages: Dict[str, List[int]] = {}
             for call in group:
                 row = stages.setdefault(str(call.get("agent_name")), [0, 0, 0])

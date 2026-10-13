@@ -486,6 +486,78 @@ class AIClient:
         allow_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """The model's answer to this request -- from response_cache when the
+        identical request has been answered before and the cache is on (see
+        that module for what "identical" covers and why it is safe), otherwise
+        from the provider. A served answer reports zero tokens and
+        token_usage_source "response_cache", with what the original call used
+        under saved_*_tokens, so a run's cost table shows what it did not spend.
+        """
+        from . import response_cache
+
+        cache = None if self.use_heuristic else response_cache.settings(self.full_config)
+        if cache is None:
+            return self._request(
+                user_prompt, system_prompt, temperature, max_tokens, top_p,
+                frequency_penalty, presence_penalty, allow_thinking, reasoning_effort,
+            )
+        started = time.time()
+        if system_prompt is None:
+            system_prompt, _ = self.load_prompts()
+        resolved = {
+            "temperature": temperature if temperature is not None else self.temperature,
+            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
+            "top_p": top_p if top_p is not None else self.top_p,
+            "frequency_penalty": frequency_penalty if frequency_penalty is not None else self.frequency_penalty,
+            "presence_penalty": presence_penalty if presence_penalty is not None else self.presence_penalty,
+        }
+        key = response_cache.request_key(
+            provider=self.model_type, model=self.config_details.get("chat_model"),
+            system=system_prompt, user=user_prompt, allow_thinking=allow_thinking,
+            reasoning_effort=(reasoning_effort if reasoning_effort is not None
+                              else self.config_details.get("reasoning_effort")),
+            **resolved,
+        )
+        entry = response_cache.load(cache, key)
+        if entry is not None:
+            content = str(entry["content"])
+            duration = time.time() - started
+            payload = {"content": content, "mode": "ai", "duration": duration, **resolved}
+            payload.update(self._build_logging_metadata(
+                user_prompt=user_prompt, system_prompt=system_prompt, content=content,
+                duration=duration, mode="ai", prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                **resolved,
+            ))
+            payload.update(resolved)
+            payload["token_usage_source"] = "response_cache"
+            payload["saved_prompt_tokens"] = entry.get("prompt_tokens")
+            payload["saved_completion_tokens"] = entry.get("completion_tokens")
+            return payload
+        payload = self._request(
+            user_prompt, system_prompt, temperature, max_tokens, top_p,
+            frequency_penalty, presence_penalty, allow_thinking, reasoning_effort,
+        )
+        response_cache.store(cache, key, {
+            "content": payload.get("content"),
+            "prompt_tokens": payload.get("prompt_tokens"),
+            "completion_tokens": payload.get("completion_tokens"),
+            "model": self.config_details.get("chat_model"),
+            "stored_at": time.time(),
+        })
+        return payload
+
+    def _request(
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        allow_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Get response from AI model or heuristic.
 

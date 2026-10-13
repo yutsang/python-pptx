@@ -158,6 +158,16 @@ processing:
   prompt_budget:
     max_input_tokens: 32768
     headroom_tokens: 4096
+  # Keep each answer the model gives, keyed by the exact request (provider,
+  # model, both prompts, sampling parameters), and reuse it when the identical
+  # request comes round again -- which is most of a re-run of the same
+  # workbook. Anything that changes what is asked (a cell, an instruction, the
+  # model) is asked afresh; the verifier, repair and export always run again.
+  # Stored under fdd_utils/logs/response_cache/. FDD_RESPONSE_CACHE=0 in the
+  # environment forces fresh answers for one run without editing this file.
+  response_cache:
+    enabled: false
+    max_age_days: 30
   debug_mode: false
   feedback_loop:
     enabled: true
