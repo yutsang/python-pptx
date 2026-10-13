@@ -83,6 +83,16 @@ from fdd_utils.ai import (  # noqa: E402
 DEFAULT_ACCOUNTS = ["应收账款", "固定资产", "在建工程", "长期待摊费用", "长期应付款",
                     "营业收入", "财务费用", "投资收益"]
 
+#: List prices (yuan per million tokens, in / out) as first recorded with the
+#: DashScope model ids. Used by --costs only when config.yml carries none;
+#: a price_in / price_out on the model's available_models entry overrides it.
+_LIST_PRICES = {
+    "dashscope_qwen3.7-max": (12.0, 36.0),
+    "dashscope_deepseek-v4-pro-0813": (12.0, 24.0),
+    "kimi-k2.6_chat": (6.5, 27.0),
+    "dashscope_deepseek-v4-flash-0731": (1.0, 2.0),
+}
+
 _FIGURE = re.compile(r"\d[\d,]*(?:\.\d+)?\s*(?:万元|亿元|千元|元|%|million|thousand|[kKmM]\b)")
 
 
@@ -220,14 +230,20 @@ def _print_costs(config: Dict[str, Any], last: int) -> None:
         for entry in (block.get("available_models") or []) if isinstance(block, dict) else []:
             if isinstance(entry, dict) and entry.get("price_in") is not None:
                 prices[str(entry.get("id"))] = (float(entry["price_in"]), float(entry.get("price_out") or 0))
+    priced_from_config = bool(prices)
+    for model, pair in _LIST_PRICES.items():
+        prices.setdefault(model, pair)
     root = os.path.join(_ROOT, "fdd_utils", "logs")
     folders = [f for f in sorted(glob.glob(os.path.join(root, "run_*")))
                if os.path.exists(os.path.join(f, "data.yml"))][-last:]
     if not folders:
         print(f"no run with a data.yml under {root}")
         return
-    print("price = yuan per million tokens, from config.yml; in/out = tokens\n")
-    print("%-20s %-34s %5s %10s %9s %8s  %s" % ("run", "model", "calls", "in", "out", "yuan", "source"))
+    print("price = yuan per million tokens, " + ("from config.yml" if priced_from_config else
+          "from the list built into this script (config.yml carries no price_in / price_out)") + "; in/out = tokens")
+    print("cached = input tokens the gateway says it served from its prompt cache ('-' = it reported nothing)")
+    print("sys%   = share of the input that is the system prompt, which is the same text on every account of a stage\n")
+    print("%-20s %-32s %5s %9s %8s %8s %5s %8s  %s" % ("run", "model", "calls", "in", "out", "cached", "sys%", "yuan", "source"))
     for folder in folders:
         with open(os.path.join(folder, "data.yml"), encoding="utf-8") as handle:
             data = yaml.safe_load(handle) or {}
@@ -256,17 +272,24 @@ def _print_costs(config: Dict[str, Any], last: int) -> None:
             price = prices.get(model)
             cost = "%8.2f" % ((spent_in * price[0] + spent_out * price[1]) / 1e6) if price else "       -"
             sources = sorted({str(c.get("token_usage_source")) for c in group})
-            print("%-20s %-34s %5d %10d %9d %s  %s" % (os.path.basename(folder), model[:34], len(group),
-                                                         spent_in, spent_out, cost, ",".join(sources)))
+            hits = [c.get("cached_prompt_tokens") if c.get("cached_prompt_tokens") is not None
+                    else c.get("prompt_cache_hit_tokens") for c in group]
+            cached = "%8d" % sum(int(h) for h in hits if h is not None) if any(h is not None for h in hits) else "       -"
+            system = sum(int(c.get("estimated_system_prompt_tokens") or 0) for c in group)
+            estimated = sum(int(c.get("estimated_prompt_tokens") or 0) for c in group)
+            share = "%4.0f%%" % (100.0 * system / estimated) if estimated else "    -"
+            print("%-20s %-32s %5d %9d %8d %s %s %s  %s" % (os.path.basename(folder), model[:32], len(group),
+                                                            spent_in, spent_out, cached, share, cost, ",".join(sources)))
             stages: Dict[str, List[int]] = {}
             for call in group:
                 row = stages.setdefault(str(call.get("agent_name")), [0, 0, 0])
                 row[0] += 1
                 row[1] += tokens(call, "prompt_tokens", "estimated_prompt_tokens")
                 row[2] += tokens(call, "completion_tokens", "estimated_output_tokens")
-            for stage, (count, used_in, used_out) in sorted(stages.items()):
-                part = "%8.2f" % ((used_in * price[0] + used_out * price[1]) / 1e6) if price else "       -"
-                print("%-20s   %-32s %5d %10d %9d %s" % ("", stage[:32], count, used_in, used_out, part))
+            if len(stages) > 1:
+                for stage, (count, used_in, used_out) in sorted(stages.items()):
+                    part = "%8.2f" % ((used_in * price[0] + used_out * price[1]) / 1e6) if price else "       -"
+                    print("%-20s   %-30s %5d %9d %8d %14s %s" % ("", stage[:30], count, used_in, used_out, "", part))
     print("\nsource: provider_usage = counted by the gateway; anything else is this pipeline's own estimate.")
     print("The executive summaries are written at export, not in these runs, and are not in the totals.")
 
