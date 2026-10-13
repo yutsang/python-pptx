@@ -1642,21 +1642,24 @@ def closing_remainder(text: str) -> Optional[float]:
     为…」), and a nil balance set out as its gross movements (「余额合计0.00亿元，
     包括：结转固定资产为-7.75亿元；建造成本为5.94亿元；土地成本为1.17亿元；其余
     0.64亿元为…」). Returns the remainder in 元, or None when the sentence does
-    not close: at least two items, and within the rounding of the figures as
-    printed.
+    not close to within the rounding of the figures as printed.
     """
     body = str(text or "")
     for match in _RESIDUAL_ITEM.finditer(body):
         start = body.rfind("。", 0, match.start()) + 1
         before = [(float(v.replace(",", "")), u, v) for v, u in _RUNON_AMT.findall(body[start:match.start()])]
-        if len(before) == 2:
+        if len(before) in (1, 2) and not _STATED_TOTAL.search(body[start:match.start()]):
             # The total stated one sentence earlier: 「余额为1,062.8万元，系…保证金。
             # 该科目主要包括：1）甲585.2万元；2）乙298.0万元；3）其余179.6万元为…」.
             stated_total = _STATED_TOTAL.search(body[:start])
             if stated_total:
                 before.insert(0, (float(stated_total.group(1).replace(",", "")), stated_total.group(2),
                                   stated_total.group(1)))
-        if len(before) < 3:
+        # One named item is enough: 「余额为877.2万元，主要为应付…工程款731.3万元，
+        # 其余145.9万元为…」 is a total, its largest component and what is left.
+        # It was flagged as an amount "not found in source data" on two runs in
+        # a row while this required two items.
+        if len(before) < 2:
             continue
         scale = _SCALE.get(match.group(3), 1.0)
         stated = float(match.group(2).replace(",", "")) * scale * (-1.0 if match.group(1) else 1.0)

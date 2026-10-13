@@ -203,6 +203,26 @@ class PromptEngine:
     #:                         what is worth analysing" rules
     #:   auditor_no_formatting the Auditor is not sent the register/formatting rules
     #:   validator_no_style    the Validator is sent neither
+    #:
+    #: TRIED, all four together, 2026-10-13: GPT-5.5 (reasoning high), one real
+    #: 31-account Chinese workbook, against the same run with none. Input fell
+    #: 827,082 -> 640,694 tokens (-22.5%), and the deck got worse in ways that
+    #: trace to the AUDITOR losing its rules, since the Generator kept its own:
+    #:   * dates came back as 2026-03-31 in 8 accounts (0 without the cuts) --
+    #:     the Auditor rewrites the draft and copied the data's column labels;
+    #:   * literal 「0万元」/「0.0万元」, 「备注显示」, 「#6028#美元资本金户」;
+    #:   * signed figures (「未弥补亏损-6,372.7万元」) and an invented
+    #:     「其余9.2万元为其他零星项目」 closing a list that did not need one;
+    #:   * filler where analysis had been: 其他非流动资产 250 chars against 165,
+    #:     ending 「由于该科目全部由待抵扣进项税构成，上述下降主要体现为待抵扣
+    #:     进项税余额减少」; 应收账款 lost both of its risk notes (292 -> 169).
+    #: Retries 2 -> 4. And the saving was the cheap kind: the Auditor's style
+    #: text is identical on every account, so the gateway was already serving
+    #: it from its prompt cache -- cached input fell 199,168 -> 77,056 and the
+    #: input actually paid for at full price fell only 10%.
+    #: So auditor_no_judgement / auditor_no_formatting stay OFF. They are kept
+    #: as switches for a retest on another model, not as a recommendation.
+    #: dedupe_guidance and validator_no_style were not separated by that run.
     PROMPT_TRIMS = ("dedupe_guidance", "auditor_no_judgement", "auditor_no_formatting", "validator_no_style")
 
     def _prompt_trims(self) -> frozenset:
