@@ -1583,7 +1583,8 @@ _DEDUCTED = re.compile(r"(?:扣除|减去|扣减|抵减|冲减)[^，,；;、]{0,
 
 
 #: 「原值主要包括：…」 -- the short subject a list is introduced under.
-_ENUM_SUBJECT = re.compile(r"(?:^|[。；;\n])\s*([^。；;，,\n：:\d]{2,10}?)主要(?:包括|包含|为|由)")
+_ENUM_SUBJECT = re.compile(
+    r"(?:^|[。；;\n])\s*([^。；;，,\n：:\d]{2,10}?)(?:主要(?:包括|包含|为|由)|(?:合计|共计)?[\d,.]+\s*[万亿千]?元[，,]\s*其中)")
 
 
 def _signed_runon_amounts(span: str) -> List[Tuple[str, str]]:
@@ -1629,6 +1630,36 @@ _RESIDUAL_OTHER = re.compile(
 _PERIOD_SERIES = re.compile(r"分别|respectively", re.I)
 _STATED_TOTAL = re.compile(r"(?:合计|总额|余额合?计?)\s*(?:为)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 _SCALE = {"元": 1.0, "万元": 1e4, "亿元": 1e8}
+
+
+def closing_remainder(text: str) -> Optional[float]:
+    """The 「其余X」 of a sentence, when X is its first amount less the ones between.
+
+    Read off the sentence alone -- first amount is what is being broken down,
+    the rest up to 其余 are the items -- because the two shapes real models
+    write are both outside what _composition_findings parses: a bare 其中 with
+    no 主要包括 (「余额为1,062.8万元，…其中甲585.2万元、乙298.0万元，其余179.6万元
+    为…」), and a nil balance set out as its gross movements (「余额合计0.00亿元，
+    包括：结转固定资产为-7.75亿元；建造成本为5.94亿元；土地成本为1.17亿元；其余
+    0.64亿元为…」). Returns the remainder in 元, or None when the sentence does
+    not close: at least two items, and within the rounding of the figures as
+    printed.
+    """
+    body = str(text or "")
+    for match in _RESIDUAL_ITEM.finditer(body):
+        start = body.rfind("。", 0, match.start()) + 1
+        before = [(float(v.replace(",", "")), u, v) for v, u in _RUNON_AMT.findall(body[start:match.start()])]
+        if len(before) < 3:
+            continue
+        scale = _SCALE.get(match.group(3), 1.0)
+        stated = float(match.group(2).replace(",", "")) * scale * (-1.0 if match.group(1) else 1.0)
+        total = before[0][0] * _SCALE.get(before[0][1], 1.0)
+        items = sum(v * _SCALE.get(u, 1.0) for v, u, _ in before[1:])
+        # Each printed figure is rounded to its last decimal; half a step each.
+        step = max(_SCALE.get(u, 1.0) * 10 ** -len(raw.partition(".")[2]) for _, u, raw in before)
+        if abs((total - items) - stated) <= 0.5 * step * (len(before) + 1):
+            return abs(stated)
+    return None
 
 
 def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
@@ -1753,7 +1784,7 @@ def _composition_findings(mapping_key: str, text: str,
             continue
         for _at in re.finditer(re.escape(_label), body):
             _stated = _RUNON_AMT.search(body[_at.end():_at.end() + 24])
-            if not _stated or _at.start() == _subject.start(1):
+            if not _stated or (_at.start() == _subject.start(1) and "主要" in _subject.group(0)):
                 continue
             _value = abs(float(_stated.group(1).replace(",", ""))) * _SCALE.get(_stated.group(2), 1.0)
             if _value and abs(_value - listed) / _value <= 0.005:
@@ -1879,6 +1910,25 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
         source = SourceIndex.from_df(df, sibling_dfs=sibling_dfs)
     llm_reviews = llm_clause_reviews or []
     out: List[Dict[str, Any]] = []
+    # 「…其中甲585.2万元、乙298.0万元，其余179.6万元为零星租户保证金」: the 179.6
+    # is in no cell, because it is the total less the two items named -- the
+    # closing remainder the prompt asks for. One real model wrote exactly
+    # that, was flagged for an amount "not found in source data", regenerated
+    # twice, and three others that left the remainder out were merely noted
+    # as incomplete: the check punished the one that followed the
+    # instruction. A remainder that closes its own list to within rounding is
+    # arithmetic on grounded figures, so it joins the pool for this text. One
+    # that does NOT close is untouched, and is COMPOSITION_RESIDUAL_WRONG.
+    try:
+        _remainder = closing_remainder(str(final_content or ""))
+        if _remainder is not None:
+            _extended = SourceIndex(list(source.facts) + [
+                _fact(_remainder, "composition_remainder",
+                      row_desc="stated total less the items listed with it")])
+            _extended.date_facts = list(getattr(source, "date_facts", []) or [])
+            source = _extended
+    except Exception:
+        pass
     # The (start, end) segment_clauses returns used to be discarded here, and
     # every consumer downstream re-found the clause by string search. They are
     # the coordinate system every span in this module is expressed in, so they

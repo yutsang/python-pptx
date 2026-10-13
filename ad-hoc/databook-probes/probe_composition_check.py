@@ -122,6 +122,12 @@ CASES = [
      True,
      "same shape, but the items do NOT tie to the stated 原值 either -- still reported"),
 
+    ("长期待摊费用",
+     "截至2026年3月31日，长期待摊费用余额为355.8万元，系项目管理费和绿化改造工程费摊销后净值。"
+     "原值合计653.3万元，其中项目管理费569.5万元、绿化改造工程83.9万元；减累计摊销297.5万元后账面净值355.8万元。",
+     False,
+     "原值合计…其中 introduces the gross cost's own breakdown, as 原值主要包括 does"),
+
 ]
 
 

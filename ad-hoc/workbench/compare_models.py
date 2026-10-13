@@ -234,10 +234,30 @@ def _print_provider_state(config: Dict[str, Any]) -> None:
         print("    (no top-level 'benchmark:' block -- the baseline is the first configured of workbench / local / ...)")
 
 
-def _score(text: str, df) -> Dict[str, Any]:
+def _reviews(text: str, df, run_folder: Optional[str], key: str) -> List[Dict[str, Any]]:
+    """Deterministic verdicts on one text, against the pool the run itself built.
+
+    The first version of this rebuilt the pool from the frame alone. The
+    pipeline's pool also holds what the prompt handed the model -- a peer
+    account's balance quoted in a cross-account observation, a remainder
+    computed for it -- so three models that wrote 「长期借款余额3.26亿元」 in
+    财务费用, a figure the prompt gave them, were each scored a hallucination.
+    The run files that pool per account; it is read back here.
+    """
+    from fdd_utils.ai.evidence import read_evidence
     from fdd_utils.ai.validator import verify_commentary
-    reviews = verify_commentary(text, df) if text.strip() else []
-    bad = [r for r in reviews if isinstance(r, dict) and not r.get("supported")]
+    if not text.strip():
+        return []
+    evidence = read_evidence(run_folder, key) if run_folder else None
+    source = evidence.source_index() if evidence is not None and evidence.facts else None
+    found = verify_commentary(text, df, None, source=source)
+    return [{"category": r.get("category"), "code": r.get("code"), "clause": str(r.get("clause")),
+             "reason": str(r.get("reason")), "supported": bool(r.get("supported"))}
+            for r in found if isinstance(r, dict)]
+
+
+def _score(text: str, reviews: List[Dict[str, Any]]) -> Dict[str, Any]:
+    bad = [r for r in reviews if not r.get("supported")]
     return {
         "chars": len(text),
         "figures": len(_FIGURE.findall(text)),
@@ -294,8 +314,10 @@ def _run_child(config, args, state, dfs, language, keys) -> int:
         )
         for key in keys:
             record = results.get(key) if isinstance(results.get(key), dict) else {}
-            payload["accounts"][key] = {"text": str(record.get("final") or "").strip(),
-                                        "retries": int(record.get("feedback_retries") or 0)}
+            text = str(record.get("final") or "").strip()
+            run_folder = (results.get("__run__") or {}).get("run_folder")
+            payload["accounts"][key] = {"text": text, "retries": int(record.get("feedback_retries") or 0),
+                                        "reviews": _reviews(text, dfs[key], run_folder, key)}
     except Exception as exc:  # reported in this model's column; the others still run
         payload["error"] = f"{type(exc).__name__}: {exc}"
     if bar is not None:
@@ -442,13 +464,14 @@ def main() -> int:
         for key in keys:
             record = run["records"].get(key) or {}
             text = str(record.get("text") or "").strip()
-            per_account[key] = {"text": text, "retries": int(record.get("retries") or 0), **_score(text, dfs[key])}
+            per_account[key] = {"text": text, "retries": int(record.get("retries") or 0),
+                                **_score(text, record.get("reviews") or [])}
         outcome[name] = {**run, "accounts": per_account}
 
     lines: List[str] = []
     out = lines.append
     out("=" * 100)
-    out("SCOREBOARD -- every text scored by the same deterministic verifier")
+    out("SCOREBOARD -- every text scored by the same deterministic verifier, against the facts its own run was given")
     out("=" * 100)
     out("%-46s %6s %6s %7s %7s %8s %7s %7s" % ("model", "secs", "empty", "retries", "halluc", "other", "figures", "chars"))
     for name, run in outcome.items():
