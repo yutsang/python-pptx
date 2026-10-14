@@ -689,7 +689,33 @@ class PromptEngine:
         if isinstance(analysis_df, pd.DataFrame):
             components = list(analysis_df.attrs.get("component_descriptions") or [])
         if len(components) < 2:
-            return ""
+            # A total and nothing else: no component rows, no remark, no detail
+            # table. There is then nothing in front of the model that says what
+            # the account IS, and it supplies something anyway -- 「投资收益主要
+            # 包括理财及股权投资回报」, 「所得税费用主要系递延所得税资产变动
+            # 所致」, 「营业外支出主要为偶发性营业外项目」 -- or apologises for
+            # the gap in the reader's hearing (「未列示明细」, 「按合计口径
+            # 列示」). Five models, the same four accounts, every run. Saying so
+            # outright is the instruction the composition block cannot give,
+            # because it is not rendered when there is nothing to compose.
+            bare = not any(
+                df.attrs.get(key) or (isinstance(analysis_df, pd.DataFrame) and analysis_df.attrs.get(key))
+                for key in ("supporting_notes", "table_linked_remarks", "presentation_detail_table")
+            )
+            if not bare:
+                return ""
+            if language == "Chi":
+                return ("【仅有合计】本科目只有合计金额，没有明细行，也没有备注。"
+                        "不得描述其性质、来源或构成（不写「主要包括…」「主要为…」「主要来自…」），"
+                        "不得为变动给出原因；也不要向读者说明数据的形态"
+                        "（不写「未列示明细」「按合计口径列示」「未进一步拆分」一类的话）。"
+                        "直接陈述各期金额及其变动；变动重大而无依据时，写「成因尚待与管理层确认」。")
+            return ("[TOTAL ONLY] This account has a total and nothing else: no component rows and no "
+                    "remarks. Do not describe its nature, source or composition (no 'mainly comprised', "
+                    "'mainly represented'), do not give a cause for a movement, and do not tell the reader "
+                    "about the shape of the data ('no breakdown is presented'). State the amounts by period "
+                    "and how they moved; where a movement is material and unexplained, say the cause is to "
+                    "be confirmed with management.")
         # Where the latest total was set from the Financials sheet the tab's
         # components no longer add up to it, by construction, and this block's
         # closing rule ("finish with 其余X万元为…, X = total less the items")

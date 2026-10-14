@@ -2457,6 +2457,31 @@ def _harvest_source_dates(df) -> set:
     return {tuple(fact["date"]) for fact in _harvest_source_date_facts(df)}
 
 
+_RANGE_END = re.compile(r"\s*(?:至|到|起至|-|—|–|~|～)\s*(?:(\d{4})\s*年)?\s*(?:(\d{1,2})\s*月)?\s*(\d{1,2})\s*日")
+
+
+def _opens_range_to_source_date(body: str, match, key: tuple, allowed: Dict[tuple, Any]) -> bool:
+    """「2026年3月21日至3月31日」: a span INSIDE the reporting month, closing on
+    a period end the source does carry.
+
+    The remark on one real tab says interest is settled on the 20th of each
+    month, so the balance at 31 March is the accrual for the 21st to the 31st.
+    Every model that read the remark wrote that date, the check called it
+    invented -- it is in no cell -- and the account was regenerated, on every
+    run of that workbook, until the model stopped saying which days the
+    balance covered. A day earlier in the same month as a source period end,
+    written as the start of a range that ends ON that period end, is derived
+    from the period, not made up. An invented year or month still fails: the
+    range has to close on a date the source has.
+    """
+    year, month, day = key
+    tail = _RANGE_END.match(body, match.end())
+    if not tail:
+        return False
+    end = (int(tail.group(1) or year), int(tail.group(2) or month), int(tail.group(3)))
+    return end in allowed and end[:2] == (year, month) and day < end[2]
+
+
 def _date_reviews(final_content: str, df, *, source: Optional[SourceIndex] = None) -> List[Dict[str, Any]]:
     """Any date in the commentary that appears NOWHERE in the account's source.
 
@@ -2491,7 +2516,7 @@ def _date_reviews(final_content: str, df, *, source: Optional[SourceIndex] = Non
     for pattern in (_DATE_CHI, _DATE_ISO):
         for match in pattern.finditer(body):
             key = tuple(int(part) for part in match.groups())
-            if key not in allowed:
+            if key not in allowed and not _opens_range_to_source_date(body, match, key, allowed):
                 first_seen.setdefault(key, match)
     if not first_seen:
         return []

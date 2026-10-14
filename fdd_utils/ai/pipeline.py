@@ -715,6 +715,19 @@ def humanise_report_language(text: str) -> str:
     return body
 
 
+def _note_says_something(note: Any) -> bool:
+    """False for a bare row label. Every nil tab of one real workbook carried
+    exactly one "note": the word 'Check', the label of its reconciliation row,
+    which is not a remark about the account and was the only thing keeping
+    four empty accounts in front of the model."""
+    text = str(note.get("summary") or note.get("text") or "") if isinstance(note, dict) else str(note or "")
+    text = text.strip()
+    if not text or text.lower() in {"check", "checks", "diff", "difference", "n/a", "na", "-",
+                                    "核对", "勾稽", "差异", "检查", "合计", "小计"}:
+        return False
+    return len(text) >= 8 or bool(re.search(r"[，。；：,;:]|\d", text))
+
+
 def nil_account_status(mapping_key: str, df: Any, language: str, statement_type: str = "",
                        prompt_manager: Any = None) -> Tuple[str, str]:
     """(commentary, "") for an account that is nil in every period, else
@@ -752,7 +765,7 @@ def nil_account_status(mapping_key: str, df: Any, language: str, statement_type:
         if attrs.get("financials_authority") or inner.get("financials_authority"):
             return "", "total set from Financials"
         for note_key in ("supporting_notes", "working_remark_notes", "table_linked_remarks"):
-            found = attrs.get(note_key) or inner.get(note_key)
+            found = [n for n in (attrs.get(note_key) or inner.get(note_key) or []) if _note_says_something(n)]
             if found:
                 return "", "%s: %s" % (note_key, str(found)[:80])
         if prompt_manager is not None:
@@ -2801,7 +2814,20 @@ def _evaluate_feedback_needed(
         return False, 0.0, []
     defective = count_defective_clauses(clause_reviews)
     unsupported = [r for r in clause_reviews if isinstance(r, dict) and not r.get("supported")]
-    ratio = len(unsupported) / len(clause_reviews)
+    # The ratio counts clauses, once each, and never a "reasoning" flag. It
+    # used to count every unsupported review: on a real run two accounts were
+    # regenerated with no defect in them at all -- 预付款项 for 「预计系相关保险
+    # 期间推移结转所致」, which the Validator had itself annotated 「合理推断，
+    # 原始说明未直接写明」 and filed twice, making two flags of a four-clause
+    # text; 其他非流动资产 for the same kind of sentence plus a composition note.
+    # A hedged inference is what the deliverable asks for (it is why
+    # RETRIABLE_CLAUSE_CATEGORIES stops at "hallucination"); a text made mostly
+    # of them is not "broadly unsupported", it is analysis.
+    countable = {
+        str(r.get("clause")) for r in unsupported
+        if str(r.get("category", "")).strip().lower() != "reasoning"
+    }
+    ratio = len(countable) / len(clause_reviews)
     needed = bool(defective) or ratio > unsupported_threshold
     return needed, ratio, (defective or unsupported)
 
