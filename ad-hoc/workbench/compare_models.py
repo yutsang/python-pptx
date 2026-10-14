@@ -27,6 +27,10 @@ own Validator stage, which would have each model marking its own work.
     python ad-hoc/workbench/compare_models.py for_test/<databook>.xlsx --all
         every account in the workbook.
 
+    python ad-hoc/workbench/compare_models.py for_test/<databook>.xlsx --all \
+        --models workbench --baseline workbench --analysis-modes standard,open
+        the same model twice: today's templates, and the open analyst brief.
+
 Cost: one full Generator -> Auditor -> Validator pass per account per model.
 Eight accounts is roughly a third of a normal run, per model. Models run one
 after another, each with its own progress bar and its accounts on --workers
@@ -451,6 +455,9 @@ def main() -> int:
                     help="print the model blocks of config.yml with keys, addresses and comments masked; no AI call")
     ap.add_argument("--costs", type=int, nargs="?", const=5, default=None, metavar="N",
                     help="print tokens and cost of the newest N runs (default 5) from their logs; no AI call")
+    ap.add_argument("--analysis-modes", default=None, metavar="MODES",
+                    help="comma-separated: standard,open -- each model is run once per mode, side by side "
+                         "(see analysis_mode in prompts.yml). Default: whatever config.yml says")
     ap.add_argument("--all", action="store_true", help="every account in the workbook instead of the default eight")
     ap.add_argument("--parallel", type=int, default=1,
                     help="how many MODELS run at once (default 1: one after another, with a progress bar each). "
@@ -530,9 +537,18 @@ def main() -> int:
         print(f"not in this workbook, skipped: {missing}")
     if not keys:
         raise SystemExit(f"none of the requested accounts is in this workbook. Available: {sorted(dfs)}")
-    parallel = max(1, min(int(args.parallel), len(runs)))
+    modes = [m.strip().lower() for m in (args.analysis_modes or "").split(",") if m.strip()] or [None]
+    # Each (model, analysis mode) pair is one run. With one mode -- or none
+    # given, which leaves the mode to config.yml -- names are as before.
+    jobs: List[Tuple[str, Optional[str], Optional[str]]] = [(p, m, mode) for p, m in runs for mode in modes]
+
+    def _job_name(provider: str, model: Optional[str], mode: Optional[str]) -> str:
+        return _name(config, provider, model) + (f" [{mode}]" if len(modes) > 1 else "")
+
+    parallel = max(1, min(int(args.parallel), len(jobs)))
     print(f"language={language}  accounts ({len(keys)} of {len(dfs)}): {keys}")
-    print("models: " + ", ".join(_name(config, p, m) + (" [baseline]" if (p, m) == baseline else "") for p, m in runs))
+    print("runs: " + ", ".join(_job_name(p, m, mode) + (" [baseline]" if (p, m) == baseline and len(modes) == 1 else "")
+                               for p, m, mode in jobs))
     print(f"{parallel} model at a time" if parallel == 1 else f"{parallel} models at a time (no progress bars)")
 
     out_dir = os.path.join(os.path.dirname(os.path.abspath(args.databook)), "model_compare")
@@ -541,12 +557,13 @@ def main() -> int:
     started_all = time.time()
     outcome: Dict[str, Dict[str, Any]] = {}
 
-    def _one(index: int, order: int, provider: str, model: Optional[str]) -> Tuple[str, Dict[str, Any]]:
+    def _one(index: int, order: int, provider: str, model: Optional[str],
+             mode: Optional[str] = None) -> Tuple[str, Dict[str, Any]]:
         # A process per model, not a thread: the pipeline keeps one circuit
         # breaker and one logging setup per process, so two models sharing a
         # process would trip and reset each other's breaker. Starts are spaced
         # because a run folder is named to the second.
-        name = _name(config, provider, model)
+        name = _job_name(provider, model, mode)
         time.sleep(index * 2.0)
         safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
         json_path = os.path.join(out_dir, f"compare_{stamp}_{safe}.json")
@@ -560,14 +577,15 @@ def main() -> int:
             command += ["--workers", str(args.workers)]
         if parallel == 1:
             command += ["--child-bar"]
-        print(f">>> [{order}/{len(runs)}] {name}  ({_workers(config, provider, args.workers)} worker threads)"
+        print(f">>> [{order}/{len(jobs)}] {name}  ({_workers(config, provider, args.workers)} worker threads)"
               + ("  -- reading the workbook, then the bar starts" if parallel == 1 else ""), flush=True)
         began = time.time()
         with open(log_path, "w", encoding="utf-8") as log:
             # stderr is left on the console only for the bar; the child points
             # its own stderr at the log (see _BAR_STREAM).
             code = subprocess.run(command, stdout=log, stderr=None if parallel == 1 else subprocess.STDOUT,
-                                  env={**os.environ, "PYTHONIOENCODING": "utf-8"}).returncode
+                                  env={**os.environ, "PYTHONIOENCODING": "utf-8",
+                                       **({"FDD_ANALYSIS_MODE": mode} if mode else {})}).returncode
         payload: Dict[str, Any] = {}
         if os.path.exists(json_path):
             with open(json_path, encoding="utf-8") as handle:
@@ -584,11 +602,12 @@ def main() -> int:
                       "run_folder": payload.get("run_folder")}
 
     with ThreadPoolExecutor(max_workers=parallel) as pool:
-        futures = [pool.submit(_one, i if 1 < parallel > i else 0, i + 1, p, m) for i, (p, m) in enumerate(runs)]
+        futures = [pool.submit(_one, i if 1 < parallel > i else 0, i + 1, p, m, mode)
+                   for i, (p, m, mode) in enumerate(jobs)]
         finished = dict(f.result() for f in futures)
     wall = time.time() - started_all
-    for provider, model in runs:
-        name = _name(config, provider, model)
+    for provider, model, mode in jobs:
+        name = _job_name(provider, model, mode)
         run = finished[name]
         per_account: Dict[str, Any] = {}
         for key in keys:

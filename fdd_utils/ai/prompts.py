@@ -267,6 +267,24 @@ class PromptEngine:
                 chosen = []
         return frozenset(str(name).strip() for name in chosen if str(name).strip() in self.PROMPT_TRIMS)
 
+    def _analysis_mode(self) -> str:
+        """"open" or "standard": processing.analysis_mode in config.yml, or
+        FDD_ANALYSIS_MODE in the environment, which wins. See the analysis_mode
+        block in prompts.yml for what "open" changes."""
+        import os as _os
+        value = _os.environ.get("FDD_ANALYSIS_MODE")
+        if value is None:
+            try:
+                from ..financial_common import load_yaml_file
+                for candidate in ("fdd_utils/config.yml", "fdd_utils/config.example.yml"):
+                    cfg = load_yaml_file(candidate)
+                    if cfg:
+                        value = (cfg.get("processing") or {}).get("analysis_mode")
+                        break
+            except Exception:
+                value = None
+        return "open" if str(value or "").strip().lower() == "open" else "standard"
+
     def _dedupe_guidance(self, system_prompt: str, user_prompt: str, language: str) -> Tuple[str, str]:
         """Each guidance block once per request, in the user prompt.
 
@@ -2964,6 +2982,14 @@ class PromptEngine:
 
         trims = self._prompt_trims()
         stage = self.normalize_agent_name(agent_name)
+        open_mode = self._analysis_mode() == "open"
+        if open_mode and stage == "1_Generator":
+            brief = ((self.prompts_data.get("analysis_mode") or {}).get(language) or {})
+            if brief.get("system_prompt") and brief.get("user_prompt"):
+                system_prompt, user_prompt_template = brief["system_prompt"], brief["user_prompt"]
+                # The per-account example sentences are templates to imitate,
+                # which is the opposite of what this mode is for.
+                format_params["patterns"] = ""
         if "dedupe_guidance" in trims:
             system_prompt, user_prompt_template = self._dedupe_guidance(
                 str(system_prompt or ""), str(user_prompt_template or ""), language)
@@ -3005,6 +3031,24 @@ class PromptEngine:
                 brief_label = "本科目已核实分析简报" if language == "Chi" else "Verified account brief"
                 rendered_user_prompt = self._append_markdown_section(
                     rendered_user_prompt, brief_label, brief_block)
+
+        if open_mode and stage in ("2_Auditor", "4_Validator"):
+            # These two rewrite the draft. Their own prompts were written to
+            # trim -- the Auditor's measured failure in this repo is deleting
+            # analysis it cannot see the basis for -- so in this mode they are
+            # told which kind of sentence to leave alone.
+            if language == "Chi":
+                keep = ("【分析模式】这份草稿是按分析模式撰写的：结构、顺序和篇幅由撰写者决定。"
+                        "请只修正与数据不符的金额、日期、比例和格式问题，以及没有依据的事实陈述；"
+                        "以「预计」「推测」标示并给出依据的推断、对交易含义的判断和向管理层提出的问题都要保留，"
+                        "不要为了符合固定格式而重排或删减。")
+            else:
+                keep = ("[ANALYSIS MODE] This draft was written in analysis mode: its structure, order and "
+                        "length are the writer's. Correct only amounts, dates, ratios and formatting that "
+                        "disagree with the data, and statements of fact with no basis. Keep inferences marked "
+                        "'likely' with their reasons, judgements on what the account means for the deal, and "
+                        "questions for management; do not reorder or cut to fit a fixed format.")
+            rendered_user_prompt = f"{rendered_user_prompt}\n\n{keep}"
 
         if self.normalize_agent_name(agent_name) == "1_Generator":
             previous_content = str(kwargs.get("previous_content") or "").strip()
