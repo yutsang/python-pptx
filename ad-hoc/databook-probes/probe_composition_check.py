@@ -128,6 +128,17 @@ CASES = [
      False,
      "原值合计…其中 introduces the gross cost's own breakdown, as 原值主要包括 does"),
 
+    ("固定资产",
+     "截至2026年03月31日，固定资产账面价值为6.65亿元，主要为一期房屋2.79亿元、二期房屋2.64亿元及土地-1.10亿元。",
+     True,
+     "the -1.10 is accumulated depreciation labelled as land; the list reaches 4.33 of 6.65"),
+
+    ("固定资产",
+     "截至2026年03月31日，固定资产账面净值为6.65亿元，包括：1）房屋一期2.79亿元；2）房屋二期2.64亿元；"
+     "3）土地一期0.61亿元；4）土地二期0.60亿元；5）一期房屋改造0.01亿元。",
+     False,
+     "the same account listed correctly ties to its net book value"),
+
 ]
 
 

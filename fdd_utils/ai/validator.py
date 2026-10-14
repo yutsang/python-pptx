@@ -1628,7 +1628,11 @@ _RESIDUAL_OTHER = re.compile(
 #: account in 2023, 2024, 2025 and 2026H1. The span is cut here rather than the
 #: whole check abandoned, so 「主要包括A、B，分别占比…」 keeps A and B.
 _PERIOD_SERIES = re.compile(r"分别|respectively", re.I)
-_STATED_TOTAL = re.compile(r"(?:合计|总额|余额合?计?)\s*(?:为)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+#: 账面价值 / 账面净值 too: 「固定资产账面价值为6.65亿元，主要为一期房屋2.79亿元、
+#: 二期房屋2.64亿元及土地-1.10亿元」 lists 4.33 against 6.65 -- the 1.10 is the
+#: accumulated depreciation, not land -- and went unchecked because the total
+#: was not called 余额.
+_STATED_TOTAL = re.compile(r"(?:合计|总额|余额合?计?|账面(?:价值|净值))\s*(?:为)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 _SCALE = {"元": 1.0, "万元": 1e4, "亿元": 1e8}
 
 
@@ -1648,6 +1652,15 @@ def closing_remainder(text: str) -> Optional[float]:
     for match in _RESIDUAL_ITEM.finditer(body):
         start = body.rfind("。", 0, match.start()) + 1
         before = [(float(v.replace(",", "")), u, v) for v, u in _RUNON_AMT.findall(body[start:match.start()])]
+        if not before and start > 0:
+            # 「…余额为1,062.8万元，其中甲585.2万元、乙298.0万元。其余179.6万元为…」:
+            # the remainder opens a sentence of its own, and the list it closes is
+            # the previous one. A real draft written this way was regenerated
+            # twice for "1,796,000 not found in source data".
+            previous = body.rfind("。", 0, start - 1) + 1
+            before = [(float(v.replace(",", "")), u, v)
+                      for v, u in _RUNON_AMT.findall(body[previous:start])]
+            start = previous
         if len(before) in (1, 2) and not _STATED_TOTAL.search(body[start:match.start()]):
             # The total stated one sentence earlier: 「余额为1,062.8万元，系…保证金。
             # 该科目主要包括：1）甲585.2万元；2）乙298.0万元；3）其余179.6万元为…」.
