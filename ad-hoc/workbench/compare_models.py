@@ -612,6 +612,17 @@ def main() -> int:
             sum(a["retries"] for a in accounts), sum(len(a["hallucination"]) for a in accounts),
             sum(len(a["other"]) for a in accounts), sum(a["figures"] for a in accounts),
             sum(a["chars"] for a in accounts), "   ERROR: " + run["error"][:60] if run["error"] else ""))
+    for name, run in outcome.items():
+        failed = [key for key, account in run["accounts"].items()
+                  if re.search(r"Content generation (?:failed|incomplete|skipped)|AI 暂时不可用|AI service was unavailable",
+                               account["text"])]
+        if failed:
+            sample = next((run["accounts"][k]["text"] for k in failed if "Content generation" in run["accounts"][k]["text"]), "")
+            out("")
+            out(f"!! {name}: {len(failed)} of {len(run['accounts'])} account(s) carry NO model text -- the provider did not "
+                f"answer. Nothing below says anything about the model or the prompts; rerun when it is back.")
+            if sample:
+                out(f"   first failure: {sample[:150]}")
     out("")
     total_accounts = len(dfs)
     out(f"TIME -- this run: {wall:.0f}s wall for {len(keys)} account(s) x {len(outcome)} model(s), {parallel} at a time")

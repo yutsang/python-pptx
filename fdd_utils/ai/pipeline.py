@@ -1337,16 +1337,6 @@ def process_single_agent_item(
         # current stage, skip remaining LLM calls in this stage and fall
         # through to the deterministic fallback. Reset between stages so each
         # stage gets a fresh chance.
-        if _PIPELINE_BREAKER.is_open(agent_name):
-            health.record_breaker_skip()
-            logger.logger.warning(
-                "[%s] %s: circuit breaker OPEN — skipping LLM call, using fallback",
-                agent_name, mapping_key,
-            )
-            _breaker_skipped = True
-            raise RuntimeError("Circuit breaker open for this stage")
-
-        response = None
         # An account that is nil throughout is written in code (see
         # nil_account_commentary): the Generator's text is that sentence and
         # the later stages pass it through unchanged. Not on a retry or a
@@ -1364,6 +1354,16 @@ def process_single_agent_item(
                 _nil_text = ""
             if _nil_text and agent_name == "subagent_1" and str(previous_output or "").strip():
                 _nil_text = ""
+        if not _nil_text and _PIPELINE_BREAKER.is_open(agent_name):
+            health.record_breaker_skip()
+            logger.logger.warning(
+                "[%s] %s: circuit breaker OPEN — skipping LLM call, using fallback",
+                agent_name, mapping_key,
+            )
+            _breaker_skipped = True
+            raise RuntimeError("Circuit breaker open for this stage")
+
+        response = None
         if _nil_text:
             response = {"content": _nil_text, "mode": "deterministic", "duration": 0.0}
             try:
@@ -1588,7 +1588,18 @@ def _build_deterministic_fallback_bullet(
     try:
         if not pd.api.types.is_numeric_dtype(df[latest_col]):
             return ""
-        total = float(df[latest_col].fillna(0).sum())
+        # The TOTAL row, not the column's sum. Summing the column adds the total
+        # to the components it is made of: with the gateway down, one real run
+        # printed 固定资产 at 13.31亿元 (it is 6.65亿), 应收账款 at 1,349.1万元
+        # (674.5万) and 其他流动负债 at 111.7万元 (37.2万) -- under a label that
+        # tells the reader the figure was computed, so more trusted, not less.
+        # No labelled total, no fallback sentence: an unlabelled sum is a guess.
+        from .facts import _total_row_index
+        row_types = (df.attrs or {}).get("row_types_by_description") or {}
+        total_idx = _total_row_index(df, row_types, [str(latest_col)])
+        if total_idx is None:
+            return ""
+        total = float(pd.to_numeric(df[latest_col], errors="coerce").fillna(0).get(total_idx, 0.0))
     except Exception:
         return ""
     if total == 0:
