@@ -268,7 +268,7 @@ class PromptEngine:
         return frozenset(str(name).strip() for name in chosen if str(name).strip() in self.PROMPT_TRIMS)
 
     def _analysis_mode(self) -> str:
-        """"open" or "standard": processing.analysis_mode in config.yml, or
+        """"open", "guided" or "standard": processing.analysis_mode in config.yml, or
         FDD_ANALYSIS_MODE in the environment, which wins. See the analysis_mode
         block in prompts.yml for what "open" changes."""
         import os as _os
@@ -283,7 +283,8 @@ class PromptEngine:
                         break
             except Exception:
                 value = None
-        return "open" if str(value or "").strip().lower() == "open" else "standard"
+        value = str(value or "").strip().lower()
+        return value if value in ("open", "guided") else "standard"
 
     def _dedupe_guidance(self, system_prompt: str, user_prompt: str, language: str) -> Tuple[str, str]:
         """Each guidance block once per request, in the user prompt.
@@ -2982,10 +2983,25 @@ class PromptEngine:
 
         trims = self._prompt_trims()
         stage = self.normalize_agent_name(agent_name)
-        open_mode = self._analysis_mode() == "open"
+        mode = self._analysis_mode()
+        open_mode = mode in ("open", "guided")
+        account_hints = ""
         if open_mode and stage == "1_Generator":
             brief = ((self.prompts_data.get("analysis_mode") or {}).get(language) or {})
             if brief.get("system_prompt") and brief.get("user_prompt"):
+                if mode == "guided":
+                    # The per-account template carries two things: structure
+                    # rules (opening, order, sentence count) and domain
+                    # knowledge (for revenue: tenants, occupancy, unit rent,
+                    # ramp-up). The first open run lost the second with the
+                    # first -- 营业收入 came back with no figure at all, where
+                    # the template had produced the -36% and the leased-area
+                    # numbers. "guided" hands the template over as reference
+                    # for WHAT to look at, with its rules on HOW declared void.
+                    account_hints = re.sub(r"\{[a-z_]+\}", "", str(system_prompt or ""))
+                    account_hints = "\n".join(
+                        line for line in account_hints.splitlines()
+                        if line.strip() and not re.search(r"语言|Language|输出必须|Output must", line))
                 system_prompt, user_prompt_template = brief["system_prompt"], brief["user_prompt"]
                 # The per-account example sentences are templates to imitate,
                 # which is the opposite of what this mode is for.
@@ -3031,6 +3047,18 @@ class PromptEngine:
                 brief_label = "本科目已核实分析简报" if language == "Chi" else "Verified account brief"
                 rendered_user_prompt = self._append_markdown_section(
                     rendered_user_prompt, brief_label, brief_block)
+
+        if account_hints:
+            if language == "Chi":
+                head = ("【本科目以往的写作要求（仅作参考）】以下是固定模板对本科目的要求。其中关于开头方式、"
+                        "句数、顺序和格式的规定在本模式下不适用；只取它指出的、值得关注的内容"
+                        "（例如租户、出租率、单价、账龄、利率、抵押），有数据支持时写，没有数据就不写。")
+            else:
+                head = ("[PAST WRITING BRIEF FOR THIS ACCOUNT -- REFERENCE ONLY] Below is what the fixed template "
+                        "asked of this account. Its rules on opening, sentence count, order and format do not "
+                        "apply here; take only the content it points at (tenants, occupancy, unit rent, ageing, "
+                        "rates, security) and write about it where the data supports it.")
+            rendered_user_prompt = f"{rendered_user_prompt}\n\n{head}\n{account_hints}"
 
         if open_mode and stage in ("2_Auditor", "4_Validator"):
             # These two rewrite the draft. Their own prompts were written to

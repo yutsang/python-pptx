@@ -151,7 +151,9 @@ processing:
   # "open" replaces the per-account Generator templates (fixed opening, order,
   # sentence count, mandatory dimensions) with one analyst brief, and tells the
   # Auditor and Validator to keep marked inferences. See analysis_mode in
-  # prompts.yml. FDD_ANALYSIS_MODE=open|standard overrides this for one run.
+  # prompts.yml. "guided" is "open" plus the account's old template handed over
+  # as reference for what to look at (its structure rules declared void).
+  # FDD_ANALYSIS_MODE=open|guided|standard overrides this for one run.
   analysis_mode: standard
   # An account with no figure in any period and no remark against it gets its
   # one sentence from code instead of from the model (no request is made).
