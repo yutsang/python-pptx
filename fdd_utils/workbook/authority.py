@@ -27,7 +27,8 @@ replaces them.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -61,11 +62,82 @@ def _sign_convention(tab: Dict[str, float], fin: Dict[str, float]) -> float:
     return -1.0 if votes < 0 else 1.0
 
 
+_ADJUSTMENT_COLUMN = re.compile(r"ADJ|调整|調整|adjust", re.IGNORECASE)
+
+
+def adjustment_entries(digest: Optional[Dict[str, Any]], gap: float, period: str,
+                       limit: int = 4) -> List[str]:
+    """The adjustment lines in the workbook that carry this gap, as text.
+
+    The gap between a tab and Financials is almost always an adjustment the
+    working papers record: on one real workbook every overridden figure sat in
+    a year sheet's "Audit ADJ#n" column, with its counter-entry two rows away
+    (投资收益 +1,332.12千元 against 财务费用 -1,332.12千元 under Audit ADJ#4 --
+    loan interest reclassified out of finance cost). The model was told the
+    total had been reset and nothing about why, so it wrote "成因尚待与管理层
+    确认" about a reclassification the workbook spells out.
+
+    Every cell already sits in the digest. This finds cells equal to the gap
+    (in 元 or 千元) in a column labelled as an adjustment, on any sheet but the
+    Financials one, and returns each such column's entries of that size -- the
+    debit and the credit together -- with the row labels and, for a sheet with
+    no column labels (an adjustment register), the row's own text. It states
+    positions and labels; it concludes nothing.
+    """
+    sheets = (digest or {}).get("sheets") or {}
+    if abs(gap) < 1000 or not sheets:
+        return []
+    year = str(period)[:4]
+    lines: List[str] = []
+    for name, entry in sheets.items():
+        if entry.get("status") == "financials":
+            continue
+        cells = entry.get("cells") or {}
+        col_labels = entry.get("col_labels") or {}
+        row_labels = entry.get("row_labels") or {}
+        by_column: Dict[int, List[Tuple[int, float, str]]] = {}
+        for r, c, v in zip(cells.get("r", []), cells.get("c", []), cells.get("v", [])):
+            if not v:
+                continue
+            if abs(abs(v) - gap) <= max(0.5, gap * 1e-6):
+                unit = "元"
+            elif abs(abs(v) * 1000 - gap) <= max(5.0, gap * 1e-6):  # a 千元 cell kept to 2 decimals
+                unit = "千元"
+            else:
+                continue
+            label = str(col_labels.get(str(c)) or "")
+            on_register = not label and _ADJUSTMENT_COLUMN.search(str(name))
+            if not (_ADJUSTMENT_COLUMN.search(label) or on_register):
+                continue
+            # A year sheet's adjustment belongs to the period it is named for.
+            if re.fullmatch(r"\d{4}", str(name)) and str(name) != year:
+                continue
+            by_column.setdefault(c, []).append((r, v, unit))
+        for c, hits in by_column.items():
+            label = str(col_labels.get(str(c)) or "")
+            parts = []
+            for r, v, unit in hits:
+                row_label = str(row_labels.get(str(r)) or "")
+                if row_label and any(row_label in done for done in parts):
+                    continue
+                text = ""
+                if not label:
+                    words = [str(t[2]) for t in (entry.get("texts") or []) if t[0] == r and str(t[2]) != row_label]
+                    text = ("（" + "；".join(words)[:60] + "）") if words else ""
+                parts.append(f"{row_label or '第%d行' % (r + 1)} {v:+,.2f}{unit}{text}")
+            if parts:
+                lines.append(f"「{name}」{('「' + label + '」') if label else ''}：" + "；".join(parts))
+            if len(lines) >= limit:
+                return lines
+    return lines
+
+
 def apply_financials_authority(
     normalized_results: Dict[str, Dict[str, Any]],
     dfs: Dict[str, pd.DataFrame],
     bs_is_results: Optional[Dict[str, Any]],
     mappings: Optional[dict] = None,
+    digest: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, Dict[str, float]]]:
     """Set each differing account total to the Financials figure, in place.
 
@@ -146,6 +218,12 @@ def apply_financials_authority(
                 continue
             analysis.at[total_idx, period] = sign * pair["financials"]
             record[period] = dict(pair)
+            try:
+                found = adjustment_entries(digest, abs(abs(pair["tab"]) - abs(pair["financials"])), period)
+            except Exception:
+                found = []
+            if found:
+                record[period]["adjustments"] = found
         if not record:
             continue
         statement_type = str((analysis.attrs.get("integrity") or {}).get("statement_type") or plan["kind"])
@@ -181,6 +259,7 @@ def authority_note(df: Optional[pd.DataFrame], language: str) -> str:
         return ""
     periods = sorted(record)
     empty = [p for p in periods if not record[p].get("tab")]
+    adjusted = [(p, record[p].get("adjustments")) for p in periods if record[p].get("adjustments")]
     if language == "Chi":
         note = (
             "【报表口径】本科目在" + "、".join(periods) + "的合计已按财务报表（Financials）金额列示，"
@@ -191,6 +270,11 @@ def authority_note(df: Optional[pd.DataFrame], language: str) -> str:
         if empty:
             note += ("其中" + "、".join(empty) + "本表未列明细，只能陈述合计金额，"
                      "不得臆造构成；如需说明性质，仅可依据备注。")
+        if adjusted:
+            note += ("【调整依据】工作底稿中金额与上述差额相符的调整分录如下（同一调整列中的借贷两方）："
+                     + " ".join(f"{p}：" + " | ".join(lines) for p, lines in adjusted)
+                     + "。可据此说明该合计与本表明细不同的原因（例如由哪个科目重分类转入），"
+                       "但只陈述分录本身显示的内容。")
         return note
     note = (
         "[STATEMENT BASIS] This account's total for " + ", ".join(periods) + " is shown at the Financials "
@@ -202,4 +286,9 @@ def authority_note(df: Optional[pd.DataFrame], language: str) -> str:
     if empty:
         note += (" For " + ", ".join(empty) + " the tab carries no detail at all: state the total only "
                  "and do not invent a composition; describe its nature only from the remarks.")
+    if adjusted:
+        note += (" [ADJUSTMENT EVIDENCE] Entries in the working papers equal to that difference (both sides "
+                 "of the same adjustment column): " + " ".join(f"{p}: " + " | ".join(lines) for p, lines in adjusted)
+                 + ". You may use them to explain why the total differs from the tab (e.g. which account it "
+                   "was reclassified from), stating only what the entries show.")
     return note

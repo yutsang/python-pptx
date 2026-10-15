@@ -122,6 +122,7 @@ def process_workbook_data(
             financials_authority = apply_financials_authority(
                 normalized_results, dfs, bs_is_results,
                 get_effective_mappings(load_mappings(), resolution),
+                digest=_digest,
             )
         except Exception as exc:
             logger.warning("Financials authority not applied: %s: %s", type(exc).__name__, exc)

@@ -1615,6 +1615,13 @@ _RESIDUAL_ITEM = re.compile(
 # matched, so a real run summed three named items to 55.9万元 against a 9.5万元
 # total and reported 488% unaccounted for -- the 42.1 that closes it was sitting
 # in the sentence, spelled 其他 rather than 其余.
+# And the third way: a catch-all named last in the list. 「主要包括中国电子系统工程
+# 第四建设工程款731.3万元及其他应付款项124.7万元」 for an 877.2万元 balance -- the
+# rest is 145.9, the sentence says 124.7, and with no 其余 or 合计 the check only
+# called it 2% short, an omission, when it is a wrong number in the deck.
+_RESIDUAL_TAIL = re.compile(
+    r"(?:及|和|以及)其他[^，,。；;、\d]{0,12}?(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)"
+)
 _RESIDUAL_OTHER = re.compile(
     # Not 其他应付款 / 其他应收款 / 其他流动… : those are account names. A real
     # bullet's later sentence 「与其他应付款中账龄小于1年的租赁保证金合计1,109.2万元」
@@ -1787,7 +1794,7 @@ def _composition_findings(mapping_key: str, text: str,
     # rather than inside the two patterns above because it can sit in either
     # form -- after a numbered list, or trailing a run-on one -- and because a
     # run-on span that already swallowed it must not count it twice.
-    residual = _RESIDUAL_ITEM.search(scan) or _RESIDUAL_OTHER.search(scan)
+    residual = _RESIDUAL_ITEM.search(scan) or _RESIDUAL_OTHER.search(scan) or _RESIDUAL_TAIL.search(scan)
     if residual:
         sign, value, unit = residual.groups()
         signed = float(value.replace(",", "")) * (-1.0 if sign else 1.0)

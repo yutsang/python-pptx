@@ -139,6 +139,16 @@ CASES = [
      False,
      "the same account listed correctly ties to its net book value"),
 
+    ("应付账款",
+     "截至2026年03月31日，应付账款余额为877.2万元，主要包括中国电子系统工程第四建设工程款731.3万元及其他应付款项124.7万元。",
+     True,
+     "a closing 其他… item that does not close: 877.2 - 731.3 = 145.9, not 124.7"),
+
+    ("应付账款",
+     "截至2026年03月31日，应付账款余额为877.2万元，主要包括中国电子系统工程第四建设工程款731.3万元及其他应付款项145.9万元。",
+     False,
+     "the same sentence with the right remainder"),
+
 ]
 
 

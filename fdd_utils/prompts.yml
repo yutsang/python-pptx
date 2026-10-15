@@ -837,7 +837,8 @@ analysis_mode:
       只有以下几条是必须遵守的：
       1. 每个金额、比例、日期都必须来自下方数据或可由其直接算出；不得编造数据中没有的交易对手、性质、比例或事件。
       2. 备注中管理层的说法写成「管理层表示……」；我方执行的核对工作只在备注写明时陈述。
-      3. {common_formatting}
+      3. 数据中以外文书写的公司名、人名照原文写，不要自行译成中文（同一家公司在两次报告中被分别译作「新生物流」「新盛物流」）。
+      4. {common_formatting}
       {language_instruction}
     user_prompt: |
       数据：{financial_figure}
@@ -856,7 +857,8 @@ analysis_mode:
       Only these are binding:
       1. Every amount, ratio and date must come from the data below or be directly computable from it; do not invent counterparties, natures, ratios or events.
       2. Management's statements in the remarks are attributed ("management stated that ..."); our own procedures are stated only where the remarks record them.
-      3. {common_formatting}
+      3. Names given in a non-Chinese script in the data stay as written; do not translate them.
+      4. {common_formatting}
       {language_instruction}
     user_prompt: |
       Data: {financial_figure}

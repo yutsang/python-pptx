@@ -268,7 +268,7 @@ class PromptEngine:
         return frozenset(str(name).strip() for name in chosen if str(name).strip() in self.PROMPT_TRIMS)
 
     def _analysis_mode(self) -> str:
-        """"open", "guided" or "standard": processing.analysis_mode in config.yml, or
+        """"guided" (default), "open" or "standard": processing.analysis_mode in config.yml, or
         FDD_ANALYSIS_MODE in the environment, which wins. See the analysis_mode
         block in prompts.yml for what "open" changes."""
         import os as _os
@@ -283,8 +283,13 @@ class PromptEngine:
                         break
             except Exception:
                 value = None
-        value = str(value or "").strip().lower()
-        return value if value in ("open", "guided") else "standard"
+        # "guided" when nothing is set. Chosen 2026-10-15 by the owner after a
+        # three-way run (standard / open / guided, GPT-5.5, 31 accounts) and a
+        # PPTX export: same error count and cost as the old templates, the only
+        # mode that wrote buyer-facing judgement while keeping each account's
+        # domain points, layout unchanged. "standard" remains for comparison.
+        value = str(value or "guided").strip().lower()
+        return value if value in ("open", "guided", "standard") else "guided"
 
     def _dedupe_guidance(self, system_prompt: str, user_prompt: str, language: str) -> Tuple[str, str]:
         """Each guidance block once per request, in the user prompt.

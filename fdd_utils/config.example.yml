@@ -154,7 +154,7 @@ processing:
   # prompts.yml. "guided" is "open" plus the account's old template handed over
   # as reference for what to look at (its structure rules declared void).
   # FDD_ANALYSIS_MODE=open|guided|standard overrides this for one run.
-  analysis_mode: standard
+  analysis_mode: guided      # default since 2026-10-15; "standard" = the old per-account templates
   # An account with no figure in any period and no remark against it gets its
   # one sentence from code instead of from the model (no request is made).
   # false sends those accounts to the model as before.
