@@ -2086,8 +2086,17 @@ class PromptEngine:
         peer_line_chi = peer_line_eng = ""
         revenue_key = (peer_context or {}).get("revenue_key") if peer_context else None
         is_revenue_account = bool(revenue_key) and bool(mapping_key) and revenue_key == mapping_key
+        # Only operating lines are held against revenue. 投资收益 here was the
+        # interest on a one-year loan repaid in April 2025; told it moved "out of
+        # proportion to revenue", the bullet called the fall unexplained and left
+        # it to management, and 财务费用 was given a share-of-revenue ratio the
+        # final report never writes. Neither line is driven by rent.
+        not_operating = bool(re.search(
+            r"投资收益|财务费用|营业外|所得税|其他收益|公允价值|资产处置|减值|"
+            r"invest|fin(?:ance|ancial)?[ _]?(?:exp|cost)|non[- ]?operating|income[ _]?tax|other[ _]?income|impair",
+            str(mapping_key or ""), re.I))
         if (
-            pct is not None and not is_revenue_account and statement_type == "IS"
+            pct is not None and not is_revenue_account and not not_operating and statement_type == "IS"
             and peer_context and peer_context.get("revenue_growth_pct") is not None
         ):
             rev_pct = float(peer_context["revenue_growth_pct"])

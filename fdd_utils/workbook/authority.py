@@ -341,53 +341,129 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
         cells = entry.get("cells") or {}
         grid: Dict[Tuple[int, int], float] = {
             (r, c): v for r, c, v in zip(cells.get("r", []), cells.get("c", []), cells.get("v", [])) if v}
+        side = _bridge_sides(row_labels)
+        sheet_sums: Dict[str, float] = {}
         for row in own_rows[:1]:
             for (r, c), v in sorted(grid.items(), key=lambda kv: kv[0][1]):
                 label = col_labels.get(c, "")
                 if r != row or not re.search(r"ADJ|调整|adj", label) or _BRIDGE_TOTAL_COLUMN.search(label):
                     continue
                 yuan = v * 1000.0  # bridge sheets are kept in 千元
+                if abs(yuan) < 500:
+                    continue  # prints as 0.0万元: a rounding residue, not an entry
                 values.append(abs(yuan))
-                others = sorted({
-                    row_labels.get(r2, "") for (r2, c2), v2 in grid.items()
-                    if c2 == c and r2 != r and abs(abs(v2) - abs(v)) <= 0.006 and (v2 > 0) != (v > 0)
-                    and row_labels.get(r2) and not _BRIDGE_TOTAL_ROW.search(row_labels.get(r2, ""))
-                })
-                # The same amount posted to other lines in another adjustment
-                # column of the sheet: the other half of a linked pair of
-                # entries. In the real book 投资收益 +133.2 (ADJ#4, against
-                # 财务费用) is the interest whose receivable is 其他应收款 +133.2
-                # (ADJ#5); the 投资收益 bullet, shown only its own entry, called
-                # it "财务费用重分类转入" and left the cause to management, while
-                # the 其他应收款 bullet a page earlier explained the loan.
+                kind = "示意" if "示意" in label else ("管理层" if "管理层" in label else "审计")
+                sheet_sums[kind] = sheet_sums.get(kind, 0.0) + yuan
+                column = {r2: v2 for (r2, c2), v2 in grid.items()
+                          if c2 == c and r2 != r and _bridge_line(row_labels.get(r2, ""))}
+                others = sorted({row_labels[r2] for r2, v2 in column.items()
+                                 if abs(abs(v2) - abs(v)) <= 0.006 and _counter_sign(side, r, v, r2, v2)})
+                if not others:
+                    # One entry against two lines: 应交税费 +640.5 is 其他流动资产
+                    # 529.2 plus 其他非流动资产 111.3 -- the very tie the final
+                    # report writes, invisible to a one-for-one match.
+                    pairs = [(r2, r3) for r2 in column for r3 in column if r2 < r3
+                             and abs(abs(column[r2]) + abs(column[r3]) - abs(v)) <= 0.006
+                             and _counter_sign(side, r, v, r2, column[r2])
+                             and _counter_sign(side, r, v, r3, column[r3])]
+                    if len(pairs) == 1:
+                        others = sorted(row_labels[x] for x in pairs[0])
                 linked = sorted({
                     row_labels.get(r2, "") for (r2, c2), v2 in grid.items()
                     if c2 != c and r2 != r and abs(abs(v2) - abs(v)) <= 0.006
                     and re.search(r"ADJ|调整|adj", col_labels.get(c2, ""))
                     and not _BRIDGE_TOTAL_COLUMN.search(col_labels.get(c2, ""))
-                    and row_labels.get(r2) and row_labels.get(r2) not in others
-                    and not _BRIDGE_TOTAL_ROW.search(row_labels.get(r2, ""))
+                    and _bridge_line(row_labels.get(r2, "")) and row_labels.get(r2) not in others
                 })
-                words: List[str] = []
-                for reg_name, reg in registers.items():
-                    reg_rows = {int(k): str(t).strip() for k, t in (reg.get("row_labels") or {}).items()}
-                    reg_cells = reg.get("cells") or {}
-                    for r3, c3, v3 in zip(reg_cells.get("r", []), reg_cells.get("c", []), reg_cells.get("v", [])):
-                        if reg_rows.get(r3) != account or abs(abs(v3) - abs(v)) > 0.006:
-                            continue
-                        for t in reg.get("texts") or []:
-                            if r3 - 3 <= t[0] <= r3 and str(t[2]).strip() not in (account, "") and len(words) < 3:
-                                words.append(str(t[2]).strip()[:40])
+                words = _register_words(registers, account, v, row_labels)
                 line = f"「{name}」{label}：{'+' if v > 0 else '-'}{abs(yuan) / 1e4:,.1f}万元"
                 if others:
                     line += "（对方科目：" + "、".join(others[:3]) + "）"
                 if linked:
                     line += "（同额另见于其他调整：" + "、".join(linked[:3]) + "）"
                 if words:
-                    line += "；调整说明：" + "；".join(dict.fromkeys(words))
-                ranked.append((-position, 0 if "示意" in label else 1, line))
+                    line += "；调整说明：" + "；".join(words)
+                ranked.append((-position, 0 if kind == "示意" else 1, line))
+        # The model adds a sheet's entries up and quotes the total: 「我方对
+        # 2026年03月31日应付账款作示意性调增89.7万元，包括…60.2万元、9.9万元及
+        # 其他19.6万元」 was flagged as an invented figure and sent back twice.
+        for total in sheet_sums.values():
+            if abs(total) >= 500:
+                values.append(abs(total))
     lines = [line for _, _, line in sorted(ranked, key=lambda item: (item[1], item[0]))[:limit]]
     return {"lines": lines, "values": values}
+
+
+def _bridge_line(label: str) -> bool:
+    """A statement line a counter-entry can be posted to: not a total, not a check row."""
+    return bool(label) and not _BRIDGE_TOTAL_ROW.search(label) and not re.search(r"check|差异", label, re.I)
+
+
+def _bridge_sides(row_labels: Dict[int, str]) -> Dict[str, Optional[int]]:
+    """Where the asset block and the liabilities-and-equity block end on a bridge sheet."""
+    asset_end = next((r for r, l in sorted(row_labels.items()) if re.search(r"资产(?:总计|合计)$", l)), None)
+    bs_end = next((r for r, l in sorted(row_labels.items())
+                   if re.search(r"负债(?:和|及)(?:所有者|股东)权益(?:总计|合计)", l)), None)
+    return {"asset_end": asset_end, "bs_end": bs_end}
+
+
+def _counter_sign(side: Dict[str, Optional[int]], r: int, v: float, r2: int, v2: float) -> bool:
+    """Is (r2, v2) signed the way the other half of an entry on (r, v) would be?
+
+    The bridge shows balances, not debits and credits. Between two assets, or two
+    liabilities, an entry shows as opposite signs (其他应付款 -826.9 against 长期
+    应付款 +826.9); between an asset and a liability it shows as the SAME sign
+    (应收账款 +19.0 against 预收款项 +19.0), and the opposite-sign rule alone
+    missed every such pair -- the 应收账款 bullet then took the register words
+    of an unrelated entry and called the 19.0 an income-tax adjustment. Rows
+    on the income statement, or a sheet whose blocks cannot be found, accept
+    either sign.
+    """
+    asset_end, bs_end = side.get("asset_end"), side.get("bs_end")
+    if asset_end is None or bs_end is None:
+        return True
+
+    def block(row: int) -> str:
+        return "A" if row <= asset_end else ("L" if row <= bs_end else "P")
+
+    a, b = block(r), block(r2)
+    if "P" in (a, b):
+        return True
+    return ((v > 0) != (v2 > 0)) if a == b else ((v > 0) == (v2 > 0))
+
+
+_REGISTER_HEADER = re.compile(r"^(?:Audit\s*)?(?:IA|ADJ|Adj)\.?\s*#\s*\d+", re.I)
+_REGISTER_NOISE = re.compile(r"^(?:借|贷|Dr|Cr)\s*[：:]|^\d{4}[-/年]|^(?:Adj\.?#|类型|明细|科目|金额)$", re.I)
+
+
+def _register_words(registers: Dict[str, Any], account: str, v: float, bridge_rows: Dict[int, str]) -> List[str]:
+    """The description an adjustment register writes for this entry, if it can be found.
+
+    The register is a run of blocks -- a header (ADJ#n, a description) and the
+    Dr/Cr lines under it. The first version took every text within three rows
+    above the matching amount, which crossed into the block before: the 19.6
+    lease-commission accrual on 应付账款 came back described as ADJ#3's 「补提
+    工程款尾款的税额」, and dates, column headers and Dr/Cr lines rode along.
+    Now: the nearest header at or above the amount, the texts from it down to
+    the amount, and none of the furniture.
+    """
+    found: List[str] = []
+    for reg in registers.values():
+        reg_rows = {int(k): str(t).strip() for k, t in (reg.get("row_labels") or {}).items()}
+        reg_cells = reg.get("cells") or {}
+        texts = [(int(t[0]), str(t[2]).strip()) for t in (reg.get("texts") or [])]
+        for r3, v3 in zip(reg_cells.get("r", []), reg_cells.get("v", [])):
+            if reg_rows.get(r3) != account or abs(abs(v3) - abs(v)) > 0.006:
+                continue
+            headers = [row for row, text in texts if _REGISTER_HEADER.match(text) and r3 - 8 <= row <= r3]
+            if not headers:
+                continue
+            top = max(headers)
+            for row, text in sorted(texts):
+                if top <= row <= r3 and text and text != account and text not in bridge_rows.values() \
+                        and not _REGISTER_HEADER.fullmatch(text) and not _REGISTER_NOISE.search(text):
+                    found.append(text[:40])
+    return list(dict.fromkeys(found))[:2]
 
 
 def attach_adjustment_bridges(dfs: Dict[str, pd.DataFrame], digest: Optional[Dict[str, Any]]) -> int:

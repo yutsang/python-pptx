@@ -50,7 +50,10 @@ _SOURCE_LINE = re.compile(r"^\s*(?:资料来源|来源|Source)\s*[：:]|^[^\d，
 def _paragraphs(path: str) -> List[str]:
     out: List[str] = []
     for slide in Presentation(path).slides:
-        for shape in slide.shapes:
+        # Left column before right, top before bottom. In XML order the right
+        # column came first, so an account split across the two columns read
+        # continuation-first: 「并于2025年12月31日进一步降至…」 opened 应付账款.
+        for shape in sorted(slide.shapes, key=lambda sh: ((sh.left or 0) // 914400 >= 5, sh.top or 0)):
             # The executive-summary band speaks for the whole statement; read as
             # commentary it was appended to whichever account came before it.
             if "summary" in (shape.name or "").lower():
