@@ -658,6 +658,15 @@ _ZERO_BALANCE_CHAR_RE = re.compile(
 )
 
 
+# The same with a unit, which the two above never matched: 「在建工程余额于2024年
+# 12月31日降至0.00亿元，并于…维持0.00亿元」 and 「余额为0.0万元」 reached decks
+# as written. Not after 分别 and not before 、 -- 「分别为0万元、1.8万元」 is a
+# series in which the zero holds its place.
+_ZERO_WITH_UNIT_RE = re.compile(
+    r"(?<!分别)(余额)?(?:合计)?(为|降至|下降至|减少至|回落至|维持|维持在)(?:人民币)?\s*0(?:\.0+)?\s*(?:万元|亿元|千元|元)(?!\s*[、及和])"
+)
+
+
 # Databook working-note vocabulary that should never reach a deliverable.
 # 1:1 replacements only -- no deletion, so there is no way for this to lose a
 # fact the way the reverted enumeration dedupe did.
@@ -811,6 +820,14 @@ def humanise_zero_balance(text: str, statement_type: str = "") -> str:
     if not body:
         return body
     replacement = "未发生" if str(statement_type or "").strip().upper() == "IS" else "无余额"
+
+    def _with_unit(match) -> str:
+        verb = match.group(2)
+        if verb == "为":
+            return replacement
+        return verb + ("零" if replacement == "未发生" else "无余额")
+
+    body = _ZERO_WITH_UNIT_RE.sub(_with_unit, body)
     body = _ZERO_BALANCE_RE.sub(replacement, body)
     body = _ZERO_BALANCE_CHAR_RE.sub(replacement, body)
     return body
