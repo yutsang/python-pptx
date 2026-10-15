@@ -134,6 +134,16 @@ def process_workbook_data(
                 except Exception as exc:
                     logger.warning("Workbook digest: reach not marked: %s", exc)
 
+    # Each account's audit and indicative adjustments, read off the bridge
+    # sheets (authority.adjustment_bridge). After every rebuild of the variants,
+    # so the attrs land on the frames the pipeline actually reads.
+    if _digest and dfs:
+        try:
+            from .authority import attach_adjustment_bridges
+            attach_adjustment_bridges(dfs, _digest)
+        except Exception as exc:
+            logger.warning("Adjustment bridges not attached: %s: %s", type(exc).__name__, exc)
+
     recon_bs, recon_is = None, None
     if dfs_original and bs_is_results:
         recon_started = time.perf_counter()

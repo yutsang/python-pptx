@@ -292,3 +292,110 @@ def authority_note(df: Optional[pd.DataFrame], language: str) -> str:
                  + ". You may use them to explain why the total differs from the tab (e.g. which account it "
                    "was reclassified from), stating only what the entries show.")
     return note
+
+
+_BRIDGE_TOTAL_COLUMN = re.compile(r"后|数$|合计|总计|TB|报告|余额")
+_BRIDGE_TOTAL_ROW = re.compile(r"合计|总计|小计")
+BRIDGE_KEY = "adjustment_bridge"
+
+
+def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int = 8) -> Dict[str, Any]:
+    """Every audit and indicative adjustment the working papers post to one account.
+
+    Measured against the team's own final report for one real engagement, the
+    largest single thing the generated commentary left out was the
+    adjustments themselves -- 「我们提出了示意性调整，补计提了工程款尾款的进项
+    税额60.2万元」, 「补计提了截至2026年3月末的租赁服务费原值19.6万元」, the
+    legal-fee cut-off. All of it sits in the period bridge sheets (TB -> Audit
+    ADJ#n -> 审定数 -> 示意性调整 -> 示意性调整后), one row per statement line,
+    and none of it reached a prompt.
+
+    For the row labelled as this account on every sheet that has such a bridge,
+    this returns each non-zero adjustment column with its amount, the other
+    rows of that column carrying the same amount the other way (the
+    counter-entry), and -- from an adjustment register sheet, when one holds
+    the same amount against the same account -- the words written beside it.
+    Returns {"lines": [...], "values": [元, ...]}; values feed the grounding
+    pool so a figure the model quotes from here is not called invented.
+    """
+    sheets = (digest or {}).get("sheets") or {}
+    lines: List[str] = []
+    values: List[float] = []
+    if not sheets or not account:
+        return {"lines": lines, "values": values}
+    registers = {n: e for n, e in sheets.items() if re.search(r"ADJ|调整", str(n), re.IGNORECASE)}
+    for name, entry in sheets.items():
+        col_labels = {int(k): str(v) for k, v in (entry.get("col_labels") or {}).items()}
+        if not any(re.search(r"审定数|示意性调整后", v) for v in col_labels.values()):
+            continue
+        row_labels = {int(k): str(v).strip() for k, v in (entry.get("row_labels") or {}).items()}
+        own_rows = [r for r, label in row_labels.items() if label == account]
+        if not own_rows:
+            continue
+        cells = entry.get("cells") or {}
+        grid: Dict[Tuple[int, int], float] = {
+            (r, c): v for r, c, v in zip(cells.get("r", []), cells.get("c", []), cells.get("v", [])) if v}
+        for row in own_rows[:1]:
+            for (r, c), v in sorted(grid.items(), key=lambda kv: kv[0][1]):
+                label = col_labels.get(c, "")
+                if r != row or not re.search(r"ADJ|调整|adj", label) or _BRIDGE_TOTAL_COLUMN.search(label):
+                    continue
+                yuan = v * 1000.0  # bridge sheets are kept in 千元
+                values.append(abs(yuan))
+                others = sorted({
+                    row_labels.get(r2, "") for (r2, c2), v2 in grid.items()
+                    if c2 == c and r2 != r and abs(abs(v2) - abs(v)) <= 0.006 and (v2 > 0) != (v > 0)
+                    and row_labels.get(r2) and not _BRIDGE_TOTAL_ROW.search(row_labels.get(r2, ""))
+                })
+                words: List[str] = []
+                for reg_name, reg in registers.items():
+                    reg_rows = {int(k): str(t).strip() for k, t in (reg.get("row_labels") or {}).items()}
+                    reg_cells = reg.get("cells") or {}
+                    for r3, c3, v3 in zip(reg_cells.get("r", []), reg_cells.get("c", []), reg_cells.get("v", [])):
+                        if reg_rows.get(r3) != account or abs(abs(v3) - abs(v)) > 0.006:
+                            continue
+                        for t in reg.get("texts") or []:
+                            if r3 - 3 <= t[0] <= r3 and str(t[2]).strip() not in (account, "") and len(words) < 3:
+                                words.append(str(t[2]).strip()[:40])
+                line = f"「{name}」{label}：{'+' if v > 0 else '-'}{abs(yuan) / 1e4:,.1f}万元"
+                if others:
+                    line += "（对方科目：" + "、".join(others[:3]) + "）"
+                if words:
+                    line += "；调整说明：" + "；".join(dict.fromkeys(words))
+                lines.append(line)
+                if len(lines) >= limit:
+                    return {"lines": lines, "values": values}
+    return {"lines": lines, "values": values}
+
+
+def attach_adjustment_bridges(dfs: Dict[str, pd.DataFrame], digest: Optional[Dict[str, Any]]) -> int:
+    """adjustment_bridge for every account frame, filed on its attrs. Returns
+    how many accounts had at least one entry."""
+    found = 0
+    for account, frame in (dfs or {}).items():
+        if not isinstance(frame, pd.DataFrame):
+            continue
+        try:
+            bridge = adjustment_bridge(digest, str(account))
+        except Exception as exc:  # enrichment, never a gate
+            logger.warning("Adjustment bridge skipped for %s: %s", account, exc)
+            continue
+        if bridge["lines"]:
+            frame.attrs[BRIDGE_KEY] = bridge
+            found += 1
+    return found
+
+
+def bridge_note(df: Optional[pd.DataFrame], language: str) -> str:
+    bridge = (getattr(df, "attrs", None) or {}).get(BRIDGE_KEY) or {}
+    lines = bridge.get("lines") or []
+    if not lines:
+        return ""
+    if language == "Chi":
+        return ("【本科目的审计调整及示意性调整（工作底稿）】" + " | ".join(lines)
+                + "。其中「示意性调整」为我方提出的调整：如与本科目有关，应说明调整内容、金额及原因"
+                  "（原因仅依据上述说明文字或备注）；审计调整可用于解释与管理层报表的差异。")
+    return ("[AUDIT AND INDICATIVE ADJUSTMENTS TO THIS ACCOUNT (working papers)] " + " | ".join(lines)
+            + ". Indicative adjustments are ours: where relevant, state what was adjusted, by how much and why "
+              "(the why only from the notes above or the remarks); audit adjustments explain differences from "
+              "the management accounts.")

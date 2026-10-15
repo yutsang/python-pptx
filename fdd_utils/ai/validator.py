@@ -1121,6 +1121,14 @@ class SourceIndex:
             # _OWN_HARD_KINDS -- it is synthetic, so it grounds the clause
             # without ever being citable as a repair source or steering a scale
             # classification.
+            # Adjustment amounts read off the bridge sheets and handed to the
+            # model (authority.adjustment_bridge). In no account cell, so without
+            # this a correctly quoted 「示意性调整补计提60.2万元」 would be "not
+            # found in source data" -- the shape of every own goal in this file.
+            if own:
+                for amount in ((df.attrs.get("adjustment_bridge") or {}).get("values") or []):
+                    facts.append(_fact(amount, "adjustment_entry", sheet=cls_sheet,
+                                       row_desc="adjustment posted to this account (bridge sheet)"))
             residual = analysis_df.attrs.get("prompt_residual")
             if own and isinstance(residual, dict) and residual.get("amount") is not None:
                 desc = ("remainder handed to the model (total of %s component(s) less the "

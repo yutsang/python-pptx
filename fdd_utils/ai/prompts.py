@@ -38,7 +38,7 @@ from ..financial_common import (
     visible_descriptions,
 )
 from ..workbook import INTERNAL_ROW_KEY
-from ..workbook.authority import authority_note
+from ..workbook.authority import authority_note, bridge_note
 
 _DEFAULT_PROMPTS_FILE = "fdd_utils/prompts.yml"
 _DEFAULT_MAPPINGS_FILE = "fdd_utils/mappings.yml"
@@ -3044,6 +3044,13 @@ class PromptEngine:
                 cross_label = "跨科目已核实事实" if language == "Chi" else "Cross-account verified fact"
                 rendered_user_prompt = self._append_markdown_section(
                     rendered_user_prompt, cross_label, cross_block)
+
+        # The account's audit and indicative adjustments from the bridge sheets
+        # (authority.adjustment_bridge). To the Generator, which writes about
+        # them, and the Auditor, which would otherwise cut what it cannot trace.
+        bridge_block = bridge_note(df, language) if isinstance(df, pd.DataFrame) else ""
+        if bridge_block and self.normalize_agent_name(agent_name) in ("1_Generator", "2_Auditor"):
+            rendered_user_prompt = f"{rendered_user_prompt}\n\n{bridge_block}"
 
         brief_block = str(format_params.get("account_brief_guidance") or "").strip()
         if brief_block and self.normalize_agent_name(agent_name) in ("1_Generator", "2_Auditor"):
