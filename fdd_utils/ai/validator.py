@@ -1643,6 +1643,17 @@ _RESIDUAL_OTHER = re.compile(
 #: account in 2023, 2024, 2025 and 2026H1. The span is cut here rather than the
 #: whole check abandoned, so 「主要包括A、B，分别占比…」 keeps A and B.
 _PERIOD_SERIES = re.compile(r"分别|respectively", re.I)
+#: 「主要包括甲46.4万元、乙30.1万元…；其中甲主要为某物流32.0万元，乙主要为审计费
+#: 24.1万元」: a 其中 that opens its own clause after the list drills into the
+#: items already named. Swept into the list it took a real 其他应付款 bullet that
+#: tied exactly (82.7) to 138.9 and reported it as overshooting. Only after a
+#: semicolon: 「…其他169.0万元，其中主要为某税务局166.8万元；押金83.1万元…」 keeps
+#: listing peers after a comma-其中, and the drop-one test below handles that.
+_DRILL_DOWN = re.compile(r"[；;]\s*其中")
+#: 「预计主要系基本户余额由…0.58亿元降至…0.01亿元所致」 is a cause, and its two
+#: figures are one line in two periods. Read as a list it put a 1.23亿元 cash
+#: balance at "52% unaccounted for" on a real run.
+_CAUSAL = re.compile(r"所致|导致|引起|造成")
 #: 账面价值 / 账面净值 too: 「固定资产账面价值为6.65亿元，主要为一期房屋2.79亿元、
 #: 二期房屋2.64亿元及土地-1.10亿元」 lists 4.33 against 6.65 -- the 1.10 is the
 #: accumulated depreciation, not land -- and went unchecked because the total
@@ -1781,9 +1792,12 @@ def _composition_findings(mapping_key: str, text: str,
             return []
     items = _ENUM_ITEM.findall(scan)
     if not items:
-        run = _ENUM_RUNON.search(scan)
+        run = next((r for r in _ENUM_RUNON.finditer(scan) if not _CAUSAL.search(r.group(1))), None)
         if run:
             span = run.group(1)
+            _drill = _DRILL_DOWN.search(span)
+            if _drill:
+                span = span[:_drill.start()]
             _series = _PERIOD_SERIES.search(span)
             if _series:
                 span = span[:_series.start()]
@@ -1836,7 +1850,11 @@ def _composition_findings(mapping_key: str, text: str,
             if not _stated or (_at.start() == _subject.start(1) and "主要" in _subject.group(0)):
                 continue
             _value = abs(float(_stated.group(1).replace(",", ""))) * _SCALE.get(_stated.group(2), 1.0)
-            if _value and abs(_value - listed) / _value <= 0.005:
+            # 1%, the same rounding allowance as the account total: 「工行借款3.63
+            # 亿元…主要包括一期1.40亿元及二期2.20亿元」 is 3.60 printed to two
+            # decimals of 亿, 0.8% short, and at 0.5% a real 长期借款 bullet was
+            # held against the 3.26 net balance instead and called 10% over.
+            if _value and abs(_value - listed) / _value <= 0.01:
                 return []
     # A "其中" drill-down is part of the item before it, not a peer of it:
     # "…非关联公司-其他169.0万元，其中主要为某税务局166.8万元；…押金83.1万元;

@@ -2157,6 +2157,13 @@ def ai_input_frames(
         for _account, _periods in sorted(_authority.items()):
             for _period, _pair in sorted(_periods.items()):
                 print(f"    {_account} {_period}: tab {_pair['tab']:,.0f} -> Financials {_pair['financials']:,.0f}")
+    _bridged = {k: f.attrs.get("adjustment_bridge") for k, f in dfs.items()
+                if isinstance(f, pd.DataFrame) and f.attrs.get("adjustment_bridge")}
+    print(f"\nℹ️  Adjustment bridge (audit + indicative entries handed to the model): "
+          f"{len(_bridged)} of {len(dfs)} account(s)")
+    for _account, _bridge in sorted(_bridged.items()):
+        for _line in _bridge.get("lines") or []:
+            print(f"    {_account}: {_line}")
     if not dfs:
         print("\n⚠️  process_workbook_data returned no frames; the AI run falls back to "
               "section 1's single-period frames (prompts will not match the app's).")

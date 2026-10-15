@@ -41,14 +41,24 @@ _AMOUNT = re.compile(r"(负|-)?\s*(\d[\d,]*(?:\.\d+)?)\s*(亿元|万元|千元|�
 _SCALE = {"亿元": 1e8, "万元": 1e4, "千元": 1e3, "元": 1.0}
 
 
+# 「资料来源：管理层信息；审计报告」 and the bare 「管理层信息；审计报告」 a
+# footnote box holds. Read as text they opened an account called 资料来源 and
+# swallowed the 税金及附加 and 财务费用 bullets that followed on the first run.
+_SOURCE_LINE = re.compile(r"^\s*(?:资料来源|来源|Source)\s*[：:]|^[^\d，,。]{2,12}(?:[；;][^\d，,。]{2,12})+$")
+
+
 def _paragraphs(path: str) -> List[str]:
     out: List[str] = []
     for slide in Presentation(path).slides:
         for shape in slide.shapes:
+            # The executive-summary band speaks for the whole statement; read as
+            # commentary it was appended to whichever account came before it.
+            if "summary" in (shape.name or "").lower():
+                continue
             if getattr(shape, "has_text_frame", False) and shape.has_text_frame:
                 for paragraph in shape.text_frame.paragraphs:
                     text = "".join(run.text for run in paragraph.runs).strip()
-                    if text:
+                    if text and not _SOURCE_LINE.search(text):
                         out.append(text)
             if getattr(shape, "has_table", False) and shape.has_table:
                 continue  # statement and detail tables: figures the reader already has

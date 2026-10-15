@@ -267,6 +267,49 @@ class PromptEngine:
                 chosen = []
         return frozenset(str(name).strip() for name in chosen if str(name).strip() in self.PROMPT_TRIMS)
 
+    @staticmethod
+    def _movement_as_reference(text: Any, language: str) -> str:
+        """A balance-sheet account's material-movement rule, turned from a
+        requirement into reference, for the open and guided modes.
+
+        The first guided run against the team's final report (2026-10-15) still
+        narrated 2023->2024 movements on 应付账款, 其他应付款, 长期待摊费用 and
+        others, where the final writes the latest period's composition, our
+        adjustments, the procedures and a recommendation, and leaves earlier
+        movements out unless they matter to the buyer. The brief said so; three
+        other places said the opposite in stronger words -- the per-account
+        【重大变动提示】 ("不可只陈述金额而不作说明"), and two sentences of the
+        shared formatting rules ("资产负债表科目同样适用…必须用一句话点出该变动",
+        "该变动**必须**在评论中出现") -- and the model followed the stronger
+        words. Income-statement accounts keep the rule: the final does explain
+        their movements. Standard mode is untouched.
+        """
+        text = str(text or "")
+        if not text:
+            return text
+        if language == "Chi":
+            text = re.sub(r"资产负债表科目同样适用：.*?腾出空间。", "", text, flags=re.S)
+            text = text.replace("该变动**必须**在评论中出现，并优先说明其原因",
+                                "利润表科目中该变动必须在评论中出现并优先说明原因（资产负债表科目仅在对买方重要时才写）")
+            text = text.replace("（此说明的1-2句不计入本科目篇幅上限，仅限于此说明本身。）", "")
+            text = text.replace("此变动幅度重大，不可只陈述金额而不作说明。", "")
+            text = text.replace("此变动不可只陈述金额而不作说明；", "")
+            text = text.replace("【重大变动提示】",
+                                "【变动信息（仅供参考）】资产负债表科目以最新一期的构成、我方调整、核对及建议为主，"
+                                "以下变动只在对买方重要时才写：")
+            return text
+        text = re.sub(r"This applies to balance-sheet accounts too:.*?to make room\.\s*", "", text, flags=re.S)
+        text = text.replace("that movement MUST appear in the commentary and its cause should be given first",
+                            "for an income-statement account that movement MUST appear in the commentary with its "
+                            "cause first (for a balance-sheet account, only where it matters to the buyer)")
+        text = text.replace("(This explanation's 1-2 sentences are exempt from this account's length cap -- for this explanation only.)", "")
+        text = text.replace("A movement this size must be addressed, not merely stated as a figure.", "")
+        text = text.replace("-- this must be addressed, not merely stated as a figure.", "--")
+        text = text.replace("[MATERIAL MOVEMENT]",
+                            "[MOVEMENT, FOR REFERENCE] A balance-sheet account leads with the latest composition, our "
+                            "adjustments, procedures and recommendations; mention the following only if it matters to the buyer:")
+        return text
+
     def _analysis_mode(self) -> str:
         """"guided" (default), "open" or "standard": processing.analysis_mode in config.yml, or
         FDD_ANALYSIS_MODE in the environment, which wins. See the analysis_mode
@@ -3011,6 +3054,12 @@ class PromptEngine:
                 # The per-account example sentences are templates to imitate,
                 # which is the opposite of what this mode is for.
                 format_params["patterns"] = ""
+        if open_mode and isinstance(df, pd.DataFrame) and str(
+                ((df.attrs or {}).get("integrity") or {}).get("statement_type") or "").strip().upper() == "BS":
+            format_params["variance_analysis_guidance"] = self._movement_as_reference(
+                format_params.get("variance_analysis_guidance"), language)
+            format_params["common_formatting"] = self._movement_as_reference(
+                format_params.get("common_formatting"), language)
         if "dedupe_guidance" in trims:
             system_prompt, user_prompt_template = self._dedupe_guidance(
                 str(system_prompt or ""), str(user_prompt_template or ""), language)

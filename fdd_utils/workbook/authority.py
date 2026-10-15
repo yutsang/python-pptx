@@ -324,7 +324,13 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
     if not sheets or not account:
         return {"lines": lines, "values": values}
     registers = {n: e for n, e in sheets.items() if re.search(r"ADJ|调整", str(n), re.IGNORECASE)}
-    for name, entry in sheets.items():
+    # (sheet position, audit-not-indicative, line). Kept whole and cut to the
+    # limit afterwards, latest sheet and indicative columns first: walked in
+    # workbook order, the 2023 and 2024 audit adjustments filled the limit
+    # before the 3M26 indicative ones -- the ones the final report writes
+    # about -- were reached.
+    ranked: List[Tuple[int, int, str]] = []
+    for position, (name, entry) in enumerate(sheets.items()):
         col_labels = {int(k): str(v) for k, v in (entry.get("col_labels") or {}).items()}
         if not any(re.search(r"审定数|示意性调整后", v) for v in col_labels.values()):
             continue
@@ -347,6 +353,21 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
                     if c2 == c and r2 != r and abs(abs(v2) - abs(v)) <= 0.006 and (v2 > 0) != (v > 0)
                     and row_labels.get(r2) and not _BRIDGE_TOTAL_ROW.search(row_labels.get(r2, ""))
                 })
+                # The same amount posted to other lines in another adjustment
+                # column of the sheet: the other half of a linked pair of
+                # entries. In the real book 投资收益 +133.2 (ADJ#4, against
+                # 财务费用) is the interest whose receivable is 其他应收款 +133.2
+                # (ADJ#5); the 投资收益 bullet, shown only its own entry, called
+                # it "财务费用重分类转入" and left the cause to management, while
+                # the 其他应收款 bullet a page earlier explained the loan.
+                linked = sorted({
+                    row_labels.get(r2, "") for (r2, c2), v2 in grid.items()
+                    if c2 != c and r2 != r and abs(abs(v2) - abs(v)) <= 0.006
+                    and re.search(r"ADJ|调整|adj", col_labels.get(c2, ""))
+                    and not _BRIDGE_TOTAL_COLUMN.search(col_labels.get(c2, ""))
+                    and row_labels.get(r2) and row_labels.get(r2) not in others
+                    and not _BRIDGE_TOTAL_ROW.search(row_labels.get(r2, ""))
+                })
                 words: List[str] = []
                 for reg_name, reg in registers.items():
                     reg_rows = {int(k): str(t).strip() for k, t in (reg.get("row_labels") or {}).items()}
@@ -360,11 +381,12 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
                 line = f"「{name}」{label}：{'+' if v > 0 else '-'}{abs(yuan) / 1e4:,.1f}万元"
                 if others:
                     line += "（对方科目：" + "、".join(others[:3]) + "）"
+                if linked:
+                    line += "（同额另见于其他调整：" + "、".join(linked[:3]) + "）"
                 if words:
                     line += "；调整说明：" + "；".join(dict.fromkeys(words))
-                lines.append(line)
-                if len(lines) >= limit:
-                    return {"lines": lines, "values": values}
+                ranked.append((-position, 0 if "示意" in label else 1, line))
+    lines = [line for _, _, line in sorted(ranked, key=lambda item: (item[1], item[0]))[:limit]]
     return {"lines": lines, "values": values}
 
 

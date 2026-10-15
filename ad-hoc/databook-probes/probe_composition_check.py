@@ -149,6 +149,26 @@ CASES = [
      False,
      "the same sentence with the right remainder"),
 
+    ("货币资金",
+     "截至2026年03月31日，货币资金余额为1.23亿元，均为银行存款，其中某银行美元资本金户0.84亿元、外债户0.37亿元。余额较2023年12月31日的1.81亿元下降，预计主要系基本户余额由2023年12月31日的0.58亿元降至2026年03月31日的0.01亿元所致。",
+     False,
+     "主要系…所致 is a cause, not a list: the two figures are one account in two periods"),
+
+    ("长期借款",
+     "截至2026年03月31日，长期借款余额为3.26亿元，系工行借款3.63亿元扣除重分类至一年内到期的非流动负债0.37亿元后的余额。工行借款主要包括一期物业借款本金1.40亿元及二期物业借款本金2.20亿元。",
+     False,
+     "the second list composes the 3.63 工行借款, within rounding (3.60 printed)"),
+
+    ("其他应付款",
+     "截至2026年03月31日，其他应付款余额82.7万元，主要包括押金及保证金46.4万元、预提费用30.1万元，另有第三方款项3.8万元及施工保证金2.5万元；其中押金及保证金主要为某物流32.0万元，预提费用主要为审计费24.1万元。",
+     False,
+     "a ；其中 drill-down after the list is inside its items, not more of them"),
+
+    ("其他应付款",
+     "截至2026年03月31日，其他应付款余额82.7万元，主要包括押金及保证金46.4万元、预提费用10.1万元；其中押金及保证金主要为某物流32.0万元。",
+     True,
+     "the same drill-down does not hide a real shortfall (56.5 of 82.7)"),
+
 ]
 
 
