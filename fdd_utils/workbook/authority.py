@@ -304,8 +304,8 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
 
     Measured against the team's own final report for one real engagement, the
     largest single thing the generated commentary left out was the
-    adjustments themselves -- 「我们提出了示意性调整，补计提了工程款尾款的进项
-    税额60.2万元」, 「补计提了截至2026年3月末的租赁服务费原值19.6万元」, the
+    adjustments themselves -- 「我们提出了示意性调整，补计提了某项进项税额X万元」,
+    「补计提了截至期末的某项服务费Y万元」, the
     legal-fee cut-off. All of it sits in the period bridge sheets (TB -> Audit
     ADJ#n -> 审定数 -> 示意性调整 -> 示意性调整后), one row per statement line,
     and none of it reached a prompt.

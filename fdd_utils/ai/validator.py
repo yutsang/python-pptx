@@ -1123,7 +1123,7 @@ class SourceIndex:
             # classification.
             # Adjustment amounts read off the bridge sheets and handed to the
             # model (authority.adjustment_bridge). In no account cell, so without
-            # this a correctly quoted 「示意性调整补计提60.2万元」 would be "not
+            # this a correctly quoted 「示意性调整补计提X万元」 would be "not
             # found in source data" -- the shape of every own goal in this file.
             if own:
                 for amount in ((df.attrs.get("adjustment_bridge") or {}).get("values") or []):
