@@ -330,6 +330,7 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
     # before the 3M26 indicative ones -- the ones the final report writes
     # about -- were reached.
     ranked: List[Tuple[int, int, str]] = []
+    related: List[str] = []
     for position, (name, entry) in enumerate(sheets.items()):
         col_labels = {int(k): str(v) for k, v in (entry.get("col_labels") or {}).items()}
         if not any(re.search(r"审定数|示意性调整后", v) for v in col_labels.values()):
@@ -375,6 +376,7 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
                     and not _BRIDGE_TOTAL_COLUMN.search(col_labels.get(c2, ""))
                     and _bridge_line(row_labels.get(r2, "")) and row_labels.get(r2) not in others
                 })
+                related.extend(x for x in list(others) + list(linked) if x not in related)
                 words = _register_words(registers, account, v, row_labels, label)
                 line = f"「{name}」{label}：{'+' if v > 0 else '-'}{abs(yuan) / 1e4:,.1f}万元"
                 if others:
@@ -391,7 +393,7 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
             if abs(total) >= 500:
                 values.append(abs(total))
     lines = [line for _, _, line in sorted(ranked, key=lambda item: (item[1], item[0]))[:limit]]
-    return {"lines": lines, "values": values}
+    return {"lines": lines, "values": values, "related": related}
 
 
 def _bridge_line(label: str) -> bool:
@@ -517,6 +519,32 @@ def attach_adjustment_bridges(dfs: Dict[str, pd.DataFrame], digest: Optional[Dic
         if bridge["lines"]:
             frame.attrs[BRIDGE_KEY] = bridge
             found += 1
+    # What the other side of an entry says about itself. 投资收益 is a nil tab
+    # whose whole story -- a USD loan to a related party, one year, 6%, repaid
+    # in April 2025 -- is in 其他应收款's notes; joined to it only by the
+    # register, the 投资收益 bullet called the fall "成因尚待与管理层确认" on
+    # three runs while the 其他应收款 bullet a page earlier explained it.
+    for account, frame in (dfs or {}).items():
+        bridge = frame.attrs.get(BRIDGE_KEY) if isinstance(frame, pd.DataFrame) else None
+        if not bridge:
+            continue
+        notes: List[str] = []
+        for other in bridge.get("related") or []:
+            other_frame = dfs.get(other)
+            if other == account or "未分配利润" in other or not isinstance(other_frame, pd.DataFrame):
+                continue
+            texts = [str(t).strip() for t in (other_frame.attrs.get("supporting_notes") or [])]
+            texts = [t for t in texts if len(re.findall(r"[\u4e00-\u9fffA-Za-z]", t)) >= 8][:2]
+            if texts:
+                notes.append(f"{other}：" + "；".join(t[:120] for t in texts))
+                for number, unit in re.findall(r"(\d[\d,]*(?:\.\d+)?)\s*(亿|万)?", "".join(texts)):
+                    value = float(number.replace(",", "")) * {"亿": 1e8, "万": 1e4}.get(unit, 1.0)
+                    if value >= 1000:  # amounts only: a bare 1, 6 or 2025 would ground anything
+                        bridge["values"].append(value)
+            if len(notes) >= 2:
+                break
+        if notes:
+            bridge["related_notes"] = notes
     return found
 
 
@@ -525,11 +553,22 @@ def bridge_note(df: Optional[pd.DataFrame], language: str) -> str:
     lines = bridge.get("lines") or []
     if not lines:
         return ""
+    notes = bridge.get("related_notes") or []
     if language == "Chi":
-        return ("【本科目的审计调整及示意性调整（工作底稿）】" + " | ".join(lines)
+        text = ("【本科目的审计调整及示意性调整（工作底稿）】" + " | ".join(lines)
                 + "。其中「示意性调整」为我方提出的调整：如与本科目有关，应说明调整内容、金额及原因"
                   "（原因仅依据上述说明文字或备注）；审计调整可用于解释与管理层报表的差异。")
-    return ("[AUDIT AND INDICATIVE ADJUSTMENTS TO THIS ACCOUNT (working papers)] " + " | ".join(lines)
+        if notes:
+            text += ("【分录对方科目的资料】" + " | ".join(notes)
+                     + "。本科目的变动若可由上述资料解释（例如收益来自对方科目所述的借款），直接据此说明，"
+                       "不要写成原因待确认；外文公司名照原文书写，不要自行译成中文。")
+        return text
+    text = ("[AUDIT AND INDICATIVE ADJUSTMENTS TO THIS ACCOUNT (working papers)] " + " | ".join(lines)
             + ". Indicative adjustments are ours: where relevant, state what was adjusted, by how much and why "
               "(the why only from the notes above or the remarks); audit adjustments explain differences from "
               "the management accounts.")
+    if notes:
+        text += (" [WHAT THE OTHER SIDE OF THESE ENTRIES SAYS] " + " | ".join(notes)
+                 + ". Where this explains the account's movement (e.g. income arising from a loan described there), "
+                   "say so rather than leaving the cause to management.")
+    return text
