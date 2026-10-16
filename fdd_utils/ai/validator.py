@@ -1595,11 +1595,22 @@ _ENUM_SUBJECT = re.compile(
     r"(?:^|[。；;\n])\s*([^。；;，,\n：:\d]{2,10}?)(?:主要(?:包括|包含|为|由)|(?:合计|共计)?[\d,.]+\s*[万亿千]?元[，,]\s*其中)")
 
 
+#: The two other ways a real bullet signs a component (Portfolio I run,
+#: 2026-10-16): 「管理层调整负3,423.6万元」 and 「并由增值税留抵净额20.1万元抵减」 /
+#: 「…53.3万元借方余额抵减」. Read as positive, four bullets that tied exactly
+#: were reported as listing more than the total, and the sentence was
+#: highlighted in the deck as unsupported.
+_NEGATIVE_PREFIX = re.compile(r"负\s*$")
+_DEDUCTED_AFTER = re.compile(r"^[^，,。；;、\d]{0,8}?(?:抵减|抵销|冲减|扣减)")
+
+
 def _signed_runon_amounts(span: str) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     for m in _RUNON_AMT.finditer(span):
         value, unit = m.group(1), m.group(2)
-        if not value.startswith("-") and _DEDUCTED.search(span[:m.start()]):
+        if not value.startswith("-") and (
+                _DEDUCTED.search(span[:m.start()]) or _NEGATIVE_PREFIX.search(span[:m.start()])
+                or _DEDUCTED_AFTER.search(span[m.end():])):
             value = "-" + value
         out.append((value, unit))
     return out

@@ -678,7 +678,11 @@ Draft summary:
             generation_timeout_seconds = float(
                 summary_settings.get("local_generation_timeout_seconds", 10)
                 if _is_local else
-                summary_settings.get("generation_timeout_seconds", 20)
+                # 45, not 20: a gateway model with reasoning took longer than
+                # 20s on one entity of a seven-entity run (2026-10-16), and the
+                # IS band shipped the spliced fallback, opening on a bare
+                # 「营业收入。」. The two summaries together normally take ~40s.
+                summary_settings.get("generation_timeout_seconds", 45)
             )
             # Sized to the real summary box, not a static config number --
             # see _summary_length_targets.

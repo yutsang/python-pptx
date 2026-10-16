@@ -3359,9 +3359,23 @@ def scorecard_row(path: str, model_type: str, model_name: Optional[str],
     import subprocess
     try:
         commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                                timeout=5).stdout.strip()
+                                timeout=5, cwd=str(Path(__file__).resolve().parent)).stdout.strip()
     except Exception:
         commit = ""
+    if not commit:
+        # git not callable from Python on the run machine (the first Portfolio I
+        # scorecard came back with an empty commit on all seven rows): read it
+        # off .git directly.
+        try:
+            git_dir = Path(__file__).resolve().parent / ".git"
+            head = (git_dir / "HEAD").read_text().strip()
+            ref = head.split(" ", 1)[1] if head.startswith("ref:") else ""
+            sha = (git_dir / ref).read_text().strip() if ref and (git_dir / ref).exists() else (
+                next((line.split()[0] for line in (git_dir / "packed-refs").read_text().splitlines()
+                      if ref and line.endswith(ref)), "") if ref else head)
+            commit = sha[:7]
+        except Exception:
+            commit = ""
     return {
         "time": datetime.datetime.now().isoformat(timespec="seconds"),
         "commit": commit,
