@@ -1579,7 +1579,10 @@ _ENUM_ITEM = re.compile(r"[1-9]）\s*[^；;]*?(-?[\d,]+(?:\.\d+)?)\s*(万元|亿
 # and anchoring there swept the STATED TOTAL into the component list --
 # the sum came out at exactly twice the total and was reported as a
 # parent-plus-children duplication that was not there.
-_ENUM_RUNON = re.compile(r"(?:主要(?:包括|包含|为|系)|包括|包含)([^。]*)")
+# Not across a line break either: 「…主要包括工程类、预提费用…，明细如下：\n
+# 某年审计调整将X万元…；上年同口径调整X万元」 named no amounts in its list, and
+# the two adjustment figures on the next line were summed as its items.
+_ENUM_RUNON = re.compile(r"(?:主要(?:包括|包含|为|系)|包括|包含)([^。\n]*)")
 _RUNON_AMT = re.compile(r"(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
 _BRACKETED = re.compile(r"[（(][^（）()]*[）)]")
 # A component introduced by 扣除 is taken OFF the ones before it. 「长期借款余额为
@@ -1592,7 +1595,7 @@ _DEDUCTED = re.compile(r"(?:扣除|减去|扣减|抵减|冲减)[^，,；;、]{0,
 
 #: 「原值主要包括：…」 -- the short subject a list is introduced under.
 _ENUM_SUBJECT = re.compile(
-    r"(?:^|[。；;\n])\s*([^。；;，,\n：:\d]{2,10}?)(?:主要(?:包括|包含|为|由)|(?:合计|共计)?[\d,.]+\s*[万亿千]?元[，,]\s*其中)")
+    r"(?:^|[。；;\n])\s*([^。；;，,\n：:\d]{2,10}?)(?:主要(?:包括|包含|为|由)|包括|包含|(?:合计|共计)?[\d,.]+\s*[万亿千]?元[，,]\s*其中)")
 
 
 #: The two other ways a real bullet signs a component (Portfolio I run,
@@ -1600,7 +1603,11 @@ _ENUM_SUBJECT = re.compile(
 #: 「…53.3万元借方余额抵减」. Read as positive, four bullets that tied exactly
 #: were reported as listing more than the total, and the sentence was
 #: highlighted in the deck as unsupported.
-_NEGATIVE_PREFIX = re.compile(r"负\s*$")
+#: Naming the side of a balance is only done when it is the contra side:
+#: 「…某服务费借方余额10.0万元…」 inside an 应付账款 list nets OFF the payables
+#: (60 + 10 - 10 = 60 against 60), and read as positive a real bullet was
+#: reported as listing more than its total.
+_NEGATIVE_PREFIX = re.compile(r"(?:负|借方余额|贷方余额)\s*$")
 _DEDUCTED_AFTER = re.compile(r"^[^，,。；;、\d]{0,8}?(?:抵减|抵销|冲减|扣减)")
 
 
@@ -1654,6 +1661,11 @@ _RESIDUAL_OTHER = re.compile(
 #: account in 2023, 2024, 2025 and 2026H1. The span is cut here rather than the
 #: whole check abandoned, so 「主要包括A、B，分别占比…」 keeps A and B.
 _PERIOD_SERIES = re.compile(r"分别|respectively", re.I)
+#: ...but only when the clause in front of it names periods. 「其中某银行A、B及C
+#: 账户分别为X万元、Y万元及Z万元，其余W万元…」 is three accounts, not three dates;
+#: cut there, the list lost its children and only the parent plus the 其余 was
+#: summed, overshooting the balance by the 其余.
+_PERIOD_WORDS = re.compile(r"年|期末|各期|月末|H1|FY", re.I)
 #: 「主要包括甲46.4万元、乙30.1万元…；其中甲主要为某物流32.0万元，乙主要为审计费
 #: 24.1万元」: a 其中 that opens its own clause after the list drills into the
 #: items already named. Swept into the list it took a real 其他应付款 bullet that
@@ -1811,7 +1823,9 @@ def _composition_findings(mapping_key: str, text: str,
                 span = span[:_drill.start()]
             _series = _PERIOD_SERIES.search(span)
             if _series:
-                span = span[:_series.start()]
+                _clause = re.split(r"[，,；;]", span[:_series.start()])[-1]
+                if _PERIOD_WORDS.search(_clause) or not re.search(r"[、及和与]", _clause):
+                    span = span[:_series.start()]
             # A bracket that repeats a figure already listed outside it is that
             # same component said again, not a second one: 「主要包括关联方-美元
             # 项下的3,649.7万元，系…500万美元借款本金（按汇率折合人民币3,649.7
@@ -1858,7 +1872,7 @@ def _composition_findings(mapping_key: str, text: str,
             continue
         for _at in re.finditer(re.escape(_label), body):
             _stated = _RUNON_AMT.search(body[_at.end():_at.end() + 24])
-            if not _stated or (_at.start() == _subject.start(1) and "主要" in _subject.group(0)):
+            if not _stated or (_at.start() == _subject.start(1) and "其中" not in _subject.group(0)):
                 continue
             _value = abs(float(_stated.group(1).replace(",", ""))) * _SCALE.get(_stated.group(2), 1.0)
             # 1%, the same rounding allowance as the account total: 「工行借款3.63
@@ -1896,6 +1910,11 @@ def _composition_findings(mapping_key: str, text: str,
         listed = sum(values)
         gap = total - listed
         if abs(gap) / total <= 0.01:
+            return []
+        # 「主要为营运收费X万元，其中金额较大的应收对象为A…、B…及C…」 says
+        # outright that it lists only the larger ones. Short of the parent is
+        # what that sentence promises, not an omission.
+        if gap > 0 and re.search(r"其中[^，,。；;\d]{0,8}(?:主要|较大|前\S{0,3}大)", scan):
             return []
     if len(values) > 2:
         biggest = max(values)

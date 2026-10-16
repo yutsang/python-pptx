@@ -127,7 +127,7 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from itertools import combinations
-from contextlib import redirect_stdout
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -227,6 +227,78 @@ def _hr(title: str = "") -> None:
     if title:
         print(f"  {title}")
         print("=" * 78)
+
+
+# Compact mode (the default) runs a noisy section with its output captured and
+# prints back only the lines `keep` accepts, plus one line saying how much was
+# hidden. A whole Portfolio run printed ~20k lines before this, most of it
+# per-row diagnostics that were fine, which is too much to paste back. The
+# capture is per-thread, so --entity-workers keeps working.
+_CAPTURE = threading.local()
+
+_ALWAYS_KEEP = ("❌", "Traceback", "FAILED")
+
+
+class _CaptureAwareStdout:
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, data):
+        buf = getattr(_CAPTURE, "buf", None)
+        return (buf or self._stream).write(data)
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+class _compact:
+    """with _compact("label", keep=("marker", ...)): ... -- see _CAPTURE above."""
+
+    def __init__(self, label: str, keep: Tuple[str, ...] = (), keep_next: Tuple[str, ...] = ()):
+        self.label = label
+        self.keep = tuple(keep) + _ALWAYS_KEEP
+        # A kept line whose NEXT line starts with one of these keeps that line
+        # too (the Validator prints the category and the clause on two lines).
+        self.keep_next = tuple(keep_next)
+
+    def __enter__(self):
+        if VERBOSE:
+            return self
+        if not isinstance(sys.stdout, _CaptureAwareStdout):
+            sys.stdout = _CaptureAwareStdout(sys.stdout)
+        self._prev = getattr(_CAPTURE, "buf", None)
+        _CAPTURE.buf = io.StringIO()
+        return self
+
+    def __exit__(self, *exc):
+        if VERBOSE:
+            return False
+        text = _CAPTURE.buf.getvalue()
+        _CAPTURE.buf = self._prev
+        kept: List[str] = []
+        lines = text.splitlines()
+        hidden = 0
+        carry = False
+        for line in lines:
+            stripped = line.strip()
+            if any(m in line for m in self.keep) or (carry and stripped.startswith(self.keep_next)):
+                kept.append(line)
+                carry = bool(self.keep_next)
+            else:
+                carry = False
+                if stripped and not stripped.startswith("="):
+                    hidden += 1
+        for line in kept:
+            print(line)
+        if hidden:
+            print(f"  [{self.label}: {hidden} line(s) hidden, --verbose shows them]")
+        return False
 
 
 def real_accounts(results: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2154,15 +2226,16 @@ def ai_input_frames(
     _authority = state.get("financials_authority") or {}
     if _authority:
         print(f"\nℹ️  Deck follows Financials: {len(_authority)} account total(s) set to the Financials "
-              f"figure where the tab disagreed (the tab's detail rows are unchanged):")
-        for _account, _periods in sorted(_authority.items()):
+              f"figure where the tab disagreed (the tab's detail rows are unchanged)"
+              + (":" if VERBOSE else "; --verbose lists them"))
+        for _account, _periods in (sorted(_authority.items()) if VERBOSE else ()):
             for _period, _pair in sorted(_periods.items()):
                 print(f"    {_account} {_period}: tab {_pair['tab']:,.0f} -> Financials {_pair['financials']:,.0f}")
     _bridged = {k: f.attrs.get("adjustment_bridge") for k, f in dfs.items()
                 if isinstance(f, pd.DataFrame) and f.attrs.get("adjustment_bridge")}
     print(f"\nℹ️  Adjustment bridge (audit + indicative entries handed to the model): "
           f"{len(_bridged)} of {len(dfs)} account(s)")
-    for _account, _bridge in sorted(_bridged.items()):
+    for _account, _bridge in (sorted(_bridged.items()) if VERBOSE else ()):
         for _line in _bridge.get("lines") or []:
             print(f"    {_account}: {_line}")
     if not dfs:
@@ -3148,12 +3221,14 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
     # character width that UNDER-counts, so columns come out slightly emptier,
     # never overfull -- but it silently costs layout quality, and finding that
     # out after paying for the run is the wrong order.
-    check_font_metrics_available()
+    with _compact("0 font metrics"):
+        check_font_metrics_available()
 
     summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
     extraction_resolution: Dict[str, Any] = {}
-    dfs = check_tab_read_summary(path, entity_name=entity_name,
-                                 resolution_out=extraction_resolution)
+    with _compact("1 tab read", keep=("Detected language",)):
+        dfs = check_tab_read_summary(path, entity_name=entity_name,
+                                     resolution_out=extraction_resolution)
     summary["tabs_parsed"] = len(dfs)
 
     if dump_tab_name:
@@ -3162,11 +3237,12 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         summary["status"] = "dump-tab only"
         return summary
 
-    check_unit_markers(path, dfs)
-    summary["scaling_mismatch_tabs"] = check_all_tabs_scaling(path, dfs, entity_name=entity_name)
-    check_row_structures(dfs)
-    check_indent_signals(path, dfs, entity_name=entity_name)
-    check_subtable_readiness(path, dfs)
+    with _compact("2-3c structure checks"):
+        check_unit_markers(path, dfs)
+        summary["scaling_mismatch_tabs"] = check_all_tabs_scaling(path, dfs, entity_name=entity_name)
+        check_row_structures(dfs)
+        check_indent_signals(path, dfs, entity_name=entity_name)
+        check_subtable_readiness(path, dfs)
 
     xl = pd.ExcelFile(path)
     summary["total_sheets"] = len(xl.sheet_names)
@@ -3210,36 +3286,38 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
     bs_recon_parts: List[pd.DataFrame] = []
     is_recon_parts: List[pd.DataFrame] = []
     period_tieout: List[Dict[str, Any]] = []
-    for i, sheet_name in enumerate(sheet_names):
-        # all_tab_names (dfs.keys()) is the same for every Financials sheet in
-        # this file -- only show the full tab-name list once, on the first one.
-        bs_recon, is_recon = check_reconciliation(
-            path, sheet_name, dfs, entity_name=entity_name, financials_from=financials_from,
-            show_tab_list=(i == 0), tieout_out=period_tieout,
-        )
-        if bs_recon is not None and not bs_recon.empty:
-            bs_recon_parts.append(bs_recon)
-        if is_recon is not None and not is_recon.empty:
-            is_recon_parts.append(is_recon)
-
-    # What the embedded grid will print in its unit cell, and at what scale.
-    # Read from the SAME source the exporter uses, so it cannot disagree.
-    try:
-        _sheet_for_units = sheet_names[0] if sheet_names else None
-        if _sheet_for_units:
-            check_statement_table_units(
-                extract_balance_sheet_and_income_statement(
-                    workbook_path=financials_from or path,
-                    sheet_name=_sheet_for_units, debug=False,
-                )
+    _recon_quiet = _compact("4 reconciliation + tie-out", keep=("❌ Diff",))
+    with _recon_quiet:
+        for i, sheet_name in enumerate(sheet_names):
+            # all_tab_names (dfs.keys()) is the same for every Financials sheet in
+            # this file -- only show the full tab-name list once, on the first one.
+            bs_recon, is_recon = check_reconciliation(
+                path, sheet_name, dfs, entity_name=entity_name, financials_from=financials_from,
+                show_tab_list=(i == 0), tieout_out=period_tieout,
             )
-    except Exception as _exc:
-        print(f"\n  (statement-table unit check skipped: {type(_exc).__name__}: {_exc})")
+            if bs_recon is not None and not bs_recon.empty:
+                bs_recon_parts.append(bs_recon)
+            if is_recon is not None and not is_recon.empty:
+                is_recon_parts.append(is_recon)
 
-    try:
-        explain_tieout_differences(period_tieout, extraction_resolution.get("workbook_digest"), dfs)
-    except Exception as _exc:
-        print(f"\n  (tie-out explanation skipped: {type(_exc).__name__}: {_exc})")
+        # What the embedded grid will print in its unit cell, and at what scale.
+        # Read from the SAME source the exporter uses, so it cannot disagree.
+        try:
+            _sheet_for_units = sheet_names[0] if sheet_names else None
+            if _sheet_for_units:
+                check_statement_table_units(
+                    extract_balance_sheet_and_income_statement(
+                        workbook_path=financials_from or path,
+                        sheet_name=_sheet_for_units, debug=False,
+                    )
+                )
+        except Exception as _exc:
+            print(f"\n  (statement-table unit check skipped: {type(_exc).__name__}: {_exc})")
+
+        try:
+            explain_tieout_differences(period_tieout, extraction_resolution.get("workbook_digest"), dfs)
+        except Exception as _exc:
+            print(f"\n  (tie-out explanation skipped: {type(_exc).__name__}: {_exc})")
 
     combined_bs_recon = pd.concat(bs_recon_parts, ignore_index=True) if bs_recon_parts else None
     combined_is_recon = pd.concat(is_recon_parts, ignore_index=True) if is_recon_parts else None
@@ -3294,12 +3372,19 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             path, entity_name, selected_sheet_for_ai,
             financials_from=financials_from, fallback_dfs=dfs,
         )
-        ai_summary = run_ai_checks(
-            path, selected_sheet_for_ai, ai_dfs, entity_name, model_type, model_name, language,
-            combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
-            accounts=accounts, resolution=resolution_for_insight, resume_from=resume_from,
-            period_tieout=period_tieout,
-        )
+        # --accounts narrows the run to read the commentary itself (5c), so
+        # nothing is hidden then.
+        _ai_quiet = nullcontext() if accounts else _compact(
+            "5-7 AI checks",
+            keep=("TIMING", "Feedback loop:", "category=hallucination", "suspicious number"),
+            keep_next=("clause:",))
+        with _ai_quiet:
+            ai_summary = run_ai_checks(
+                path, selected_sheet_for_ai, ai_dfs, entity_name, model_type, model_name, language,
+                combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
+                accounts=accounts, resolution=resolution_for_insight, resume_from=resume_from,
+                period_tieout=period_tieout,
+            )
         summary["ai"] = ai_summary
         _record_scorecard(path, model_type, model_name, ai_summary)
 
@@ -3307,11 +3392,14 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             out_path = pptx_out_path            # resolved and lock-checked up front
             Path(out_path).parent.mkdir(parents=True, exist_ok=True)
             try:
-                pptx_summary = export_and_inspect_pptx(
-                    path, selected_sheet_for_ai, ai_dfs, ai_summary["results"], language,
-                    model_type, out_path, model_name=model_name,
-                    financials_from=financials_from,
-                )
+                with _compact("8-10 PPTX export + layout",
+                              keep=("DROPPED", "⚠️", "OVERFLOW RISK", "OVERLAPS REAL TEXT",
+                                    "LEAKED", "GENUINE GAP", "warning(s) found")):
+                    pptx_summary = export_and_inspect_pptx(
+                        path, selected_sheet_for_ai, ai_dfs, ai_summary["results"], language,
+                        model_type, out_path, model_name=model_name,
+                        financials_from=financials_from,
+                    )
                 summary["pptx"] = pptx_summary
                 # Repeated dead-last: section 9/10 print a lot after the export,
                 # and the path is useless if it's buried thousands of lines up.
@@ -3458,7 +3546,8 @@ def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
                 src_str = ",".join(f"{k}={v}" for k, v in sources.items()) or "?"
                 row["pptx"] = (
                     f"{layout.get('content_slides', '?')} slides, "
-                    f"{layout.get('total_warnings', 0)} layout ⚠️, src={src_str}"
+                    f"{layout.get('total_warnings', 0)} layout ⚠️"
+                    + (f", src={src_str}" if VERBOSE else "")
                 )
                 population = pptx.get("population") or {}
                 if population:
@@ -3469,6 +3558,8 @@ def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
                     )
         rows.append(row)
     df = pd.DataFrame(rows)
+    if not VERBOSE:
+        df = df.drop(columns=[c for c in ("tabs", "scaling", "BS", "IS", "stage s/acct") if c in df.columns])
     print(df.to_string(index=False))
     if run_ai:
         total_empty = sum(len((s.get("ai") or {}).get("empty_accounts") or []) for s in summaries)

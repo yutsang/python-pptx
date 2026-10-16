@@ -475,6 +475,14 @@ def _register_words(registers: Dict[str, Any], account: str, v: float, bridge_ro
             by_row.setdefault(int(t[0]), []).append((int(t[1]), str(t[2]).strip()))
         ids = {row: next((_entry_id(text) for _, text in texts if _entry_id(text)), "")
                for row, texts in by_row.items()}
+        # A text written under three or more different entries is a column the
+        # register repeats on every row -- the project or entity name ("<项目名>；
+        # 审计费重分类" was what shipped) -- not a description of this entry.
+        spread: Dict[str, set] = {}
+        for row, texts in by_row.items():
+            for _, text in texts:
+                spread.setdefault(text, set()).add(ids.get(row, ""))
+        repeated = {text for text, entries in spread.items() if len(entries - {""}) >= 3}
         hits = [r3 for r3, v3 in zip(reg_cells.get("r", []), reg_cells.get("v", []))
                 if reg_rows.get(int(r3)) == account and abs(abs(v3) - abs(v)) <= 0.006]
         if not hits and wanted:
@@ -492,8 +500,8 @@ def _register_words(registers: Dict[str, Any], account: str, v: float, bridge_ro
             names = set(reg_rows.values()) | set(bridge_rows.values())
             for row in range(top, bottom + 1):
                 for _, text in sorted(by_row.get(row, [])):
-                    if (text and text not in names and not _entry_id(text)
-                            and not _REGISTER_NOISE.search(text)):
+                    if (text and text not in names and text not in repeated
+                            and not _entry_id(text) and not _REGISTER_NOISE.search(text)):
                         found.append(text[:40])
     return list(dict.fromkeys(found))[:2]
 
