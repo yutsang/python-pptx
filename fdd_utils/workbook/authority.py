@@ -449,7 +449,7 @@ def _register_words(registers: Dict[str, Any], account: str, v: float, bridge_ro
     The real register (read off one engagement's ADJ sheet, 2026-10-16) carries
     the entry id in its first column on EVERY row -- 「Audit ADJ#4」, 「ADJ#3」 --
     with the description either on a row of its own above the Dr/Cr lines
-    (audit entries: 「应收xinsheng借款利息重分类至投资收益」, no figures) or
+    (audit entries: 「应收某关联方借款利息重分类至投资收益」, no figures) or
     repeated on every line (indicative entries: 「补提工程款尾款的税额」, plus a
     note column such as 「电费成本，管理层入账在收入」). The account sits in a
     later column and is the row's label.
