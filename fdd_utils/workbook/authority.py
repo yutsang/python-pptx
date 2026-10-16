@@ -375,7 +375,7 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
                     and not _BRIDGE_TOTAL_COLUMN.search(col_labels.get(c2, ""))
                     and _bridge_line(row_labels.get(r2, "")) and row_labels.get(r2) not in others
                 })
-                words = _register_words(registers, account, v, row_labels)
+                words = _register_words(registers, account, v, row_labels, label)
                 line = f"「{name}」{label}：{'+' if v > 0 else '-'}{abs(yuan) / 1e4:,.1f}万元"
                 if others:
                     line += "（对方科目：" + "、".join(others[:3]) + "）"
@@ -437,40 +437,69 @@ def _counter_sign(side: Dict[str, Optional[int]], r: int, v: float, r2: int, v2:
     return ((v > 0) != (v2 > 0)) if a == b else ((v > 0) == (v2 > 0))
 
 
-_REGISTER_HEADER = re.compile(r"^(?:Audit\s*)?(?:IA|ADJ|Adj)\.?\s*#\s*\d+", re.I)
 # 「Y」: a one-letter flag column in the real register rode along as the first
 # "word" of every 3M26 description.
 _REGISTER_NOISE = re.compile(r"^(?:借|贷|Dr|Cr)\s*[：:]|^\d{4}[-/年]|^(?:Adj\.?#|类型|明细|科目|金额)$|^\w{0,2}$", re.I)
 
 
-def _register_words(registers: Dict[str, Any], account: str, v: float, bridge_rows: Dict[int, str]) -> List[str]:
+def _register_words(registers: Dict[str, Any], account: str, v: float, bridge_rows: Dict[int, str],
+                    entry_label: str = "") -> List[str]:
     """The description an adjustment register writes for this entry, if it can be found.
 
-    The register is a run of blocks -- a header (ADJ#n, a description) and the
-    Dr/Cr lines under it. The first version took every text within three rows
-    above the matching amount, which crossed into the block before: the 19.6
-    lease-commission accrual on 应付账款 came back described as ADJ#3's 「补提
-    工程款尾款的税额」, and dates, column headers and Dr/Cr lines rode along.
-    Now: the nearest header at or above the amount, the texts from it down to
-    the amount, and none of the furniture.
+    The real register (read off one engagement's ADJ sheet, 2026-10-16) carries
+    the entry id in its first column on EVERY row -- 「Audit ADJ#4」, 「ADJ#3」 --
+    with the description either on a row of its own above the Dr/Cr lines
+    (audit entries: 「应收xinsheng借款利息重分类至投资收益」, no figures) or
+    repeated on every line (indicative entries: 「补提工程款尾款的税额」, plus a
+    note column such as 「电费成本，管理层入账在收入」). The account sits in a
+    later column and is the row's label.
+
+    Two earlier readings were wrong. Three rows above the amount crossed into
+    the previous entry: the 19.6 lease-commission accrual came back as ADJ#3's
+    「补提工程款尾款的税额」. "Nearest header above" then found the row ITSELF,
+    since every row carries its id, and returned nothing for every audit entry.
+    Now: the row is found by amount against this account, or failing that by
+    the bridge column's own id (the 3M26 ADJ#3 of 60.2 is two register lines,
+    599.6 and 2.7 千元, so no single cell matches), and the words are the
+    entry's other texts -- every row with the same id, contiguous with it.
     """
+    wanted = _entry_id(entry_label)
     found: List[str] = []
     for reg in registers.values():
         reg_rows = {int(k): str(t).strip() for k, t in (reg.get("row_labels") or {}).items()}
         reg_cells = reg.get("cells") or {}
-        texts = [(int(t[0]), str(t[2]).strip()) for t in (reg.get("texts") or [])]
-        for r3, v3 in zip(reg_cells.get("r", []), reg_cells.get("v", [])):
-            if reg_rows.get(r3) != account or abs(abs(v3) - abs(v)) > 0.006:
+        by_row: Dict[int, List[Tuple[int, str]]] = {}
+        for t in reg.get("texts") or []:
+            by_row.setdefault(int(t[0]), []).append((int(t[1]), str(t[2]).strip()))
+        ids = {row: next((_entry_id(text) for _, text in texts if _entry_id(text)), "")
+               for row, texts in by_row.items()}
+        hits = [r3 for r3, v3 in zip(reg_cells.get("r", []), reg_cells.get("v", []))
+                if reg_rows.get(int(r3)) == account and abs(abs(v3) - abs(v)) <= 0.006]
+        if not hits and wanted:
+            hits = [row for row, entry in ids.items() if entry == wanted and reg_rows.get(row) == account]
+        for r3 in hits[:1]:
+            entry = ids.get(int(r3), "")
+            if not entry:
                 continue
-            headers = [row for row, text in texts if _REGISTER_HEADER.match(text) and r3 - 8 <= row <= r3]
-            if not headers:
-                continue
-            top = max(headers)
-            for row, text in sorted(texts):
-                if top <= row <= r3 and text and text != account and text not in bridge_rows.values() \
-                        and not _REGISTER_HEADER.fullmatch(text) and not _REGISTER_NOISE.search(text):
-                    found.append(text[:40])
+            top = int(r3)
+            while ids.get(top - 1) == entry:
+                top -= 1
+            bottom = int(r3)
+            while ids.get(bottom + 1) == entry:
+                bottom += 1
+            names = set(reg_rows.values()) | set(bridge_rows.values())
+            for row in range(top, bottom + 1):
+                for _, text in sorted(by_row.get(row, [])):
+                    if (text and text not in names and not _entry_id(text)
+                            and not _REGISTER_NOISE.search(text)):
+                        found.append(text[:40])
     return list(dict.fromkeys(found))[:2]
+
+
+def _entry_id(text: str) -> str:
+    """「Audit ADJ#4」 -> "AUDITADJ#4", 「ADJ#3」 -> "ADJ#3"; "" when not an id."""
+    m = re.fullmatch(r"\s*((?:Audit\s*)?(?:IA|ADJ|Adj)\.?\s*#\s*\d+)\s*", str(text or ""), re.I)
+    return re.sub(r"[\s.]", "", m.group(1)).upper() if m else ""
 
 
 def attach_adjustment_bridges(dfs: Dict[str, pd.DataFrame], digest: Optional[Dict[str, Any]]) -> int:
