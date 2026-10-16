@@ -396,7 +396,12 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
 
 def _bridge_line(label: str) -> bool:
     """A statement line a counter-entry can be posted to: not a total, not a check row."""
-    return bool(label) and not _BRIDGE_TOTAL_ROW.search(label) and not re.search(r"check|差异", label, re.I)
+    # 净利润 / 利润总额 / 年末未分配利润 are the profit roll-forward, not lines an
+    # entry is posted to: every income-statement adjustment flows through them,
+    # and on the real book they were named as the "counter-account" of 营业收入,
+    # 营业成本 and 管理费用 alike. 未分配利润 itself is a balance and stays.
+    return (bool(label) and not _BRIDGE_TOTAL_ROW.search(label)
+            and not re.search(r"check|差异|净利润|利润总额|营业利润|本期利润|年[初末]未分配利润", label, re.I))
 
 
 def _bridge_sides(row_labels: Dict[int, str]) -> Dict[str, Optional[int]]:
@@ -433,7 +438,9 @@ def _counter_sign(side: Dict[str, Optional[int]], r: int, v: float, r2: int, v2:
 
 
 _REGISTER_HEADER = re.compile(r"^(?:Audit\s*)?(?:IA|ADJ|Adj)\.?\s*#\s*\d+", re.I)
-_REGISTER_NOISE = re.compile(r"^(?:借|贷|Dr|Cr)\s*[：:]|^\d{4}[-/年]|^(?:Adj\.?#|类型|明细|科目|金额)$", re.I)
+# 「Y」: a one-letter flag column in the real register rode along as the first
+# "word" of every 3M26 description.
+_REGISTER_NOISE = re.compile(r"^(?:借|贷|Dr|Cr)\s*[：:]|^\d{4}[-/年]|^(?:Adj\.?#|类型|明细|科目|金额)$|^\w{0,2}$", re.I)
 
 
 def _register_words(registers: Dict[str, Any], account: str, v: float, bridge_rows: Dict[int, str]) -> List[str]:
