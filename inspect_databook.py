@@ -118,6 +118,7 @@ for _stream in (_sys.stdout, _sys.stderr):
 
 import argparse
 import io
+import json
 import logging
 import re
 import sys
@@ -2304,18 +2305,33 @@ def run_ai_checks(
     stage_done: Dict[int, int] = {}
     stage_size: Dict[int, int] = {}
 
+    retries = {"started": 0, "finished": 0}
+
     def _tqdm_progress(agent_num, agent_label, completed, total_eligible, overall_step, mapping_key):
         with progress_lock:
             pbar.set_postfix_str(f"{agent_label}: {mapping_key}"[:60])
+            if total_eligible == -1:
+                # A feedback-loop retry: Generator + Auditor + Validator again.
+                # The total grows when it starts and the count when it ends, so
+                # the bar never claims 100% while retries are still running.
+                retries["started" if not completed else "finished"] += 1
+                pbar.total = sum(stage_size.get(i, len(mapping_keys)) for i in range(1, stage_count + 1)) \
+                    + stage_count * retries["started"]
+                done = sum(stage_done.values()) + stage_count * retries["finished"]
+                if done > seen_step["n"]:
+                    pbar.update(done - seen_step["n"])
+                    seen_step["n"] = done
+                pbar.refresh()
+                return
             if total_eligible:
                 stage_size[agent_num] = total_eligible
             stage_done[agent_num] = max(stage_done.get(agent_num, 0), completed)
             true_total = sum(
                 stage_size.get(i, len(mapping_keys)) for i in range(1, stage_count + 1)
-            )
+            ) + stage_count * retries["started"]
             if true_total != pbar.total:
                 pbar.total = true_total
-            done = sum(stage_done.values())
+            done = sum(stage_done.values()) + stage_count * retries["finished"]
             delta = done - seen_step["n"]
             if delta > 0:
                 pbar.update(delta)
@@ -3285,6 +3301,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             period_tieout=period_tieout,
         )
         summary["ai"] = ai_summary
+        _record_scorecard(path, model_type, model_name, ai_summary)
 
         if export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
             out_path = pptx_out_path            # resolved and lock-checked up front
@@ -3305,6 +3322,77 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                 traceback.print_exc()
                 summary["pptx"] = {"status": f"FAILED: {exc}"}
     return summary
+
+
+SCORECARD_PATH = Path("fdd_utils/logs/scorecard.jsonl")
+
+
+def scorecard_row(path: str, model_type: str, model_name: Optional[str],
+                  ai_summary: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """One line per databook per AI run: how much of the deck can go out as written.
+
+    The target is "most files at 90+", not one file at 100, so every run is
+    scored the same way and kept. An account is CLEAN when the model wrote it
+    (no fallback bullet, no error text, not empty) and the verifier found no
+    hallucination in it; "reasoning" flags do not count against it -- they are
+    marked inferences, highlighted in the deck for the reader, which is what
+    the deliverable wants. score = clean / accounts run.
+    """
+    if not ai_summary or ai_summary.get("skipped"):
+        return None
+    results = ai_summary.get("results") or {}
+    health = results.get("__run_health__") or {}
+    degraded = set(health.get("accounts_on_fallback_bullet") or []) | set(health.get("accounts_on_error_text") or []) \
+        | set(ai_summary.get("empty_accounts") or [])
+    accounts = [k for k in results if not str(k).startswith("__")]
+    hallucinated, reasoning, retried = [], 0, 0
+    for key in accounts:
+        entry = results.get(key) or {}
+        reviews = ((entry.get("agent_4_validation") or {}).get("clause_reviews")) or []
+        bad = [r for r in reviews if isinstance(r, dict) and r.get("supported") is False]
+        if any(r.get("category") == "hallucination" for r in bad):
+            hallucinated.append(key)
+        reasoning += sum(1 for r in bad if r.get("category") != "hallucination")
+        retried += int(entry.get("feedback_retries") or 0)
+    clean = [k for k in accounts if k not in degraded and k not in hallucinated]
+    import datetime
+    import subprocess
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                                timeout=5).stdout.strip()
+    except Exception:
+        commit = ""
+    return {
+        "time": datetime.datetime.now().isoformat(timespec="seconds"),
+        "commit": commit,
+        "file": Path(path).name,
+        "model": model_name or model_type,
+        "accounts": len(accounts),
+        "clean": len(clean),
+        "score": round(100.0 * len(clean) / len(accounts), 1) if accounts else 0.0,
+        "hallucination_accounts": sorted(hallucinated),
+        "degraded_accounts": sorted(degraded),
+        "reasoning_flags": reasoning,
+        "composition_warnings": ai_summary.get("grounding_warnings", 0),
+        "retries": retried,
+        "calls_failed": health.get("calls_failed", 0),
+        "elapsed_s": round(float(ai_summary.get("elapsed") or 0), 1),
+    }
+
+
+def _record_scorecard(path: str, model_type: str, model_name: Optional[str], ai_summary: Dict[str, Any]) -> None:
+    row = scorecard_row(path, model_type, model_name, ai_summary)
+    if not row:
+        return
+    try:
+        SCORECARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with SCORECARD_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        print(f"(scorecard not written: {exc})")
+    print(f"\nSCORE {row['score']:.0f}/100 — {row['clean']}/{row['accounts']} account(s) clean; "
+          f"hallucination in {len(row['hallucination_accounts'])}, degraded {len(row['degraded_accounts'])}, "
+          f"{row['reasoning_flags']} highlighted inference(s). Appended to {SCORECARD_PATH}.")
 
 
 def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:

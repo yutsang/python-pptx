@@ -3072,6 +3072,16 @@ def _run_feedback_loop_for_key(
                 "Retry %s/%s: feedback_text_len=%s" % (retry_num, max_retries, len(feedback_text)),
                 feedback_text)
 
+        # A retry is three more model calls the progress bar did not know
+        # about: announce it before it starts (total_eligible=-1 marks a
+        # feedback-loop event; completed=0 started, 1 finished) so the bar's
+        # total grows instead of the bar sitting at 100% for minutes.
+        if progress_callback:
+            try:
+                progress_callback(5, "FeedbackLoop-%s" % retry_num, 0, -1, 0, key)
+            except Exception:
+                pass
+
         previous_output = get_pipeline_result_text(results[key])
         base_user_comment = (user_comments or {}).get(key, "")
         combined_comment = ("%s\n\n%s" % (base_user_comment, feedback_text)).strip() if feedback_text else base_user_comment
@@ -3144,7 +3154,7 @@ def _run_feedback_loop_for_key(
 
         if progress_callback:
             try:
-                progress_callback(5, "FeedbackLoop-%s" % retry_num, 0, 0, 0, key)
+                progress_callback(5, "FeedbackLoop-%s" % retry_num, 1, -1, 0, key)
             except Exception:
                 pass
 
