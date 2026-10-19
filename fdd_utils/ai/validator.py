@@ -1129,6 +1129,21 @@ class SourceIndex:
                 for amount in ((df.attrs.get("adjustment_bridge") or {}).get("values") or []):
                     facts.append(_fact(amount, "adjustment_entry", sheet=cls_sheet,
                                        row_desc="adjustment posted to this account (bridge sheet)"))
+            # The gap between the overridden total and the tab's own detail.
+            # authority_note tells the model the detail 「加总不等于该合计」, so
+            # 「与明细口径存在X万元差异」 is that difference stated -- and was
+            # flagged as a hallucination and retried twice on a real run. Only
+            # the DIFFERENCE grounds; the replaced tab totals stay withheld.
+            if own:
+                _authority = df.attrs.get("financials_authority") or analysis_df.attrs.get("financials_authority") or {}
+                for _period, _pair in _authority.items():
+                    try:
+                        _gap = abs(float(_pair.get("tab") or 0.0) - float(_pair.get("financials") or 0.0))
+                    except (TypeError, ValueError, AttributeError):
+                        continue
+                    if _gap:
+                        facts.append(_fact(_gap, "authority_gap", sheet=cls_sheet,
+                                           row_desc="total (Financials) less the tab's detail, %s" % _period))
             residual = analysis_df.attrs.get("prompt_residual")
             if own and isinstance(residual, dict) and residual.get("amount") is not None:
                 desc = ("remainder handed to the model (total of %s component(s) less the "
@@ -2054,7 +2069,9 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
     return out
 
 
-_PCT_CLAIM = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+# Thousands separators too: 「增长约1,2XX.X%」 was read as 2XX.X% and reported as
+# a hallucination against the four-digit rise its own two amounts make.
+_PCT_CLAIM = re.compile(r"(?<![\d,.])(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*%")
 _PCT_UP = re.compile(r"增长|增加|上升|增幅|回升|升幅|increase|rose|up\b", re.IGNORECASE)
 _PCT_DOWN = re.compile(r"下降|减少|降幅|降低|下滑|decrease|fell|declin|down\b", re.IGNORECASE)
 _PCT_VERSUS = re.compile(r"较|相比|对比|比|与|against|compared|versus|\bon\b", re.IGNORECASE)
@@ -2130,7 +2147,7 @@ def percent_claim_findings(text: str) -> List[Dict[str, Any]]:
             a, b = signed(current), signed(base)
             if not b or (a < 0) != (b < 0):
                 continue
-            stated = float(pct_match.group(1))
+            stated = float(pct_match.group(1).replace(",", ""))
             ha = display_half_ulp(clause[current[1]:current[2]])
             hb = display_half_ulp(clause[base[1]:base[2]])
             mags = [abs((abs(a) + da) - (abs(b) + db)) / (abs(b) + db) * 100
@@ -2649,7 +2666,7 @@ def _date_ordinal(parts) -> int:
     return y * 372 + m * 31 + d
 
 
-_PCT_IN_CLAUSE = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_PCT_IN_CLAUSE = _PCT_CLAIM  # thousands separators, see _PCT_CLAIM
 _DIR_UP = re.compile(r"增加|增长|上升|increase[sd]?|rose", re.IGNORECASE)
 _DIR_DOWN = re.compile(r"减少|下降|decrease[sd]?|fell|declined", re.IGNORECASE)
 #: A percentage may be off the movement's own by rounding only.
@@ -2732,7 +2749,7 @@ def _direction_reviews(final_content: str, df) -> List[Dict[str, Any]]:
 
     findings: List[Dict[str, Any]] = []
     for start, end, clause in segment_clauses(body):
-        quoted = [float(m.group(1)) for m in _PCT_IN_CLAUSE.finditer(clause)]
+        quoted = [float(m.group(1).replace(",", "")) for m in _PCT_IN_CLAUSE.finditer(clause)]
         if not quoted:
             continue
         says_up, says_down = bool(_DIR_UP.search(clause)), bool(_DIR_DOWN.search(clause))

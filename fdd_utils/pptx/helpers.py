@@ -1032,6 +1032,18 @@ def _name_net_block(plan: List[Dict[str, Any]], total_label: Any,
             + [{**entry, "kind": "grouped"} for entry in third])
 
 
+#: A pivot table's empty row label. 「(blank)」 reached a real 销售费用 subtable
+#: carrying a real amount; the row is real money with no name, so it is renamed, not
+#: dropped (dropping it would break the table's tie to its total).
+_PLACEHOLDER_ROW_LABELS = {"(blank)", "(空白)", "nan", "none", "null", "nat"}
+
+
+def _display_row_label(label: Any, is_chinese_databook: bool) -> Any:
+    if str(label or "").strip().lower() in _PLACEHOLDER_ROW_LABELS:
+        return "其他" if is_chinese_databook else "Other"
+    return label
+
+
 def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float,
 ) -> List[Dict[str, Any]]:
     """Flattens a presentation table's rows -> children (indented) ->
@@ -1059,9 +1071,11 @@ def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: b
             continue
         kind = "grouped" if (has_sheet_headings and any(
             e["kind"] == "group" for e in plan)) else "data"
-        plan.append({"label": row.get("label", ""), "values": _scaled(row.get("values")), "kind": kind})
+        plan.append({"label": _display_row_label(row.get("label", ""), is_chinese_databook),
+                     "values": _scaled(row.get("values")), "kind": kind})
         for child in (row.get("children") or []):
-            plan.append({"label": child.get("label", ""), "values": _scaled(child.get("values")), "kind": "child"})
+            plan.append({"label": _display_row_label(child.get("label", ""), is_chinese_databook),
+                         "values": _scaled(child.get("values")), "kind": "child"})
     if not has_sheet_headings:
         plan = _group_plan_rows_by_category(plan, str(table.get("title") or ""))
     total_row = table.get("total_row")

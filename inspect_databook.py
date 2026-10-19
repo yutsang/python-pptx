@@ -3377,7 +3377,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         _ai_quiet = nullcontext() if accounts else _compact(
             "5-7 AI checks",
             keep=("TIMING", "Feedback loop:", "category=hallucination", "suspicious number"),
-            keep_next=("clause:",))
+            keep_next=("clause:", "["))
         with _ai_quiet:
             ai_summary = run_ai_checks(
                 path, selected_sheet_for_ai, ai_dfs, entity_name, model_type, model_name, language,
