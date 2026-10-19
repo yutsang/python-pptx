@@ -2152,7 +2152,7 @@ def _ground_truth_values(dfs: Dict[str, pd.DataFrame]) -> List[float]:
 # "主要包括房产税1,676.2万元、土地使用税368.5万元及印花税2.9万元". The second
 # was invisible to the first pattern, which is how a 10x scale error reached a
 # real deck unflagged.
-from fdd_utils.ai.validator import check_composition_adds_up  # single definition; see validator.py
+from fdd_utils.ai.validator import check_composition_adds_up, _composition_reviews  # single definition; see validator.py
 
 
 def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str, pd.DataFrame]) -> List[str]:
@@ -2653,7 +2653,10 @@ def run_ai_checks(
             continue
         checked_count += 1
         all_warnings.extend(check_numeric_grounding(key, text, {key: dfs.get(key)} if key in dfs else dfs))
-        all_warnings.extend(check_composition_adds_up(key, text))
+        # With the sentence, so a flag can be judged from the pasted output
+        # alone -- compact mode hides 5b, where the clause otherwise appears.
+        for _review in _composition_reviews(text):
+            all_warnings.append(f"[{key}] {_review.get('reason')}\n    「{str(_review.get('clause') or '')[:240]}」")
     print(f"Checked {checked_count} of {len(_accounts)} account(s) with non-empty output.")
     if empty_accounts:
         print(
@@ -3377,7 +3380,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         _ai_quiet = nullcontext() if accounts else _compact(
             "5-7 AI checks",
             keep=("TIMING", "Feedback loop:", "category=hallucination", "suspicious number"),
-            keep_next=("clause:", "["))
+            keep_next=("clause:", "[", "「"))
         with _ai_quiet:
             ai_summary = run_ai_checks(
                 path, selected_sheet_for_ai, ai_dfs, entity_name, model_type, model_name, language,

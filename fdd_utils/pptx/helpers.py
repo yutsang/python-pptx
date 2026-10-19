@@ -1044,6 +1044,68 @@ def _display_row_label(label: Any, is_chinese_databook: bool) -> Any:
     return label
 
 
+def _head_repeated_blocks(entries: List[Dict[str, Any]], title: str,
+                          is_chinese_databook: bool) -> Optional[List[Dict[str, Any]]]:
+    """Headings for a fixed-asset roll-forward whose own 原值/累计折旧 labels were lost.
+
+    Those section labels sit on value-less rows the extractor does not keep, so
+    a real 固定资产 subtable came out as 室外工程/房屋建筑物/机械设备/装修工程
+    twice over, gross then depreciation, with nothing between them (inspect_pptx:
+    SAME LABEL, DIFFERENT NUMBERS, on every Portfolio III entity). The blocks are
+    recovered from the repetition itself and named by sign: the first block is
+    cost, a negative block after it is the accumulated charge, a positive one
+    after that the net value. Any other shape is left alone (None).
+    """
+    if not entries or any(e.get("kind") != "data" for e in entries):
+        return None
+    labels = [str(e.get("label") or "").strip() for e in entries]
+    try:
+        k = labels.index(labels[0], 1) if labels.count(labels[0]) > 1 else 0
+    except ValueError:
+        k = 0
+    if k < 2:
+        return None
+    n_blocks = len(entries) // k
+    if n_blocks not in (2, 3):
+        return None
+    blocks = [entries[i * k:(i + 1) * k] for i in range(n_blocks)]
+    if any(set(labels[i * k:(i + 1) * k]) != set(labels[:k]) for i in range(1, n_blocks)):
+        return None
+
+    def _sign(block):
+        latest = 0.0
+        for entry in block:
+            vals = [v for _, v in sorted((entry.get("values") or {}).items()) if isinstance(v, (int, float))]
+            latest += vals[-1] if vals else 0.0
+        return latest
+
+    signs = [_sign(b) for b in blocks]
+    if not (signs[0] > 0 and signs[1] < 0 and (n_blocks == 2 or signs[2] > 0)):
+        return None
+    if n_blocks == 3:
+        # Named 净值 only if it IS cost plus the charge, line by line -- the
+        # same proof _name_net_block asks for.
+        def _latest(entry):
+            vals = [v for _, v in sorted((entry.get("values") or {}).items()) if isinstance(v, (int, float))]
+            return vals[-1] if vals else 0.0
+        by_label = [{str(e.get("label") or "").strip(): _latest(e) for e in block} for block in blocks]
+        if any(abs(by_label[0][name] + by_label[1][name] - by_label[2][name])
+               > max(1.0, 0.01 * abs(by_label[0][name])) for name in by_label[0]):
+            return None
+    amortised = "无形" in title or "摊销" in title or "intangible" in title.lower()
+    if is_chinese_databook:
+        names = ["原值", "累计摊销" if amortised else "累计折旧", "净值"]
+    else:
+        names = ["Cost", "Accumulated amortisation" if amortised else "Accumulated depreciation",
+                 "Net book value"]
+    out: List[Dict[str, Any]] = []
+    for name, block in zip(names, blocks):
+        out.append({"label": name, "values": {}, "kind": "group"})
+        out.extend(dict(entry, kind="grouped") for entry in block)
+    out.extend(entries[n_blocks * k:])
+    return out
+
+
 def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float,
 ) -> List[Dict[str, Any]]:
     """Flattens a presentation table's rows -> children (indented) ->
@@ -1077,7 +1139,9 @@ def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: b
             plan.append({"label": _display_row_label(child.get("label", ""), is_chinese_databook),
                          "values": _scaled(child.get("values")), "kind": "child"})
     if not has_sheet_headings:
-        plan = _group_plan_rows_by_category(plan, str(table.get("title") or ""))
+        _blocked = _head_repeated_blocks(plan, str(table.get("title") or ""), is_chinese_databook)
+        plan = _blocked if _blocked is not None else _group_plan_rows_by_category(
+            plan, str(table.get("title") or ""))
     total_row = table.get("total_row")
     plan = _name_net_block(plan, (total_row or {}).get("label"), is_chinese_databook)
     if total_row:
