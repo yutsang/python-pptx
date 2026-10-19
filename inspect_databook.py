@@ -3498,6 +3498,9 @@ def _record_scorecard(path: str, model_type: str, model_name: Optional[str], ai_
     print(f"\nSCORE {row['score']:.0f}/100 — {row['clean']}/{row['accounts']} account(s) clean; "
           f"hallucination in {len(row['hallucination_accounts'])}, degraded {len(row['degraded_accounts'])}, "
           f"{row['reasoning_flags']} highlighted inference(s). Appended to {SCORECARD_PATH}.")
+    for _label, _names in (("hallucination", row["hallucination_accounts"]), ("degraded", row["degraded_accounts"])):
+        if _names:
+            print(f"  {_label}: {', '.join(_names)}")
 
 
 def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:

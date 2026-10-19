@@ -221,6 +221,15 @@ CASES = [
      False,
      "the list names no amounts; the next line's adjustments are not its items"),
 
+    ("货币资金",
+     "截至2026年06月30日，货币资金余额为700.0万元，主要包括：1）银行存款人民币户1,400.0万元；2）银行存款美元户0.1万元；3）管理层调整抵减700.1万元。",
+     False,
+     "a numbered item written 抵减X is negative: 1,400.0 + 0.1 - 700.1 = 700.0"),
+
+    ("应收账款",
+     "截至2026年06月30日，应收账款余额合计100.0万元，主要包括：1）甲公司800.0万元；2）乙公司90.0万元；3）丙公司8.0万元；其余7.0万元为其他零星客户余额，并扣减管理层调整805.0万元。",
+     False,
+     "a deduction closing a numbered list: 800 + 90 + 8 + 7 - 805 = 100"),
 ]
 
 

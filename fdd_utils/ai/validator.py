@@ -998,6 +998,48 @@ class SourceIndex:
         return facts
 
     @classmethod
+    def _category_sum_facts(cls, analysis_df, sheet) -> List[Dict[str, Any]]:
+        """The sum of the rows that share a 「类别-」 prefix, per period.
+
+        「无形资产原值为X万元，减累计摊销Y万元后…」 adds 无形资产-土地使用权 and
+        无形资产-办公软件 for X, and the two 累计摊销- rows for Y. The tab has no
+        原值 / 累计摊销 subtotal row, so the pool held each line but not the
+        sum the bullet is written around: a real 无形资产 bullet was flagged as
+        a hallucination and retried twice in two separate runs, both times with
+        correct arithmetic. Same-prefix rows only -- the grouping is in the
+        labels, nothing is inferred -- and filed out of _OWN_HARD_KINDS like
+        the movements above.
+        """
+        facts: List[Dict[str, Any]] = []
+        try:
+            skip = set(cls._non_amount_cols(analysis_df))
+            columns = [c for c in list(analysis_df.columns)[1:] if c not in skip]
+            descs, _row_idxs, _types = _row_provenance(analysis_df)
+            groups: Dict[str, List[int]] = {}
+            for pos, desc in enumerate(descs):
+                parts = re.split(r"\s*[-－—]\s*", str(desc or "").strip(), maxsplit=1)
+                if len(parts) == 2 and parts[0] and parts[1]:
+                    groups.setdefault(parts[0], []).append(pos)
+            for category, positions in groups.items():
+                if len(positions) < 2:
+                    continue
+                for col in columns:
+                    cells = analysis_df[col].tolist()
+                    values = [_to_float(cells[p]) if p < len(cells) and isinstance(cells[p], (int, float, str))
+                              else None for p in positions]
+                    values = [v for v in values if v is not None and v == v]
+                    if len(values) < 2:
+                        continue
+                    total = sum(values)
+                    if abs(total) < 1e-9:
+                        continue
+                    facts.append(_fact(total, "category_sum", sheet=sheet,
+                                       row_desc="sum of the %s- rows" % category, col_label=col))
+        except Exception:
+            return facts
+        return facts
+
+    @classmethod
     def _annualised_tail_facts(cls, df, analysis_df, sheet) -> List[Dict[str, Any]]:
         """Each analysis row's part-year tail on a twelve-month basis.
 
@@ -1171,6 +1213,7 @@ class SourceIndex:
                                        sheet=cls_sheet, row_desc=desc + " [as displayed]"))
             if own:
                 facts += cls._period_movement_facts(analysis_df, cls_sheet)
+                facts += cls._category_sum_facts(analysis_df, cls_sheet)
                 facts += cls._annualised_tail_facts(df, analysis_df, cls_sheet)
         # Also ground against numbers cited in the supporting notes / remarks
         # (df.attrs), e.g. registered capital "7000万美元" that never appears in
@@ -1581,6 +1624,37 @@ def _combine_verdict(clause: str, det: Optional[Dict[str, Any]],
 
 
 _ENUM_ITEM = re.compile(r"[1-9]）\s*[^；;]*?(-?[\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+#: A deduction closing a numbered list, outside any numbered item:
+#: 「…3）丙X万元；其余Y万元为…，并扣减管理层调整Z万元。」
+_TRAILING_DEDUCTION = re.compile(
+    r"(?:扣减|抵减|减去|扣除|冲减)[^，,。；;\d]{0,16}?([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+
+
+def _signed_enum_items(scan: str) -> List[Tuple[str, str]]:
+    """The numbered items of a list, signed the way the run-on form is.
+
+    「余额为X万元，主要包括：1）银行存款甲；2）银行存款乙；3）管理层调整抵减丙」
+    ties exactly once the third item is taken off, and 「…其余Y万元…，并扣减
+    管理层调整Z万元」 closes a list with a deduction no item number carries.
+    Read unsigned, two real Portfolio III bullets that tied exactly were
+    reported as listing several times their total.
+    """
+    out: List[Tuple[str, str]] = []
+    last_end = None
+    for m in _ENUM_ITEM.finditer(scan):
+        value, unit = m.group(1), m.group(2)
+        head = scan[m.start():m.start(1)]
+        if not value.startswith("-") and (
+                _DEDUCTED.search(head) or _NEGATIVE_PREFIX.search(head)
+                or _DEDUCTED_AFTER.search(scan[m.end():])):
+            value = "-" + value
+        out.append((value, unit))
+        last_end = m.end()
+    if out and last_end is not None:
+        tail = re.split(r"[。\n]", scan[last_end:], maxsplit=1)[0]
+        for d in _TRAILING_DEDUCTION.finditer(tail):
+            out.append(("-" + d.group(1), d.group(2)))
+    return out
 # The enumeration runs from "主要包括" to the end of that SENTENCE. It used to
 # require each component to be a run of 2-10 CJK characters immediately before
 # its figure, which real labels in one deck do not satisfy:
@@ -1828,7 +1902,7 @@ def _composition_findings(mapping_key: str, text: str,
                           default=None)
         if _first_item is not None and m.start() > _first_item:
             return []
-    items = _ENUM_ITEM.findall(scan)
+    items = _signed_enum_items(scan)
     if not items:
         run = next((r for r in _ENUM_RUNON.finditer(scan) if not _CAUSAL.search(r.group(1))), None)
         if run:

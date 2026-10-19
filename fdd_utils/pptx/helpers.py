@@ -1059,22 +1059,25 @@ def _head_repeated_blocks(entries: List[Dict[str, Any]], title: str,
     if not entries or any(e.get("kind") != "data" for e in entries):
         return None
     labels = [str(e.get("label") or "").strip() for e in entries]
-    try:
-        k = labels.index(labels[0], 1) if labels.count(labels[0]) > 1 else 0
-    except ValueError:
-        k = 0
-    if k < 2:
+    # Blocks start wherever the first label comes round again. Their lengths
+    # may differ: a real Portfolio III table carried a 管理层调整 line in some
+    # blocks and not others, and an equal-length split missed it entirely.
+    starts = [i for i, label in enumerate(labels) if label == labels[0]]
+    if len(starts) not in (2, 3) or starts[1] < 2:
         return None
-    n_blocks = len(entries) // k
-    if n_blocks not in (2, 3):
+    bounds = starts + [len(entries)]
+    blocks = [entries[bounds[i]:bounds[i + 1]] for i in range(len(starts))]
+    block_labels = [{str(e.get("label") or "").strip() for e in block} for block in blocks]
+    core = block_labels[0] & block_labels[1]
+    if len(core) < 2:
         return None
-    blocks = [entries[i * k:(i + 1) * k] for i in range(n_blocks)]
-    if any(set(labels[i * k:(i + 1) * k]) != set(labels[:k]) for i in range(1, n_blocks)):
-        return None
+    n_blocks = len(blocks)
 
     def _sign(block):
+        # Over the shared asset lines only; a 管理层调整 line riding in one
+        # block can outweigh the depreciation and flip its sign.
         latest = 0.0
-        for entry in block:
+        for entry in (e for e in block if str(e.get("label") or "").strip() in core):
             vals = [v for _, v in sorted((entry.get("values") or {}).items()) if isinstance(v, (int, float))]
             latest += vals[-1] if vals else 0.0
         return latest
@@ -1089,8 +1092,9 @@ def _head_repeated_blocks(entries: List[Dict[str, Any]], title: str,
             vals = [v for _, v in sorted((entry.get("values") or {}).items()) if isinstance(v, (int, float))]
             return vals[-1] if vals else 0.0
         by_label = [{str(e.get("label") or "").strip(): _latest(e) for e in block} for block in blocks]
-        if any(abs(by_label[0][name] + by_label[1][name] - by_label[2][name])
-               > max(1.0, 0.01 * abs(by_label[0][name])) for name in by_label[0]):
+        shared = set(by_label[0]) & set(by_label[1]) & set(by_label[2])
+        if len(shared) < 2 or any(abs(by_label[0][name] + by_label[1][name] - by_label[2][name])
+                                  > max(1.0, 0.01 * abs(by_label[0][name])) for name in shared):
             return None
     amortised = "无形" in title or "摊销" in title or "intangible" in title.lower()
     if is_chinese_databook:
@@ -1102,7 +1106,6 @@ def _head_repeated_blocks(entries: List[Dict[str, Any]], title: str,
     for name, block in zip(names, blocks):
         out.append({"label": name, "values": {}, "kind": "group"})
         out.extend(dict(entry, kind="grouped") for entry in block)
-    out.extend(entries[n_blocks * k:])
     return out
 
 
