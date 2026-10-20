@@ -2724,6 +2724,26 @@ def run_ai_checks(
         print(f"   ({stripped} written by the model, removed automatically by "
               f"shorten_company_names — the prompt does not have to win this argument.)")
 
+    # 6c. Two accounts side by side, and what the arithmetic found that the
+    # text never says (fdd_utils/ai/consistency.py). Report-only: nothing
+    # retries or patches on these yet.
+    _hr("6c. CROSS-ACCOUNT CONSISTENCY (report-only)")
+    try:
+        from fdd_utils.ai.consistency import cross_account_findings
+        _run_record = results.get("__run__") if isinstance(results, dict) else None
+        _graph_facts = (_run_record or {}).get("facts") if isinstance(_run_record, dict) else None
+        cross_findings = cross_account_findings(results, dfs, _graph_facts)
+    except Exception as _exc:
+        cross_findings = []
+        print(f"  (cross-account pass failed: {type(_exc).__name__}: {_exc})")
+    _uncovered = [f for f in cross_findings if f["code"] == "OBSERVATION_UNCOVERED"]
+    _crossref = [f for f in cross_findings if f["code"] == "CROSS_REF_AMOUNT"]
+    print(f"⚖️  cross-account: {len(_uncovered)} analyst observation(s) no commentary mentions "
+          f"({sum(1 for f in _uncovered if f['severity'] == 'high')} high), "
+          f"{len(_crossref)} amount(s) written against another account that are not its figures")
+    for _f in cross_findings:
+        print(f"⚖️  [{_f['severity']:6s}] {'、'.join(_f['accounts'])}: {_f['detail']}")
+
     return {
         "skipped": False,
         "total_mapped": total_mapped,
@@ -2738,6 +2758,7 @@ def run_ai_checks(
         # handed `results`, never this dict.
         "claim_contracts": claim_tally,
         "insight_summary": _insight,
+        "cross_account": cross_findings,
     }
 
 
@@ -3409,7 +3430,7 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         # nothing is hidden then.
         _ai_quiet = nullcontext() if accounts else _compact(
             "5-7 AI checks",
-            keep=("TIMING", "Feedback loop:", "category=hallucination", "suspicious number"),
+            keep=("TIMING", "Feedback loop:", "category=hallucination", "suspicious number", "⚖️"),
             keep_next=("clause:", "[", "「"))
         with _ai_quiet:
             ai_summary = run_ai_checks(
@@ -3515,6 +3536,15 @@ def scorecard_row(path: str, model_type: str, model_name: Optional[str],
         "retries": retried,
         "calls_failed": health.get("calls_failed", 0),
         "elapsed_s": round(float(ai_summary.get("elapsed") or 0), 1),
+        # Report-only quality signals (6c), not part of the score: what the
+        # arithmetic found that no commentary says, and amounts written
+        # against the wrong account.
+        "uncovered_high": sum(1 for f in (ai_summary.get("cross_account") or [])
+                              if f.get("code") == "OBSERVATION_UNCOVERED" and f.get("severity") == "high"),
+        "uncovered": sum(1 for f in (ai_summary.get("cross_account") or [])
+                         if f.get("code") == "OBSERVATION_UNCOVERED"),
+        "cross_ref": sum(1 for f in (ai_summary.get("cross_account") or [])
+                         if f.get("code") == "CROSS_REF_AMOUNT"),
     }
 
 

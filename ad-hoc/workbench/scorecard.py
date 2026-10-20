@@ -30,11 +30,15 @@ def main() -> int:
         for row in rows:
             latest[row["file"]] = row
         shown = sorted(latest.values(), key=lambda r: r["score"])
-    print("%-46s %6s %8s %6s %6s %6s %7s %8s" % ("file", "score", "clean", "hallu", "degr", "infer", "commit", "time"))
+    # miss = high-severity analyst observations no commentary mentions (6c);
+    # "-" on rows written before that check existed. Not part of the score.
+    print("%-46s %6s %8s %6s %6s %6s %5s %7s %8s" % ("file", "score", "clean", "hallu", "degr", "infer", "miss",
+                                                     "commit", "time"))
     for r in shown:
-        print("%-46s %6.0f %8s %6d %6d %6d %7s %8s" % (
+        miss = str(r["uncovered_high"]) if "uncovered_high" in r else "-"
+        print("%-46s %6.0f %8s %6d %6d %6d %5s %7s %8s" % (
             r["file"][:46], r["score"], f"{r['clean']}/{r['accounts']}", len(r["hallucination_accounts"]),
-            len(r["degraded_accounts"]), r["reasoning_flags"], r.get("commit", ""), r["time"][5:16]))
+            len(r["degraded_accounts"]), r["reasoning_flags"], miss, r.get("commit", ""), r["time"][5:16]))
         for key in r["hallucination_accounts"] + r["degraded_accounts"]:
             print("%-46s %s" % ("", "  review: " + key))
     if "--history" not in sys.argv and shown:

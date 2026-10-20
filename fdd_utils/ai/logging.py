@@ -336,22 +336,22 @@ class PipelineRunLogger:
             "total_duration_seconds": total_duration,
             "total_tokens_used": total_tokens,
             "total_prompt_length_chars": sum(
-                data.get("prompt_length", 0)
+                (data.get("prompt_length", 0) or 0)
                 for agents in self.run_data["processing_results"].values()
                 for data in agents.values()
             ),
             "total_output_length_chars": sum(
-                data.get("output_length", data.get("content_length", 0))
+                (data.get("output_length", data.get("content_length", 0)) or 0)
                 for agents in self.run_data["processing_results"].values()
                 for data in agents.values()
             ),
             "total_estimated_prompt_tokens": sum(
-                data.get("estimated_prompt_tokens", 0)
+                (data.get("estimated_prompt_tokens", 0) or 0)
                 for agents in self.run_data["processing_results"].values()
                 for data in agents.values()
             ),
             "total_estimated_output_tokens": sum(
-                data.get("estimated_output_tokens", 0)
+                (data.get("estimated_output_tokens", 0) or 0)
                 for agents in self.run_data["processing_results"].values()
                 for data in agents.values()
             ),
