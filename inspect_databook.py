@@ -2907,6 +2907,14 @@ def export_and_inspect_pptx(
         for _gone in (_grounding.get("dropped_sentences") or []):
             print(f"      removed: {str(_gone.get('sentence'))[:160]}")
             print(f"        why:   {str(_gone.get('reason'))[:200]}")
+    # Report-only (consistency.py): a summary clause whose direction the
+    # account's own balances contradict. Grounding above checks amounts only.
+    try:
+        from fdd_utils.ai.consistency import summary_direction_findings
+        for _f in summary_direction_findings(section_summaries, dfs or {}):
+            print(f"⚖️  [{_f['severity']:6s}] {'、'.join(_f['accounts'])}: {_f['detail']}")
+    except Exception as _exc:
+        print(f"  (summary direction check skipped: {type(_exc).__name__}: {_exc})")
 
     # Every fdd_utils.pptx.* module sets its OWN logger to WARNING at import,
     # and a child's level wins over the parent's -- so raising only the parent
@@ -3456,7 +3464,7 @@ def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool
             Path(out_path).parent.mkdir(parents=True, exist_ok=True)
             try:
                 with _compact("8-10 PPTX export + layout",
-                              keep=("DROPPED", "⚠️", "OVERFLOW RISK", "OVERLAPS REAL TEXT",
+                              keep=("DROPPED", "⚠️", "⚖️", "OVERFLOW RISK", "OVERLAPS REAL TEXT",
                                     "LEAKED", "GENUINE GAP", "warning(s) found")):
                     pptx_summary = export_and_inspect_pptx(
                         path, selected_sheet_for_ai, ai_dfs, ai_summary["results"], language,

@@ -165,6 +165,62 @@ def cross_reference_amounts(texts: Dict[str, str], dfs: Dict[str, Any]) -> List[
     return findings
 
 
+_UP = re.compile(r"增加|增长|上升|上涨|回升|扩大|新增|increase|rose|grew|up\b", re.IGNORECASE)
+_DOWN = re.compile(r"减少|下降|下滑|回落|降至|收窄|缩减|decrease|fell|declin|down\b", re.IGNORECASE)
+
+
+def _balance_moves(df: Any) -> List[float]:
+    """Latest-vs-prior and first-to-last change of a balance-sheet total."""
+    attrs = getattr(df, "attrs", None) or {}
+    stype = str(((attrs.get("integrity") or {}).get("statement_type")) or "").upper()
+    if stype and stype != "BS":
+        return []
+    totals = attrs.get("projection_totals_by_date") or {}
+    series = [(str(p), float(v)) for p, v in totals.items()
+              if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(p)) and isinstance(v, (int, float)) and v == v]
+    series.sort()
+    if len(series) < 2:
+        return []
+    return [series[-1][1] - series[-2][1], series[-1][1] - series[0][1]]
+
+
+def summary_direction_findings(summaries: Dict[str, str], dfs: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Executive-summary clauses whose direction contradicts the account they name.
+
+    Judged only where a clause names exactly ONE balance-sheet account and uses
+    exactly one direction, and flagged only when BOTH the latest movement and
+    the whole-period one go the other way -- a summary may legitimately
+    describe either. The summary is the most-read text in the deck, and its
+    grounding checks amounts, never direction.
+    """
+    pattern = _name_pattern(list(dfs or {}))
+    if pattern is None:
+        return []
+    findings: List[Dict[str, Any]] = []
+    for statement, text in (summaries or {}).items():
+        for clause in re.split(r"[。；;，,\n]", str(text or "")):
+            names = {m.group(0) for m in pattern.finditer(clause)}
+            if len(names) != 1:
+                continue
+            up, down = bool(_UP.search(clause)), bool(_DOWN.search(clause))
+            if up == down:
+                continue
+            account = names.pop()
+            moves = _balance_moves(dfs.get(account))
+            if not moves or any(abs(m) < 1e-6 for m in moves):
+                continue
+            if up and all(m < 0 for m in moves) or down and all(m > 0 for m in moves):
+                findings.append({
+                    "code": "SUMMARY_DIRECTION",
+                    "severity": "high",
+                    "accounts": [account],
+                    "detail": (f"{statement} summary says {account} went {'up' if up else 'down'}, but it "
+                               f"moved {moves[0]:+,.0f} in the latest period and {moves[1]:+,.0f} over "
+                               f"the whole series: 「{clause.strip()[:120]}」"),
+                })
+    return findings
+
+
 def cross_account_findings(results: Dict[str, Any], dfs: Dict[str, Any],
                            graph_facts: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
     """Both checks over a finished run. Never raises; an empty list is an answer."""
