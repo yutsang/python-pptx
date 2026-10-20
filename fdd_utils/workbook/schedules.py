@@ -501,71 +501,157 @@ def _extract_sheet_style_signals(ws, df: pd.DataFrame, desc_col_idx: int) -> Dic
 _XML_ROW_TAG = re.compile(rb"<(?:\w+:)?row\b([^>]*)>")
 _XML_MERGE_TAG = re.compile(rb"<(?:\w+:)?mergeCell\b[^>]*\bref=\"([^\"]+)\"")
 _XML_ATTR = re.compile(rb"\b(r|outlineLevel)=\"(\d+)\"")
+_XML_CELL_TAG = re.compile(rb"<(?:\w+:)?c\b([^>]*?)/?>")
+_XML_CELL_REF = re.compile(rb"\br=\"([A-Z]+)(\d+)\"")
+_XML_CELL_STYLE = re.compile(rb"\bs=\"(\d+)\"")
+_XML_ROW_START = re.compile(rb"<(?:\w+:)?row\b[^>]*\br=\"(\d+)\"")
 
 
-def _sheet_xml_structure(workbook, worksheet) -> Tuple[Dict[int, int], List[str]]:
-    """(outline level by 0-based row, merged ranges) straight from the sheet XML.
-
-    A read-only worksheet does not expose either. A byte-level scan finds the
-    two tags without building an element per cell -- it is a fraction of the
-    cost of the cell pass itself, even on a 270k-cell sheet."""
+def _cell_styles_enabled() -> bool:
+    flag = os.environ.get("FDD_READ_CELL_STYLES", "").strip().lower()
+    if flag in ("0", "false", "off", "no"):
+        return False
+    if flag in ("1", "true", "on", "yes"):
+        return True
     try:
-        path = getattr(worksheet, "_worksheet_path", None)
-        archive = getattr(workbook, "_archive", None)
-        if not path or archive is None:
-            return {}, []
-        data = archive.read(path)
+        from ..financial_common import load_yaml_file, package_file_path
+        processing = (load_yaml_file(package_file_path("config.yml")).get("processing") or {})
+        return bool(processing.get("read_cell_styles", True))
     except Exception:
-        return {}, []
-    outline: Dict[int, int] = {}
+        return True
+
+
+def _local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def _xlsx_sheet_paths(archive) -> Dict[str, str]:
+    """{sheet name: zip path of its XML}, from workbook.xml and its rels."""
+    import xml.etree.ElementTree as ET
+
+    rels = {}
+    for el in ET.fromstring(archive.read("xl/_rels/workbook.xml.rels")).iter():
+        if _local(el.tag) == "Relationship":
+            target = el.get("Target") or ""
+            target = target.lstrip("/")
+            rels[el.get("Id")] = target if target.startswith("xl/") else "xl/" + target
+    out = {}
+    for el in ET.fromstring(archive.read("xl/workbook.xml")).iter():
+        if _local(el.tag) == "sheet":
+            rid = next((v for k, v in el.attrib.items() if _local(k) == "id"), None)
+            if rid in rels:
+                out[el.get("name")] = rels[rid]
+    return out
+
+
+def _xlsx_styles(archive) -> Dict[str, Any]:
+    """Per cell-style index (cellXfs order): indent, bold, number format code."""
+    import xml.etree.ElementTree as ET
+
+    from openpyxl.styles.numbers import BUILTIN_FORMATS
+
+    try:
+        root = ET.fromstring(archive.read("xl/styles.xml"))
+    except KeyError:
+        return {"indent": [], "bold": [], "numfmt": []}
+    children = {_local(el.tag): el for el in root}
+    custom = {}
+    if "numFmts" in children:
+        for nf in children["numFmts"]:
+            custom[int(nf.get("numFmtId", "0"))] = nf.get("formatCode") or "General"
+    bold_fonts = []
+    if "fonts" in children:
+        for font in children["fonts"]:
+            b = next((el for el in font if _local(el.tag) == "b"), None)
+            bold_fonts.append(b is not None and (b.get("val") or "1").lower() not in ("0", "false"))
+    indent, bold, numfmt = [], [], []
+    if "cellXfs" in children:
+        for xf in children["cellXfs"]:
+            alignment = next((el for el in xf if _local(el.tag) == "alignment"), None)
+            try:
+                indent.append(int((alignment.get("indent") if alignment is not None else 0) or 0))
+            except ValueError:
+                indent.append(0)
+            font_id = int(xf.get("fontId", "0") or 0)
+            bold.append(bold_fonts[font_id] if font_id < len(bold_fonts) else False)
+            fmt_id = int(xf.get("numFmtId", "0") or 0)
+            numfmt.append(custom.get(fmt_id) or BUILTIN_FORMATS.get(fmt_id) or "General")
+    return {"indent": indent, "bold": bold, "numfmt": numfmt}
+
+
+def _column_letters(col_idx: int) -> bytes:
+    letters = ""
+    n = col_idx + 1
+    while n:
+        n, rem = divmod(n - 1, 26)
+        letters = chr(65 + rem) + letters
+    return letters.encode("ascii")
+
+
+def _xml_sheet_style_signals(data: bytes, styles: Dict[str, Any], df: pd.DataFrame,
+                             desc_col_idx: int) -> Dict[str, Any]:
+    """_extract_sheet_style_signals' output from the raw sheet XML. Same fields,
+    same row convention (df row i is Excel row i + 1); the cell values are the
+    ones pandas read into `df`."""
+    import numbers as _numbers
+
+    n_rows, n_cols = len(df), len(df.columns)
+    desc_letters = _column_letters(desc_col_idx)
+    style_of_desc: Dict[int, int] = {}
+    style_of_cell: Dict[Tuple[int, int], int] = {}
+    letters_to_col = {_column_letters(c): c for c in range(n_cols)}
+    # Every cell's style id is needed only in the description column (all rows)
+    # and in the first rows (number formats); one scan over the cell tags.
+    for match in _XML_CELL_TAG.finditer(data):
+        attrs = match.group(1)
+        ref = _XML_CELL_REF.search(attrs)
+        if not ref:
+            continue
+        letters, row = ref.group(1), int(ref.group(2))
+        style = _XML_CELL_STYLE.search(attrs)
+        style_id = int(style.group(1)) if style else 0
+        if letters == desc_letters:
+            style_of_desc[row] = style_id
+        if row <= _STYLE_NUMBER_FORMAT_SCAN_ROWS:
+            col = letters_to_col.get(letters)
+            if col is not None:
+                style_of_cell[(row, col)] = style_id
+
+    def style_attr(name: str, style_id: int, default):
+        table = styles.get(name) or []
+        return table[style_id] if 0 <= style_id < len(table) else default
+
+    indent_rows: List[Tuple[int, int, str]] = []
+    bold_rows: List[int] = []
+    for row_idx in range(n_rows):
+        value = df.iat[row_idx, desc_col_idx]
+        if not isinstance(value, str) or not value.strip():
+            continue
+        style_id = style_of_desc.get(row_idx + 1, 0)
+        indent_rows.append((row_idx, int(style_attr("indent", style_id, 0)), value.strip()))
+        if style_attr("bold", style_id, False):
+            bold_rows.append(row_idx)
+
+    number_formats: Dict[int, str] = {}
+    scan_rows = min(n_rows, _STYLE_NUMBER_FORMAT_SCAN_ROWS)
+    for col_idx in range(desc_col_idx + 1, n_cols):
+        for row_idx in range(scan_rows):
+            value = df.iat[row_idx, col_idx]
+            if (isinstance(value, bool) or not isinstance(value, _numbers.Number)
+                    or type(value).__name__ == "bool_" or value != value):
+                continue
+            number_formats[col_idx] = str(style_attr("numfmt", style_of_cell.get((row_idx + 1, col_idx), 0),
+                                                     "General") or "General")
+            break
+
+    outline_levels: Dict[int, int] = {}
     for match in _XML_ROW_TAG.finditer(data):
         attrs = dict(_XML_ATTR.findall(match.group(1)))
         level = int(attrs.get(b"outlineLevel", b"0") or 0)
         if level > 0 and b"r" in attrs:
-            outline[int(attrs[b"r"]) - 1] = level
-    merged = [m.group(1).decode("ascii", "ignore") for m in _XML_MERGE_TAG.finditer(data)]
-    return outline, merged
+            outline_levels[int(attrs[b"r"]) - 1] = level
+    merged_ranges = [m.group(1).decode("ascii", "ignore") for m in _XML_MERGE_TAG.finditer(data)]
 
-
-def _read_only_sheet_style_signals(workbook, worksheet, df: pd.DataFrame, desc_col_idx: int) -> Dict[str, Any]:
-    """_extract_sheet_style_signals' output from a READ-ONLY worksheet, in one
-    sequential pass (random ws.cell() access is O(rows) per call in read-only
-    mode). Same fields, same row convention: df row i is Excel row i + 1."""
-    n_rows, n_cols = len(df), len(df.columns)
-    indent_rows: List[Tuple[int, int, str]] = []
-    bold_rows: List[int] = []
-    number_formats: Dict[int, str] = {}
-    pending_format_cols = set(range(desc_col_idx + 1, n_cols))
-    try:
-        rows_iter = worksheet.iter_rows(min_row=1, max_row=n_rows, max_col=n_cols)
-    except Exception:
-        rows_iter = iter(())
-    for row_idx, row in enumerate(rows_iter):
-        if row_idx >= n_rows:
-            break
-        cell = row[desc_col_idx] if desc_col_idx < len(row) else None
-        raw_value = getattr(cell, "value", None)
-        if isinstance(raw_value, str) and raw_value.strip():
-            try:
-                indent_level = int(cell.alignment.indent or 0)
-            except Exception:
-                indent_level = 0
-            indent_rows.append((row_idx, indent_level, raw_value.strip()))
-            try:
-                if cell.font is not None and bool(cell.font.bold):
-                    bold_rows.append(row_idx)
-            except Exception:
-                pass
-        if pending_format_cols and row_idx < _STYLE_NUMBER_FORMAT_SCAN_ROWS:
-            for col_idx in sorted(pending_format_cols):
-                if col_idx >= len(row):
-                    continue
-                value = getattr(row[col_idx], "value", None)
-                if isinstance(value, bool) or not isinstance(value, (int, float)):
-                    continue
-                number_formats[col_idx] = str(getattr(row[col_idx], "number_format", None) or "General")
-                pending_format_cols.discard(col_idx)
-    outline_levels, merged_ranges = _sheet_xml_structure(workbook, worksheet)
     has_signal = bool(
         any(level > 0 for _, level, _ in indent_rows)
         or bold_rows
@@ -578,7 +664,7 @@ def _read_only_sheet_style_signals(workbook, worksheet, df: pd.DataFrame, desc_c
         "bold_rows": bold_rows,
         "outline_levels": outline_levels,
         "merged_ranges": merged_ranges,
-        "number_formats": dict(sorted(number_formats.items())),
+        "number_formats": number_formats,
         "has_signal": has_signal,
         "indent_row_count": sum(1 for _, level, _ in indent_rows if level > 0),
         "bold_row_count": len(bold_rows),
@@ -605,39 +691,48 @@ def _build_workbook_style_index(workbook_path: str) -> Dict[str, Dict[str, Any]]
     bold/outline/merge/number_format fields as well. The narrower indent-only
     retention still exists, one level up, in _build_indent_signal_index.
     """
-    # READ-ONLY, not a full load. A full openpyxl load also parses every
-    # pivot table, and openpyxl re-reads every pivot cache WITH ITS RECORDS for
-    # each pivot table it meets (WorkbookParser.pivot_caches is an uncached
-    # property). A real databook with a 透视表 over its ~12k-row 科目余额表
-    # spent 1,168 of 1,198 seconds right here before the first account was
-    # read. Read-only skips pivots, charts and images; the two signals it
-    # cannot give (outline levels, merged ranges) are read off the sheet XML.
-    try:
-        from openpyxl import load_workbook as _load_workbook_raw
-        wb_raw = _load_workbook_raw(workbook_path, read_only=True, data_only=True)
-    except Exception:
+    # No openpyxl workbook at all. A FULL load also parses every pivot table,
+    # and openpyxl re-reads every pivot cache with its records for each pivot
+    # table it meets (WorkbookParser.pivot_caches is an uncached property): a
+    # real databook with a 透视表 over its ~12k-row 科目余额表 spent 1,168 of
+    # 1,198 seconds here. A read-only load was tried next and was still slow on
+    # the owner's machine. The signals need only three small things -- the
+    # cell-style table, the style index of the description cells, and the
+    # first numeric cell per column -- so they are read straight out of the
+    # .xlsx zip with byte-level scans, and the cell VALUES come from the frames
+    # pandas has already read. processing.read_cell_styles: false (or
+    # FDD_READ_CELL_STYLES=0) turns the whole pass off; the only thing that
+    # consumes it is the indent-based rollup reclassification.
+    if not _cell_styles_enabled():
         return {}
     try:
         workbook_frames = load_workbook_frames(workbook_path)
     except Exception:
-        wb_raw.close()
         return {}
     index: Dict[str, Dict[str, Any]] = {}
     try:
-        for sheet_name, df in workbook_frames.items():
-            if sheet_name not in wb_raw.sheetnames or df is None or df.empty:
-                continue
-            desc_col_idx = _find_description_column(df)
-            if desc_col_idx is None:
-                continue
-            signals = _read_only_sheet_style_signals(wb_raw, wb_raw[sheet_name], df, desc_col_idx)
-            if signals["has_signal"]:
-                index[sheet_name] = signals
-    finally:
-        try:
-            wb_raw.close()
-        except Exception:
-            pass
+        import zipfile
+        with zipfile.ZipFile(workbook_path) as archive:
+            styles = _xlsx_styles(archive)
+            sheet_paths = _xlsx_sheet_paths(archive)
+            for sheet_name, df in workbook_frames.items():
+                path = sheet_paths.get(sheet_name)
+                if not path or df is None or df.empty:
+                    continue
+                desc_col_idx = _find_description_column(df)
+                if desc_col_idx is None:
+                    continue
+                try:
+                    data = archive.read(path)
+                except KeyError:
+                    continue
+                signals = _xml_sheet_style_signals(data, styles, df, desc_col_idx)
+                if signals["has_signal"]:
+                    index[sheet_name] = signals
+    except Exception as exc:
+        logger.warning("Cell-style signals skipped for %s: %s: %s",
+                       os.path.basename(workbook_path), type(exc).__name__, exc)
+        return {}
     if not index:
         # Say so out loud: a vacuous pass and a workbook with no style
         # information look identical to every consumer otherwise, and all four
