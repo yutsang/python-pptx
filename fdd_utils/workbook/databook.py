@@ -435,8 +435,11 @@ def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=No
 def _extract_normalized_data_from_excel(databook_path, mode="All", entity_name=None, mapping_overrides=None):
     overall_started = time.perf_counter()
     profiles_started = time.perf_counter()
-    profiles = profile_workbook(databook_path)
+    # Read first, on its own clock: pandas parsing every sheet (a 科目余额表 of
+    # ~12k rows included) is a separate cost from profiling them.
     workbook_frames = load_workbook_frames(databook_path)
+    _read_at = time.perf_counter()
+    profiles = profile_workbook(databook_path)
     _profiled_at = time.perf_counter()
     # Pre-warm the indent-signal index synchronously, in this (single) thread,
     # BEFORE the ThreadPoolExecutor below fans normalize_financial_schedule
@@ -447,7 +450,8 @@ def _extract_normalized_data_from_excel(databook_path, mode="All", entity_name=N
     # Per-stage wall time, carried on `resolution` so every caller can print
     # where the pre-AI minutes went (a Portfolio III run spent ~30 of them here
     # with no way to tell which stage).
-    timings: Dict[str, float] = {"profile": _profiled_at - profiles_started,
+    timings: Dict[str, float] = {"read_sheets": _read_at - profiles_started,
+                                 "profile": _profiled_at - _read_at,
                                  "style_index": time.perf_counter() - _profiled_at}
     logger.debug("Profiled workbook %s in %.2fs", os.path.basename(databook_path), timings["profile"])
     resolver_language = _detect_report_language_from_profiles(profiles) or "Eng"

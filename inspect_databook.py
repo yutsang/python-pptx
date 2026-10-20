@@ -100,6 +100,11 @@ from __future__ import annotations
 
 import os
 import sys as _sys
+import time as _time
+
+# When the process started, so main() can say how long the imports alone took
+# (on a corporate Windows box antivirus scans every .pyc the first time).
+_PROCESS_STARTED = _time.perf_counter()
 
 # Windows swaps the console encoding away from UTF-8 the moment output is piped
 # or redirected: attached to a terminal, printing goes through the console's own
@@ -3892,6 +3897,7 @@ def main() -> int:
 
     global VERBOSE
     VERBOSE = args.verbose
+    print(f"⏱  startup (Python imports) {time.perf_counter() - _PROCESS_STARTED:.0f}s")
 
     if args.subtables != "auto":
         os.environ["FDD_SUBTABLES"] = "1" if args.subtables == "on" else "0"
