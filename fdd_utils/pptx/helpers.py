@@ -1109,6 +1109,95 @@ def _head_repeated_blocks(entries: List[Dict[str, Any]], title: str,
     return out
 
 
+def _latest_value(entry: Dict[str, Any]) -> Optional[float]:
+    vals = [v for _, v in sorted((entry.get("values") or {}).items()) if isinstance(v, (int, float))]
+    return float(vals[-1]) if vals else None
+
+
+def _restructure_rollforward(plan: List[Dict[str, Any]], total_row: Optional[Dict[str, Any]],
+                             title: str, is_chinese_databook: bool) -> Optional[List[Dict[str, Any]]]:
+    """A fixed-asset style table rebuilt as 原值 / 累计折旧 / 净值, decided by arithmetic.
+
+    A real Portfolio III 固定资产 table (dumped from the deck) came out as:
+    室外工程 / 房屋建筑物 / 机械设备 / 装修工程 at cost, the same four NET,
+    管理层调整, then [累计折旧] over the four negatives and 管理层调整 AGAIN with
+    identical figures -- the only heading the sheet kept sat in front of the
+    wrong block, and the adjustment was counted twice. Reading the table off
+    its own numbers instead:
+
+    * a label appearing 2-3 times with differing figures is an asset line, and
+      its n-th appearance belongs to block n;
+    * the block that is all <= 0 is the accumulated charge; of the positive
+      ones the larger is cost, and the other is net only if, line by line, it
+      IS cost plus the charge;
+    * any other line (管理层调整) is kept once, after the last block, and only
+      if the table's own total ties to that last block plus those lines.
+
+    Anything that does not satisfy all of it returns None and the table is
+    left to the existing heuristics. Existing headings are discarded and
+    rebuilt, since the point is that they were in the wrong place.
+    """
+    rows = [e for e in plan if e.get("kind") in ("data", "grouped")]
+    if len(rows) < 5 or any(e.get("kind") not in ("data", "grouped", "group") for e in plan):
+        return None
+    by_label: Dict[str, List[Dict[str, Any]]] = {}
+    for e in rows:
+        by_label.setdefault(str(e.get("label") or "").strip(), []).append(e)
+    core = [lbl for lbl, es in by_label.items()
+            if len(es) in (2, 3) and len({repr(sorted((x.get("values") or {}).items())) for x in es}) > 1]
+    if len(core) < 2:
+        return None
+    n_blocks = len(by_label[core[0]])
+    if any(len(by_label[lbl]) != n_blocks for lbl in core):
+        return None
+    latest = {lbl: [_latest_value(e) for e in by_label[lbl]] for lbl in core}
+    if any(v is None for vs in latest.values() for v in vs):
+        return None
+    sums = [sum(latest[lbl][j] for lbl in core) for j in range(n_blocks)]
+    negative = [j for j in range(n_blocks) if all(latest[lbl][j] <= 0 for lbl in core) and sums[j] < 0]
+    if len(negative) != 1:
+        return None
+    dep = negative[0]
+    positive = [j for j in range(n_blocks) if j != dep]
+    order: List[int]
+    if n_blocks == 3:
+        cost = max(positive, key=lambda j: sums[j])
+        net = next(j for j in positive if j != cost)
+        if any(abs(latest[lbl][cost] + latest[lbl][dep] - latest[lbl][net])
+               > max(1.0, 0.01 * abs(latest[lbl][cost])) for lbl in core):
+            return None
+        order = [cost, dep, net]
+    else:
+        order = [positive[0], dep]
+    # Every other line once, de-duplicated on label + figures.
+    extras: List[Dict[str, Any]] = []
+    seen = set()
+    for e in rows:
+        lbl = str(e.get("label") or "").strip()
+        if lbl in core:
+            continue
+        key = (lbl, repr(sorted((e.get("values") or {}).items())))
+        if key in seen:
+            continue
+        seen.add(key)
+        extras.append(e)
+    total_latest = _latest_value(total_row or {}) if total_row else None
+    last_block_sum = (sums[order[-1]] if n_blocks == 3 else sums[order[0]] + sums[dep])
+    extras_sum = sum(_latest_value(e) or 0.0 for e in extras)
+    if total_latest is None or abs(last_block_sum + extras_sum - total_latest) > max(2.0, 0.005 * abs(total_latest)):
+        return None
+    amortised = "无形" in title or "摊销" in title or "intangible" in title.lower()
+    names_chi = ["原值", "累计摊销" if amortised else "累计折旧", "净值"]
+    names_eng = ["Cost", "Accumulated amortisation" if amortised else "Accumulated depreciation", "Net book value"]
+    names = names_chi if is_chinese_databook else names_eng
+    out: List[Dict[str, Any]] = []
+    for position, block in enumerate(order):
+        out.append({"label": names[position], "values": {}, "kind": "group"})
+        out.extend(dict(by_label[lbl][block], kind="grouped") for lbl in core)
+    out.extend(dict(e, kind="grouped") for e in extras)
+    return out
+
+
 def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float,
 ) -> List[Dict[str, Any]]:
     """Flattens a presentation table's rows -> children (indented) ->
@@ -1141,17 +1230,23 @@ def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: b
         for child in (row.get("children") or []):
             plan.append({"label": _display_row_label(child.get("label", ""), is_chinese_databook),
                          "values": _scaled(child.get("values")), "kind": "child"})
-    if not has_sheet_headings:
+    _rollforward = _restructure_rollforward(
+        plan, {"values": _scaled((table.get("total_row") or {}).get("values"))} if table.get("total_row") else None,
+        str(table.get("title") or ""), is_chinese_databook)
+    if _rollforward is not None:
+        plan = _rollforward
+    elif not has_sheet_headings:
         _blocked = _head_repeated_blocks(plan, str(table.get("title") or ""), is_chinese_databook)
         plan = _blocked if _blocked is not None else _group_plan_rows_by_category(
             plan, str(table.get("title") or ""))
     else:
-        # The sheet kept SOME of its headings -- on real Portfolio III fixed-asset
-        # tables only the one before the last block survived, so cost and
-        # accumulated depreciation still ran together above it under the same
-        # four names. The rows before the first kept heading get the same
-        # block recovery as a table with none, as long as it does not invent a
-        # heading the sheet already has.
+        # The sheet kept SOME of its headings. Written first on a guess that only
+        # the heading before the LAST block survived; the real Portfolio III
+        # table, once dumped, was cost / net / 管理层调整 / [累计折旧] / charge /
+        # 管理层调整 again -- which _restructure_rollforward above now takes. This
+        # branch stays for a prefix of repeated blocks above a heading that the
+        # arithmetic there cannot place, and never invents a heading the sheet
+        # already has.
         first_group = next((i for i, e in enumerate(plan) if e["kind"] == "group"), None)
         if first_group and first_group >= 4:
             prefix = _head_repeated_blocks(plan[:first_group], str(table.get("title") or ""),
