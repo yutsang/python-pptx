@@ -497,7 +497,20 @@ def _rule_depreciation_rate(views: Dict[str, AccountView]) -> List[Observation]:
         latest = fa.component_latest()
         if not latest:
             continue
-        gross = sum(v for k, v in latest.items() if v > 0 and not _is_contra(k))
+        # Gross is the COST lines only. A roll-forward tab lists each asset again
+        # at net, and a 管理层调整 line or two besides: a real Portfolio III
+        # 固定资产 summed cost + net + the adjustment twice into "原值5.63亿元"
+        # against a cost of 2.12亿元, and called it 3% depreciated. Net and
+        # adjustment lines are left out, and an asset listed twice (cost, then
+        # net, under the same name once the prefix is gone) counts its larger
+        # figure -- cost is never below net.
+        by_asset: Dict[str, float] = {}
+        for k, v in latest.items():
+            if v <= 0 or _is_contra(k) or _is_adjustment(k) or re.search(r"净值|净额|账面价值|账面净值", str(k)):
+                continue
+            base = re.split(r"\s*[-－—]\s*", str(k).strip())[-1]
+            by_asset[base] = max(by_asset.get(base, 0.0), v)
+        gross = sum(by_asset.values())
         contra = sum(abs(v) for k, v in latest.items() if _is_contra(k))
         if gross <= 0 or contra <= 0:
             continue
