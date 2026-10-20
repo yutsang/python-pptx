@@ -679,6 +679,18 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                     f"Slide {slide_idx + 1}: table {_t.name!r} reuses a label at rows "
                     f"{_first} and {_again}")
                 _tbl_warnings += 1
+            if dup_labels:
+                # The whole label column on one line, with the sign of each
+                # row's last figure, so where the blocks fall can be read from
+                # a pasted run without opening the deck. "·" marks a row with
+                # no figures (a heading).
+                def _sign(r: int) -> str:
+                    last = tbl.cell(r, n_cols - 1).text.strip()
+                    if not last:
+                        return "·"
+                    return "-" if last.startswith(("(", "-", "（")) else "+"
+                _print("  ⚠️  rows: " + " ".join(
+                    f"r{r}:{tbl.cell(r, 0).text.strip()[:8]}{_sign(r)}" for r in range(2, n_rows)))
             total_warnings += _tbl_warnings
             # Every data row starting with the same segment means the label
             # column is spending its width restating the title band above it,

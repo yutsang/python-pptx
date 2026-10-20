@@ -1700,6 +1700,25 @@ _NEGATIVE_PREFIX = re.compile(r"(?:负|借方余额|贷方余额)\s*$")
 _DEDUCTED_AFTER = re.compile(r"^[^，,。；;、\d]{0,8}?(?:抵减|抵销|冲减|扣减)")
 
 
+def _rounding_slack(items: List[Tuple[str, str]], total_match: Any, total: float) -> float:
+    """How far a list may miss its total on display rounding alone.
+
+    1% of the total, as before -- or, when larger, half a unit in the last
+    printed digit of every item and of the total. A small net balance written
+    as a large gross less a large deduction (234.4 - 229.3 printed against
+    5.0, each to 0.1万元) can miss by 0.15万元, 3% of 5.0, with every figure right.
+    """
+    def half_ulp(value: str, unit: str) -> float:
+        digits = str(value).split(".", 1)
+        decimals = len(digits[1]) if len(digits) == 2 else 0
+        return 0.5 * (10 ** -decimals) * _SCALE.get(unit, 1.0)
+
+    slack = sum(half_ulp(v, u) for v, u in items)
+    if total_match is not None:
+        slack += half_ulp(total_match.group(1).replace(",", ""), total_match.group(2))
+    return max(0.01 * total, slack)
+
+
 def _signed_runon_amounts(span: str) -> List[Tuple[str, str]]:
     out: List[Tuple[str, str]] = []
     for m in _RUNON_AMT.finditer(span):
@@ -1761,7 +1780,11 @@ _PERIOD_WORDS = re.compile(r"年|期末|各期|月末|H1|FY", re.I)
 #: tied exactly (82.7) to 138.9 and reported it as overshooting. Only after a
 #: semicolon: 「…其他169.0万元，其中主要为某税务局166.8万元；押金83.1万元…」 keeps
 #: listing peers after a comma-其中, and the drop-one test below handles that.
-_DRILL_DOWN = re.compile(r"[；;]\s*其中")
+_DRILL_DOWN = re.compile(r"[；;]\s*(?:其中|[^，,。；;]{0,20}?(?:主要(?:包括|包含|为|由)|包括|包含))")
+#: ...and so does a semicolon that opens a SECOND list: 「主要为营运收费应收款234.4万元
+#: 经管理层调整-229.3万元后的净额；营运收费应收款主要包括甲226.0万元、乙5.7万元…」
+#: breaks the first item down again. Swept into one list, a real bullet that
+#: tied (234.4 - 229.3) was reported as 239.4万元 against a 5.0万元 balance.
 #: 「预计主要系基本户余额由…0.58亿元降至…0.01亿元所致」 is a cause, and its two
 #: figures are one line in two periods. Read as a list it put a 1.23亿元 cash
 #: balance at "52% unaccounted for" on a real run.
@@ -1903,6 +1926,7 @@ def _composition_findings(mapping_key: str, text: str,
         if _first_item is not None and m.start() > _first_item:
             return []
     items = _signed_enum_items(scan)
+    residual_scope = scan
     if not items:
         run = next((r for r in _ENUM_RUNON.finditer(scan) if not _CAUSAL.search(r.group(1))), None)
         if run:
@@ -1910,6 +1934,9 @@ def _composition_findings(mapping_key: str, text: str,
             _drill = _DRILL_DOWN.search(span)
             if _drill:
                 span = span[:_drill.start()]
+                if "其中" not in _drill.group(0):
+                    # A second list: its own 「其余X」 closes IT, not the first.
+                    residual_scope = scan[:run.start(1) + _drill.start()]
             _series = _PERIOD_SERIES.search(span)
             if _series:
                 _clause = re.split(r"[，,；;]", span[:_series.start()])[-1]
@@ -1930,7 +1957,8 @@ def _composition_findings(mapping_key: str, text: str,
     # rather than inside the two patterns above because it can sit in either
     # form -- after a numbered list, or trailing a run-on one -- and because a
     # run-on span that already swallowed it must not count it twice.
-    residual = _RESIDUAL_ITEM.search(scan) or _RESIDUAL_OTHER.search(scan) or _RESIDUAL_TAIL.search(scan)
+    residual = (_RESIDUAL_ITEM.search(residual_scope) or _RESIDUAL_OTHER.search(residual_scope)
+                or _RESIDUAL_TAIL.search(residual_scope))
     if residual:
         sign, value, unit = residual.groups()
         signed = float(value.replace(",", "")) * (-1.0 if sign else 1.0)
@@ -1944,7 +1972,7 @@ def _composition_findings(mapping_key: str, text: str,
     if total <= 0:
         return []
     gap = total - listed
-    if abs(gap) / total <= 0.01:
+    if abs(gap) <= _rounding_slack(items, m, total):
         return []
     # A list introduced under its own subject composes THAT figure, not the
     # account: 「余额为355.8万元，系原值653.3万元减累计摊销297.5万元后的净值。
@@ -1998,7 +2026,7 @@ def _composition_findings(mapping_key: str, text: str,
                  if abs(float(v.replace(",", "")) * _SCALE.get(u, 1.0) - total) / total > 0.01]
         listed = sum(values)
         gap = total - listed
-        if abs(gap) / total <= 0.01:
+        if abs(gap) <= _rounding_slack(items, m, total):
             return []
         # 「主要为营运收费X万元，其中金额较大的应收对象为A…、B…及C…」 says
         # outright that it lists only the larger ones. Short of the parent is
