@@ -1105,6 +1105,12 @@ else:
         lang_col, _spacer_col = st.columns([1, 2])
         with lang_col:
             render_language_selector(st.session_state)
+        # Where the Process Data wait went, stage by stage (flow.py timings),
+        # so "it got slower" can be answered with a number.
+        _timings = st.session_state.get("timings") or {}
+        if _timings:
+            st.caption(f"Process Data took {_timings.get('total', 0):.0f}s — " + " · ".join(
+                f"{k} {v:.0f}s" for k, v in _timings.items() if k != "total" and v >= 0.5))
         render_processed_view(
             session_state=st.session_state,
             generate_pptx_callback=generate_pptx_presentation,
