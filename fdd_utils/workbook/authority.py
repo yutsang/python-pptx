@@ -65,6 +65,44 @@ def _sign_convention(tab: Dict[str, float], fin: Dict[str, float]) -> float:
 _ADJUSTMENT_COLUMN = re.compile(r"ADJ|调整|調整|adjust", re.IGNORECASE)
 
 
+_ADJUSTMENT_CELL_CACHE: List[Tuple[Any, List[Tuple[str, Dict[str, Any], List[Tuple[int, int, float]]]]]] = []
+
+
+def _adjustment_cells(digest: Optional[Dict[str, Any]]) -> List[Tuple[str, Dict[str, Any], List[Tuple[int, int, float]]]]:
+    """Per sheet, the non-zero cells in an adjustment column (or on a register).
+
+    adjustment_entries used to walk every cell of every sheet for every
+    overridden period -- a 科目余额表 alone is ~270k cells, and a real entity
+    overrides ~50 periods. The cells that can qualify do not depend on the gap,
+    so they are picked once per digest. Same sheets, same cell order.
+    """
+    for cached_digest, index in _ADJUSTMENT_CELL_CACHE:
+        if cached_digest is digest:
+            return index
+    index = []
+    for name, entry in ((digest or {}).get("sheets") or {}).items():
+        if entry.get("status") == "financials":
+            continue
+        cells = entry.get("cells") or {}
+        col_labels = entry.get("col_labels") or {}
+        register = bool(_ADJUSTMENT_COLUMN.search(str(name)))
+        adjustment_cols = {str(c) for c, label in col_labels.items() if _ADJUSTMENT_COLUMN.search(str(label or ""))}
+        if not adjustment_cols and not register:
+            continue
+        candidates = []
+        for r, c, v in zip(cells.get("r", []), cells.get("c", []), cells.get("v", [])):
+            if not v:
+                continue
+            label = str(col_labels.get(str(c)) or "")
+            if str(c) in adjustment_cols or (register and not label):
+                candidates.append((r, c, v))
+        if candidates:
+            index.append((name, entry, candidates))
+    _ADJUSTMENT_CELL_CACHE.insert(0, (digest, index))
+    del _ADJUSTMENT_CELL_CACHE[1:]  # one digest: a portfolio run must not pin every entity's
+    return index
+
+
 def adjustment_entries(digest: Optional[Dict[str, Any]], gap: float, period: str,
                        limit: int = 4) -> List[str]:
     """The adjustment lines in the workbook that carry this gap, as text.
@@ -89,28 +127,19 @@ def adjustment_entries(digest: Optional[Dict[str, Any]], gap: float, period: str
         return []
     year = str(period)[:4]
     lines: List[str] = []
-    for name, entry in sheets.items():
-        if entry.get("status") == "financials":
-            continue
-        cells = entry.get("cells") or {}
+    for name, entry, candidates in _adjustment_cells(digest):
         col_labels = entry.get("col_labels") or {}
         row_labels = entry.get("row_labels") or {}
+        # A year sheet's adjustment belongs to the period it is named for.
+        if re.fullmatch(r"\d{4}", str(name)) and str(name) != year:
+            continue
         by_column: Dict[int, List[Tuple[int, float, str]]] = {}
-        for r, c, v in zip(cells.get("r", []), cells.get("c", []), cells.get("v", [])):
-            if not v:
-                continue
+        for r, c, v in candidates:
             if abs(abs(v) - gap) <= max(0.5, gap * 1e-6):
                 unit = "元"
             elif abs(abs(v) * 1000 - gap) <= max(5.0, gap * 1e-6):  # a 千元 cell kept to 2 decimals
                 unit = "千元"
             else:
-                continue
-            label = str(col_labels.get(str(c)) or "")
-            on_register = not label and _ADJUSTMENT_COLUMN.search(str(name))
-            if not (_ADJUSTMENT_COLUMN.search(label) or on_register):
-                continue
-            # A year sheet's adjustment belongs to the period it is named for.
-            if re.fullmatch(r"\d{4}", str(name)) and str(name) != year:
                 continue
             by_column.setdefault(c, []).append((r, v, unit))
         for c, hits in by_column.items():

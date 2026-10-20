@@ -34,6 +34,14 @@ def process_workbook_data(
         mode="All",
         mapping_overrides=mapping_overrides or None,
     )
+    timings: Dict[str, float] = dict((resolution or {}).get("timings") or {})
+    _step = [time.perf_counter()]
+
+    def _lap(name: str) -> None:
+        now = time.perf_counter()
+        timings[name] = timings.get(name, 0.0) + (now - _step[0])
+        _step[0] = now
+
     logger.debug(
         "Built normalized workbook payload for %s in %.2fs",
         os.path.basename(temp_path),
@@ -73,6 +81,7 @@ def process_workbook_data(
         )
 
     display_dfs_original, display_workbook_list, display_dfs, dfs_original, dfs, workbook_list = _build_variants()
+    _lap("variants")
 
     # Which cells of which tabs these frames carry to the model (digest.py).
     # A record, never a gate.
@@ -82,6 +91,7 @@ def process_workbook_data(
             mark_reached(_digest, dfs)
         except Exception as exc:
             logger.warning("Workbook digest: reach not marked: %s", exc)
+    _lap("mark_reached")
 
     debug_buffer = io.StringIO() if debug else None
     debug_ctx = contextlib.redirect_stdout(debug_buffer) if debug_buffer else contextlib.nullcontext()
@@ -110,6 +120,7 @@ def process_workbook_data(
             os.path.basename(_financials_workbook_path),
             time.perf_counter() - bs_started,
         )
+    _lap("financials")
 
     # The deck follows Financials wherever a tab's account total disagrees with
     # it (see authority.py). Done on the frames the variants are built FROM,
@@ -126,6 +137,7 @@ def process_workbook_data(
             )
         except Exception as exc:
             logger.warning("Financials authority not applied: %s: %s", type(exc).__name__, exc)
+        _lap("authority")
         if financials_authority:
             display_dfs_original, display_workbook_list, display_dfs, dfs_original, dfs, workbook_list = _build_variants()
             if _digest:
@@ -133,6 +145,7 @@ def process_workbook_data(
                     mark_reached(_digest, dfs)
                 except Exception as exc:
                     logger.warning("Workbook digest: reach not marked: %s", exc)
+            _lap("variants_rebuild")
 
     # Each account's audit and indicative adjustments, read off the bridge
     # sheets (authority.adjustment_bridge). After every rebuild of the variants,
@@ -143,6 +156,7 @@ def process_workbook_data(
             attach_adjustment_bridges(dfs, _digest)
         except Exception as exc:
             logger.warning("Adjustment bridges not attached: %s: %s", type(exc).__name__, exc)
+    _lap("bridges")
 
     recon_bs, recon_is = None, None
     if dfs_original and bs_is_results:
@@ -162,6 +176,7 @@ def process_workbook_data(
             len(dfs),
             time.perf_counter() - recon_started,
         )
+    _lap("reconcile")
 
     # No literal "Financials"-style sheet found (bs_is_results stayed None
     # above) -- synthesize a BS/IS summary purely from the schedule tabs that
@@ -206,4 +221,5 @@ def process_workbook_data(
         "entity_name": entity_name,
         "display_dfs_original": display_dfs_original,
         "debug_output": debug_buffer.getvalue() if debug_buffer else "",
+        "timings": {**timings, "total": time.perf_counter() - process_started},
     }

@@ -268,6 +268,7 @@ class _compact:
         self.keep_next = tuple(keep_next)
 
     def __enter__(self):
+        self._started = time.perf_counter()
         if VERBOSE:
             return self
         if not isinstance(sys.stdout, _CaptureAwareStdout):
@@ -277,6 +278,8 @@ class _compact:
         return self
 
     def __exit__(self, *exc):
+        elapsed = time.perf_counter() - self._started
+        _section_times().append((self.label, elapsed))
         if VERBOSE:
             return False
         text = _CAPTURE.buf.getvalue()
@@ -296,9 +299,17 @@ class _compact:
                     hidden += 1
         for line in kept:
             print(line)
-        if hidden:
-            print(f"  [{self.label}: {hidden} line(s) hidden, --verbose shows them]")
+        print(f"  [{self.label}: {elapsed:.0f}s"
+              + (f", {hidden} line(s) hidden, --verbose shows them]" if hidden else "]"))
         return False
+
+
+def _section_times() -> List[Tuple[str, float]]:
+    """This thread's (label, seconds) log, for the per-file TIME line."""
+    times = getattr(_CAPTURE, "times", None)
+    if times is None:
+        times = _CAPTURE.times = []
+    return times
 
 
 def real_accounts(results: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -2223,6 +2234,10 @@ def ai_input_frames(
               f"what the Streamlit app would send for this workbook.")
         return fallback_dfs or {}, "Eng", None
     dfs = state.get("dfs") or {}
+    _t = state.get("timings") or {}
+    if _t:
+        print("\n⏱  process_workbook_data " + f"{_t.get('total', 0):.0f}s: " + " · ".join(
+            f"{k} {v:.0f}s" for k, v in _t.items() if k != "total" and v >= 0.5))
     _authority = state.get("financials_authority") or {}
     if _authority:
         print(f"\nℹ️  Deck follows Financials: {len(_authority)} account total(s) set to the Financials "
@@ -3207,6 +3222,8 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                  pptx_out_dir: Optional[str] = None, financials_from: Optional[str] = None,
                  financials_sheet: Optional[str] = None, resume_from: Optional[str] = None) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
+    _file_started = time.perf_counter()
+    _CAPTURE.times = []
 
     # Resolved and checked before anything expensive runs: with --run-ai the
     # export sits ~12 minutes and a pile of tokens downstream of here, and a
@@ -3233,6 +3250,9 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         dfs = check_tab_read_summary(path, entity_name=entity_name,
                                      resolution_out=extraction_resolution)
     summary["tabs_parsed"] = len(dfs)
+    _xt = extraction_resolution.get("timings") or {}
+    if _xt:
+        print("⏱  extraction " + " · ".join(f"{k} {v:.0f}s" for k, v in _xt.items() if v >= 0.5))
 
     if dump_tab_name:
         dump_tab(path, dfs, dump_tab_name, entity_name=entity_name)
@@ -3244,7 +3264,11 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         check_unit_markers(path, dfs)
         summary["scaling_mismatch_tabs"] = check_all_tabs_scaling(path, dfs, entity_name=entity_name)
         check_row_structures(dfs)
-        check_indent_signals(path, dfs, entity_name=entity_name)
+        # 3b re-reads every tab with full openpyxl styles and re-normalises the
+        # indented ones; everything it prints is a diagnostic compact mode
+        # hides. Not worth its minutes on a run nobody reads it from.
+        if VERBOSE:
+            check_indent_signals(path, dfs, entity_name=entity_name)
         check_subtable_readiness(path, dfs)
 
     xl = pd.ExcelFile(path)
@@ -3318,7 +3342,11 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
             print(f"\n  (statement-table unit check skipped: {type(_exc).__name__}: {_exc})")
 
         try:
-            explain_tieout_differences(period_tieout, extraction_resolution.get("workbook_digest"), dfs)
+            # Scans every cell of every sheet three times per differing period
+            # (a 科目余额表 alone is ~270k cells), and prints only lines
+            # compact mode hides.
+            if VERBOSE:
+                explain_tieout_differences(period_tieout, extraction_resolution.get("workbook_digest"), dfs)
         except Exception as _exc:
             print(f"\n  (tie-out explanation skipped: {type(_exc).__name__}: {_exc})")
 
@@ -3371,10 +3399,12 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
         # unresolved_sheets; the same call also yields the language and the
         # frames the pipeline reads -- see ai_input_frames for why those are
         # not section 1's `dfs`.
+        _frames_started = time.perf_counter()
         ai_dfs, language, resolution_for_insight = ai_input_frames(
             path, entity_name, selected_sheet_for_ai,
             financials_from=financials_from, fallback_dfs=dfs,
         )
+        _section_times().append(("process_workbook_data", time.perf_counter() - _frames_started))
         # --accounts narrows the run to read the commentary itself (5c), so
         # nothing is hidden then.
         _ai_quiet = nullcontext() if accounts else _compact(
@@ -3412,6 +3442,9 @@ def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                 import traceback
                 traceback.print_exc()
                 summary["pptx"] = {"status": f"FAILED: {exc}"}
+    _total = time.perf_counter() - _file_started
+    summary["timings"] = list(_section_times())
+    print(f"TIME {_total:.0f}s: " + " · ".join(f"{label} {secs:.0f}s" for label, secs in _section_times()))
     return summary
 
 

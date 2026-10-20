@@ -387,13 +387,19 @@ def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=No
     profiles_started = time.perf_counter()
     profiles = profile_workbook(databook_path)
     workbook_frames = load_workbook_frames(databook_path)
+    _profiled_at = time.perf_counter()
     # Pre-warm the indent-signal index synchronously, in this (single) thread,
     # BEFORE the ThreadPoolExecutor below fans normalize_financial_schedule
     # out across worker threads -- normalize_financial_schedule's indent-based
     # reclassification reads this cache but must never be the one to trigger
     # its first (openpyxl-touching) computation from inside a worker thread.
     _build_indent_signal_index(databook_path)
-    logger.debug("Profiled workbook %s in %.2fs", os.path.basename(databook_path), time.perf_counter() - profiles_started)
+    # Per-stage wall time, carried on `resolution` so every caller can print
+    # where the pre-AI minutes went (a Portfolio III run spent ~30 of them here
+    # with no way to tell which stage).
+    timings: Dict[str, float] = {"profile": _profiled_at - profiles_started,
+                                 "style_index": time.perf_counter() - _profiled_at}
+    logger.debug("Profiled workbook %s in %.2fs", os.path.basename(databook_path), timings["profile"])
     resolver_language = _detect_report_language_from_profiles(profiles) or "Eng"
 
     resolution_started = time.perf_counter()
@@ -404,7 +410,8 @@ def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=No
         mapping_overrides=mapping_overrides,
         language=resolver_language,
     )
-    logger.debug("Resolved workbook mappings for %s in %.2fs", os.path.basename(databook_path), time.perf_counter() - resolution_started)
+    timings["resolve"] = time.perf_counter() - resolution_started
+    logger.debug("Resolved workbook mappings for %s in %.2fs", os.path.basename(databook_path), timings["resolve"])
     mappings = load_mapping(package_file_path('mappings.yml'))
     dynamic_mappings = resolution.get("dynamic_mappings") or {}
     resolution.setdefault("normalization_errors", {})
@@ -451,6 +458,7 @@ def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=No
         except Exception as exc:
             return mapping_key, sheet_name, None, mapping_config, resolved, str(exc)
 
+    normalize_started = time.perf_counter()
     if work_items:
         import multiprocessing
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -492,7 +500,9 @@ def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=No
                 workbook_list.append(sheet_name)
                 entity_scopes.append((profiles.get(sheet_name) or {}).get("entity_scope", "single"))
 
+    timings["normalize"] = time.perf_counter() - normalize_started
     _merge_normalization_error_reasons(resolution, profiles)
+    semantic_started = time.perf_counter()
     # Built HERE, not in process_workbook_data: the CLI's free diagnostic path
     # never calls process_workbook_data (that call sits inside `if run_ai:`), so
     # hanging the profile there would make it unbuildable without a ~12-minute
@@ -511,12 +521,16 @@ def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=No
     # and the same reason as the profile above. Reach is marked later, once
     # the frames the model reads exist (flow.py, and again in the pipeline
     # after the subtable settlement).
+    timings["semantic_profile"] = time.perf_counter() - semantic_started
+    digest_started = time.perf_counter()
     try:
         from .digest import DIGEST_KEY, build_workbook_digest
         resolution[DIGEST_KEY] = build_workbook_digest(databook_path, profiles, resolution, workbook_frames)
     except Exception as exc:  # a record of the workbook, never a gate on reading it
         logger.warning("Workbook digest skipped for %s: %s", os.path.basename(databook_path), exc)
 
+    timings["digest"] = time.perf_counter() - digest_started
+    resolution["timings"] = timings
     overall_result_type = 'multiple' if any(scope == 'multiple' for scope in entity_scopes) else 'single'
     report_language = _detect_report_language_from_profiles(profiles)
     logger.debug(
