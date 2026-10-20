@@ -512,10 +512,16 @@ def _register_words(registers: Dict[str, Any], account: str, v: float, bridge_ro
             for _, text in texts:
                 spread.setdefault(text, set()).add(ids.get(row, ""))
         repeated = {text for text, entries in spread.items() if len(entries - {""}) >= 3}
+        # The account may be any text on the row, not only the row label: a
+        # register whose nearest-left cell is a date (or blank) labels its rows
+        # with that, and the account name sits further left.
+        def _names_account(row: int) -> bool:
+            return reg_rows.get(row) == account or any(text == account for _, text in by_row.get(row, []))
+
         hits = [r3 for r3, v3 in zip(reg_cells.get("r", []), reg_cells.get("v", []))
-                if reg_rows.get(int(r3)) == account and abs(abs(v3) - abs(v)) <= 0.006]
+                if _names_account(int(r3)) and abs(abs(v3) - abs(v)) <= 0.006]
         if not hits and wanted:
-            hits = [row for row, entry in ids.items() if entry == wanted and reg_rows.get(row) == account]
+            hits = [row for row, entry in ids.items() if entry == wanted and _names_account(row)]
         for r3 in hits[:1]:
             entry = ids.get(int(r3), "")
             if not entry:

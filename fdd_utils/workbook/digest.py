@@ -71,6 +71,15 @@ def _text(value: Any) -> Optional[str]:
         return None
     if isinstance(value, float) and value != value:
         return None
+    # pandas NaT -- an empty cell in a date column -- is not a float, and its
+    # isoformat() is the string "NaT". Kept as text, it became the row label of
+    # every line of two real adjustment registers, so no entry could be matched
+    # to its account and none of their descriptions reached a prompt.
+    try:
+        if value != value:
+            return None
+    except Exception:
+        pass
     iso = getattr(value, "isoformat", None)
     if callable(iso) and not isinstance(value, str):
         try:
