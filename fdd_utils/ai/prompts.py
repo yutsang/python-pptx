@@ -3142,6 +3142,13 @@ class PromptEngine:
             # trim -- the Auditor's measured failure in this repo is deleting
             # analysis it cannot see the basis for -- so in this mode they are
             # told which kind of sentence to leave alone.
+            # A model cannot count its own characters, and the ceiling alone
+            # moved a real Crescent run (2026-10-20) only from about 6,550 to
+            # 6,030字 over 25 accounts, 12 of them still past 250. The draft's
+            # length is counted here and handed over with the ceiling.
+            _draft = str(kwargs.get("output") or "")
+            draft_chars = len(re.sub(r"\s+", "", _draft))
+            draft_words = len(_draft.split())
             # Length used to be "the writer's" here too, which with a brief that
             # also left length open meant nothing anywhere capped it: a real
             # Crescent run (2026-10-20) shipped 300-500字 on accounts the team's
@@ -3157,7 +3164,8 @@ class PromptEngine:
                 if stage == "2_Auditor":
                     keep += ("篇幅例外：一般科目超过约150字、多构成项或涉及收入/借款/关联方/示意性调整的科目超过约250字时，"
                              "压缩到该上限以内——先删以前各期的逐期变动、明细表已列示的逐项金额和重复表述，"
-                             "构成、调整、核对结论和推断保留。")
+                             "构成、调整、核对结论和推断保留。"
+                             f"（这份草稿现为{draft_chars}字。）")
             else:
                 keep = ("[ANALYSIS MODE] This draft was written in analysis mode: its structure and order are "
                         "the writer's. Correct only amounts, dates, ratios and formatting that "
@@ -3169,7 +3177,7 @@ class PromptEngine:
                              "one with several material components, adjustments, or about revenue, borrowings or "
                              "related parties, cut it to that ceiling -- earlier-period movements, figures the "
                              "detail table already lists and repetition first; keep composition, adjustments, "
-                             "procedures and inferences.")
+                             f"procedures and inferences. (This draft is {draft_words} words.)")
             rendered_user_prompt = f"{rendered_user_prompt}\n\n{keep}"
 
         if self.normalize_agent_name(agent_name) == "1_Generator":

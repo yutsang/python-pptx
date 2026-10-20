@@ -13,7 +13,11 @@ commentary looks like. This prints, for every account the two decks share:
   * a coverage ratio over every shared account, so two generated decks can be
     compared on one number before anyone reads the text.
 
-    python ad-hoc/workbench/compare_to_final.py <generated.pptx> <final.pptx>
+    python ad-hoc/workbench/compare_to_final.py <generated.pptx> <final.pptx> [--brief]
+
+--brief stops after the table (which carries each side's length in characters,
+the calibration for the brief's length ceiling) and leaves out the texts -- the
+short form to paste back.
 
 Free: it reads two files and calls nothing. Its output quotes client
 figures and names; do not paste it anywhere public.
@@ -119,10 +123,12 @@ def _has(pool: List[Tuple[str, float, str]], kind: str, value: float) -> bool:
 
 
 def main() -> int:
-    if len(sys.argv) != 3:
+    args = [a for a in sys.argv[1:] if a != "--brief"]
+    brief = len(args) != len(sys.argv) - 1
+    if len(args) != 2:
         print(__doc__)
         return 1
-    ours_paragraphs, final_paragraphs = _paragraphs(sys.argv[1]), _paragraphs(sys.argv[2])
+    ours_paragraphs, final_paragraphs = _paragraphs(args[0]), _paragraphs(args[1])
     ours = _by_account(ours_paragraphs, set())
     final = _by_account(final_paragraphs, set(ours))
     shared = [k for k in ours if k in final]
@@ -142,9 +148,16 @@ def main() -> int:
         rows.append((key, f_figs, hit, missing, extra))
     print(f"\nCOVERAGE: the generated deck quotes {total_hit} of the {total_final} figures the final quotes "
           f"({(100 * total_hit / total_final) if total_final else 0:.0f}%), over {len(shared)} shared account(s)\n")
-    print("%-14s %8s %9s %8s" % ("account", "final#", "covered", "ours#"))
+    print("%-14s %8s %9s %8s %10s %9s" % ("account", "final#", "covered", "ours#", "final字", "ours字"))
     for key, f_figs, hit, missing, extra in rows:
-        print("%-14s %8d %9d %8d" % (key[:14], len(f_figs), hit, len(_figures(ours[key]))))
+        print("%-14s %8d %9d %8d %10d %9d" % (key[:14], len(f_figs), hit, len(_figures(ours[key])),
+                                            len(final[key]), len(ours[key])))
+    f_len = sum(len(final[k]) for k in shared)
+    o_len = sum(len(ours[k]) for k in shared)
+    print(f"\nLENGTH over shared accounts: final {f_len}字, generated {o_len}字 "
+          f"({(100 * o_len / f_len) if f_len else 0:.0f}% of the final)")
+    if brief:
+        return 0
     for key, f_figs, hit, missing, extra in rows:
         print(f"\n{'=' * 90}\n  {key}\n{'=' * 90}")
         print(f"--- FINAL ({len(final[key])} chars) ---\n{final[key]}")

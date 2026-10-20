@@ -425,6 +425,12 @@ def render_run_summary(results: Dict[str, Any], *, run_id: str = "") -> str:
                     or entry.get("subagent_1") or "")
         state = state_accounts.get(key) if isinstance(state_accounts.get(key), dict) else {}
         head = [str(state.get("phase") or "?"), f"{len(final)}字"]
+        # Which stage the length came from: the Generator wrote it, the Auditor
+        # was meant to trim it, the Validator should leave it alone.
+        stages = [(label, len(str(entry.get(field) or ""))) for label, field in
+                  (("G", "subagent_1"), ("A", "subagent_2"), ("V", "subagent_4")) if entry.get(field)]
+        if len(stages) > 1:
+            head.append(" → ".join(f"{label} {n}" for label, n in stages))
         retries = entry.get("feedback_retries")
         if retries:
             chosen = (entry.get("feedback_arbiter") or {}).get("chosen")

@@ -1973,7 +1973,16 @@ def _composition_findings(mapping_key: str, text: str,
     # exit is why a 10x unit error in a 、-separated list was never reached.
     if not body.strip():
         return []
-    m = _STATED_TOTAL.search(body)
+    # The total a list is held against is the one stated closest BEFORE it.
+    # 「2025年12月31日余额为16.6万元，全部为…保险费…。2023年12月31日余额23.6万元中，
+    # 除预付保险费外，还包括预缴所得税16.1万元及预付水电费7.5万元」 breaks down the
+    # 2023 balance; held against the first total in the bullet it was reported
+    # as listing more than 16.6万元 (Crescent, 2026-10-20). With no total before
+    # the list, the first one is still taken and the guard below says nothing.
+    _trigger = min((found.start() for found in (_ENUM_ITEM.search(body), _ENUM_RUNON.search(body)) if found),
+                   default=None)
+    _before = [t for t in _STATED_TOTAL.finditer(body) if _trigger is not None and t.start() < _trigger]
+    m = _before[-1] if _before else _STATED_TOTAL.search(body)
     # The stated total must not be counted as one of its own parts. In the
     # run-on form "…合计968.3万元，其中折旧成本为827.6万元，物管费用为73.9万元"
     # the total sits INSIDE the span the item pattern sweeps, so it was added
@@ -2254,6 +2263,10 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
         pass  # a new detector must never cost an account its other verdicts
     try:
         out.extend(_movement_claim_reviews(final_content, df))
+    except Exception:
+        pass
+    try:
+        out.extend(_rate_spread_reviews(final_content, df))
     except Exception:
         pass
     try:
@@ -2542,6 +2555,56 @@ def _movement_claim_reviews(final_content: str, df) -> List[Dict[str, Any]]:
         "reason": f["reason"], "code": f["code"], "span": f["span"],
         "conf": _CONF_DET_HALLUCINATION,
     } for f in movement_claim_findings(final_content, df)]
+
+
+#: A loan's rate written as a spread on LPR: 「5年期LPR减3个基点」, 「LPR+30BP」.
+_LPR_SPREAD = re.compile(
+    r"LPR\s*(?:的?基础上)?\s*(加|减|上浮|下浮|\+|-|－|＋|plus|minus)\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:基点|bps?)",
+    re.IGNORECASE)
+_SPREAD_UP = {"加", "上浮", "+", "＋", "plus"}
+
+
+def rate_spread_findings(final_content: str, df) -> List[Dict[str, Any]]:
+    """An LPR spread whose sign is the opposite of the one in the account's notes.
+
+    A real Crescent bullet (2026-10-20) gave the second loan as 「5年期LPR减30个
+    基点」 and two clauses later called the rate 「与LPR加点条款基本吻合」; the run
+    before had written 「LPR加30BP」. Basis points are not an amount, so no
+    grounding check could see it, and a financing term is what a buyer reads
+    first. Judged only where the notes give the same number of basis points
+    with the other sign and never with this one; anything else says nothing.
+    """
+    def spreads(text: str):
+        return [(1 if m.group(1).lower() in _SPREAD_UP else -1, float(m.group(2)), m)
+                for m in _LPR_SPREAD.finditer(str(text or ""))]
+
+    source = {(sign, points) for sign, points, _ in spreads(_attr_text_blob(df))}
+    if not source:
+        return []
+    body = str(final_content or "")
+    findings: List[Dict[str, Any]] = []
+    for sign, points, match in spreads(body):
+        if (sign, points) in source or (-sign, points) not in source:
+            continue
+        start = max(body.rfind(mark, 0, match.start()) for mark in "。；;，,\n") + 1
+        ends = [i for i in (body.find(mark, match.end()) for mark in "。；;，,\n") if i >= 0]
+        end = (min(ends) + 1) if ends else len(body)
+        findings.append({
+            "clause": body[start:end].strip(), "span": [int(start), int(end)], "code": "TERM_MISMATCH",
+            "reason": (f"the sentence gives LPR {'+' if sign > 0 else '-'}{points:g}BP; the notes give the "
+                       f"same loan term as LPR {'-' if sign > 0 else '+'}{points:g}BP."),
+        })
+    return findings
+
+
+def _rate_spread_reviews(final_content: str, df) -> List[Dict[str, Any]]:
+    """rate_spread_findings as clause reviews: "reasoning" (shown, not retried)
+    until a real run has shown what it fires on -- see _balance_claim_reviews."""
+    return [{
+        "clause": f["clause"], "supported": False, "category": "reasoning",
+        "reason": f["reason"], "code": f["code"], "span": f["span"],
+        "conf": _CONF_DET_HALLUCINATION,
+    } for f in rate_spread_findings(final_content, df)]
 
 
 def _percent_claim_reviews(final_content: str) -> List[Dict[str, Any]]:

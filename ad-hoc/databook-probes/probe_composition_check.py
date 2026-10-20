@@ -235,6 +235,12 @@ CASES = [
      False,
      "a second list after ； breaks down the first item; 120.4 - 115.3 = 5.1 is 5.0 within display rounding"),
 
+    ("预付款项",
+     "截至2026年3月31日，预付款项无余额。2025年12月31日余额为16.6万元，全部为预付某保险公司的保险费，该余额已于"
+     "2026年一季度内结转。2023年12月31日余额23.6万元中，除预付保险费外，还包括预缴所得税16.1万元及预付水电费7.5万元。",
+     False,
+     "the list breaks down the 2023 balance stated just before it, not the 2025 one (Crescent 2026-10-20: COMPOSITION_EXCEEDS)"),
+
     ("货币资金",
      "截至2026年3月31日，货币资金余额为1.23亿元，均为银行存款，无使用受限资金。余额主要存放于某银行，其中美元资本金户"
      "0.84亿元、外债户0.37亿元、基本户0.01亿元。2023年末以来余额逐年下降，由1.81亿元降至1.23亿元，主要系基本户资金由"
