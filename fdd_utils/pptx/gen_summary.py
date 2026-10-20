@@ -288,7 +288,8 @@ class _SummaryMixin:
             finally:
                 result_container["completed"] = True
 
-        worker = threading.Thread(target=_run, daemon=True)
+        from .. import usage_ledger  # a fresh thread does not inherit attribution
+        worker = threading.Thread(target=usage_ledger.bind(_run), daemon=True)
         worker.start()
         worker.join(timeout=timeout_seconds)
 

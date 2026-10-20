@@ -3248,8 +3248,12 @@ def inspect_one(*args, **kwargs) -> Dict[str, Any]:
     """_inspect_one, with sections 1-4 and the AI run sharing ONE extraction of
     the workbook (fdd_utils.workbook.reuse_extraction) instead of paying for it
     twice."""
+    from fdd_utils import usage_ledger
     from fdd_utils.workbook import reuse_extraction
-    with reuse_extraction():
+    path = args[0] if args else kwargs.get("path", "")
+    entity = (args[2] if len(args) > 2 else kwargs.get("entity_name")) or None
+    with reuse_extraction(), usage_ledger.scope(session="cli", file=Path(str(path)).name, entity=entity):
+        usage_ledger.record_event("cli_run", run_ai=bool(args[3] if len(args) > 3 else kwargs.get("run_ai")))
         return _inspect_one(*args, **kwargs)
 
 

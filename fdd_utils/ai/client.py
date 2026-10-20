@@ -486,6 +486,62 @@ class AIClient:
         allow_thinking: Optional[bool] = None,
         reasoning_effort: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """_get_response, with one usage_ledger line per call -- successful,
+        served from the response cache, or failed. This is the single door every
+        LLM call in the app goes through, so the ledger is complete by
+        construction rather than by each caller remembering to log."""
+        from .. import usage_ledger
+
+        started = time.time()
+        base = {
+            "client_agent": self.agent_name,
+            "provider": self.model_type,
+            "model": (self.config_details or {}).get("chat_model") if not self.use_heuristic else "heuristic",
+        }
+        try:
+            payload = self._get_response(
+                user_prompt, system_prompt, temperature, max_tokens, top_p,
+                frequency_penalty, presence_penalty, allow_thinking, reasoning_effort,
+            )
+        except Exception as exc:
+            try:
+                estimate = self._estimate_text_tokens(system_prompt or "") + self._estimate_text_tokens(user_prompt)
+            except Exception:
+                estimate = None
+            usage_ledger.record_llm_call(
+                **base, ok=False, duration_s=round(time.time() - started, 2),
+                estimated_prompt_tokens=estimate, error=f"{type(exc).__name__}: {str(exc)[:300]}",
+            )
+            raise
+        try:
+            usage_ledger.record_llm_call(
+                **base, ok=True, duration_s=round(time.time() - started, 2),
+                prompt_tokens=payload.get("prompt_tokens"),
+                completion_tokens=payload.get("completion_tokens"),
+                total_tokens=payload.get("total_tokens"),
+                cached_prompt_tokens=payload.get("cached_prompt_tokens") or payload.get("prompt_cache_hit_tokens"),
+                estimated_prompt_tokens=payload.get("estimated_prompt_tokens"),
+                estimated_output_tokens=payload.get("estimated_output_tokens"),
+                token_source=payload.get("token_usage_source"),
+                saved_prompt_tokens=payload.get("saved_prompt_tokens"),
+                saved_completion_tokens=payload.get("saved_completion_tokens"),
+            )
+        except Exception:
+            pass
+        return payload
+
+    def _get_response(
+        self,
+        user_prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        top_p: Optional[float] = None,
+        frequency_penalty: Optional[float] = None,
+        presence_penalty: Optional[float] = None,
+        allow_thinking: Optional[bool] = None,
+        reasoning_effort: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """The model's answer to this request -- from response_cache when the
         identical request has been answered before and the cache is on (see
         that module for what "identical" covers and why it is safe), otherwise

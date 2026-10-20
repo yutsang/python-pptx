@@ -110,6 +110,8 @@ def generate_pptx_presentation(
             session_state.get("rollup_sheet") if _rollup_temp_path else session_state.get("selected_sheet")
         )
 
+        from .. import usage_ledger
+        usage_ledger.record_event("export_pptx", mode="single")
         with st.spinner("Generating PPTX…"):
             export_pptx_from_structured_data_combined(
                 template_path,

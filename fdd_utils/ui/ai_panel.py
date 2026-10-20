@@ -454,6 +454,10 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                         selected_pipeline_dfs,
                         effective_mappings_from_session(session_state),
                     )
+                    from .. import usage_ledger
+                    usage_ledger.record_event(
+                        "ai_run", mode="single", accounts=len(matched_mapping_keys or []),
+                        model=session_state.get("model_name") or session_state.get("model_type"))
                     results = run_ai_pipeline_with_progress(
                         mapping_keys=matched_mapping_keys,
                         dfs=selected_pipeline_dfs,
@@ -684,6 +688,8 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                     )
                     session_state.account_comments[key] = reprompt_comment
                     if st.button(f"Reprompt {key}", key=f"{prefix}{key}_reprompt_button", use_container_width=True):
+                        from .. import usage_ledger
+                        usage_ledger.record_event("reprompt", account=key)
                         with st.spinner(f"Regenerating {key}..."):
                             selected_pipeline_dfs = build_selected_pipeline_dfs(session_state)
                             updated_results = run_generator_reprompt(

@@ -35,6 +35,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import pandas as pd
 import yaml
 
+from .. import usage_ledger
+
 
 class _StageCircuitBreaker:
     """Per-stage circuit breaker for LLM calls.
@@ -1058,7 +1060,8 @@ def _run_ai_call(ai_helper, user_prompt: str, system_prompt: str, agent_name: st
             result_container["error"] = exc
             result_container["completed"] = True
 
-    thread = threading.Thread(target=call_ai, daemon=True)
+    # bind: a fresh thread does not inherit the usage ledger's attribution.
+    thread = threading.Thread(target=usage_ledger.bind(call_ai), daemon=True)
     thread.start()
     thread.join(timeout=timeout)
 
@@ -1273,7 +1276,14 @@ def _nil_accounts_enabled(ai_helper) -> bool:
         return True
 
 
-def process_single_agent_item(
+def process_single_agent_item(agent_name: str, mapping_key: str, *args, **kwargs):
+    """_process_single_agent_item, with its LLM calls attributed to this account
+    in the usage ledger."""
+    with usage_ledger.scope(account=mapping_key, stage=agent_name):
+        return _process_single_agent_item(agent_name, mapping_key, *args, **kwargs)
+
+
+def _process_single_agent_item(
     agent_name: str,
     mapping_key: str,
     df: Optional[pd.DataFrame],
@@ -1730,7 +1740,7 @@ def run_agent_stage(
             futures = {}
             for key in eligible_keys:
                 future = executor.submit(
-                    process_single_agent_item,
+                    usage_ledger.bind(process_single_agent_item),
                     agent_name,
                     key,
                     dfs.get(key),
@@ -2202,7 +2212,7 @@ def run_ai_pipeline_with_progress(
             with ThreadPoolExecutor(max_workers=fb_workers) as executor:
                 futures = {
                     executor.submit(
-                        _run_feedback_loop_for_key,
+                        usage_ledger.bind(_run_feedback_loop_for_key),
                         key=key,
                         dfs=dfs,
                         results=results,
@@ -2640,7 +2650,7 @@ def _ensure_clause_reviews_on_final(
     if use_multithreading and len(needs_validation) > 1:
         ev_workers = _resolve_max_workers(ai_helper, max_workers)
         with ThreadPoolExecutor(max_workers=ev_workers) as executor:
-            list(executor.map(_run_one, needs_validation))
+            list(executor.map(usage_ledger.bind(_run_one), needs_validation))
     else:
         for key in needs_validation:
             _run_one(key)
@@ -2982,7 +2992,13 @@ def _attempt_patch_first(
     return True
 
 
-def _run_feedback_loop_for_key(
+def _run_feedback_loop_for_key(key: str, *args, **kwargs):
+    """_run_feedback_loop_for_key_inner, attributed to this account in the usage ledger."""
+    with usage_ledger.scope(account=key):
+        return _run_feedback_loop_for_key_inner(key, *args, **kwargs)
+
+
+def _run_feedback_loop_for_key_inner(
     key: str,
     dfs: Dict[str, pd.DataFrame],
     results: Dict[str, Dict[str, str]],

@@ -91,6 +91,79 @@ def _build_model_choices() -> tuple[list[dict], str | None]:
     return choices, default_model_choice_key(config, choices)
 
 
+def _screen_uploads(files: list, session_state: Any) -> list:
+    """Excel files pass through (each logged once per session as an upload); a
+    .txt carrying today's admin code unlocks the usage panel; anything else is
+    refused with the same message whatever it was."""
+    from .. import usage_ledger
+
+    kept, refused = [], []
+    logged = session_state.setdefault("usage_logged_uploads", [])
+    n_excel = sum(1 for f in files if Path(f.name or "").suffix.lower() in (".xlsx", ".xls"))
+    for f in files:
+        suffix = Path(f.name or "").suffix.lower()
+        if suffix in (".xlsx", ".xls"):
+            kept.append(f)
+            try:
+                digest = hashlib.sha256(f.getvalue()).hexdigest()[:16]
+            except Exception:
+                digest = ""
+            if digest and digest not in logged:
+                logged.append(digest)
+                usage_ledger.record_event("upload", file=f.name, size=getattr(f, "size", None),
+                                          sha256=digest, batch=n_excel > 1)
+            continue
+        if suffix == ".txt":
+            try:
+                text = f.getvalue()[:256].decode("utf-8", errors="ignore")
+            except Exception:
+                text = ""
+            if usage_ledger.admin_code_matches(text):
+                if not session_state.get("admin_unlocked"):
+                    session_state.admin_unlocked = True
+                    usage_ledger.record_event("admin_unlock", file=None)
+                continue
+        refused.append(f.name)
+    if refused:
+        st.error("Unsupported file: " + ", ".join(refused) + ". Please upload an Excel databook (.xlsx / .xls).")
+    return kept
+
+
+def _render_admin_panel(session_state: Any) -> None:
+    """Usage report and log download, for a session unlocked by _screen_uploads."""
+    if not session_state.get("admin_unlocked"):
+        return
+    from datetime import datetime
+
+    from .. import usage_ledger
+
+    with st.expander("🔐 Usage & logs", expanded=True):
+        calls = usage_ledger.read_jsonl(usage_ledger.USAGE_PATH)
+        uploads = [e for e in usage_ledger.read_jsonl(usage_ledger.ACTIVITY_PATH) if e.get("event") == "upload"]
+        total = sum(int(c.get("total_tokens") or 0) for c in calls)
+        st.caption(f"{len(calls)} LLM call(s) · {total:,} total tokens · {len(uploads)} upload(s) recorded")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M")
+        if st.button("Prepare usage report (.xlsx)", key="admin_prepare_report"):
+            session_state.admin_report_bytes = usage_ledger.build_usage_report()
+            usage_ledger.record_event("admin_report")
+        if session_state.get("admin_report_bytes"):
+            st.download_button("⬇️ Download usage report", data=session_state.admin_report_bytes,
+                               file_name=f"fdd_usage_{stamp}.xlsx", key="admin_download_report",
+                               mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        if st.button("Prepare all logs (.zip)", key="admin_prepare_zip"):
+            session_state.admin_zip_bytes = usage_ledger.build_logs_zip()
+            usage_ledger.record_event("admin_logs_zip", size=len(session_state.admin_zip_bytes))
+        if session_state.get("admin_zip_bytes"):
+            st.caption("Contains every prompt and output, i.e. client figures. Handle as client data.")
+            st.download_button("⬇️ Download logs zip", data=session_state.admin_zip_bytes,
+                               file_name=f"fdd_logs_{stamp}.zip", key="admin_download_zip",
+                               mime="application/zip")
+        if st.button("Lock", key="admin_lock"):
+            for key in ("admin_unlocked", "admin_report_bytes", "admin_zip_bytes"):
+                session_state.pop(key, None)
+            st.rerun()
+
+
 def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[str], str]) -> str | None:
     with st.sidebar:
         model_choices, default_key = _build_model_choices()
@@ -139,15 +212,18 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
         session_state.use_multithreading = bool(_proc_cfg.get("use_multithreading", True))
 
         st.markdown("**📁 Databook File(s)**")
+        # No `type=` filter: the widget would print the accepted extensions, and
+        # the admin unlock (a .txt holding today's code, see usage_ledger) is not
+        # something to advertise. Extensions are checked below instead.
         uploaded_files = st.file_uploader(
             "Upload Excel file(s)",
-            type=["xlsx", "xls"],
             accept_multiple_files=True,
             help="Upload one databook for a single-entity report, or several at once to "
                  "batch-process them (one PPTX per entity, no extra mode toggle needed).",
             key="file_uploader",
         )
-        uploaded_files = uploaded_files or []
+        uploaded_files = _screen_uploads(uploaded_files or [], session_state)
+        _render_admin_panel(session_state)
 
         if len(uploaded_files) > 1:
             # Batch mode is now purely a function of "how many files did you

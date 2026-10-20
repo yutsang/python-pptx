@@ -32,6 +32,7 @@ from fdd_utils.ui import (
     should_render_preprocess_controls,
 )
 from fdd_utils.ai import FDDConfig
+from fdd_utils import usage_ledger
 from fdd_utils.workbook import (
     process_workbook_data,
     build_workbook_preflight,
@@ -725,6 +726,7 @@ def render_batch_processing_section():
 
             resolved = {
                 "temp_path": own_temp_path,
+                "file_name": file_meta["name"],
                 "entity_name": entity_name.strip() if entity_name else "",
                 "own_sheet": own_sheet or None,
                 "rollup_sheet": rollup_sheet_choice or None,
@@ -903,6 +905,8 @@ def render_batch_processing_section():
             if phase == "extract":
                 status.info(f"⏳ Entity {idx + 1}/{total}: {slot['entity_name']} — extracting data...")
                 try:
+                  with usage_ledger.scope(file=slot.get("file_name"), entity=slot["entity_name"]):
+                    usage_ledger.record_event("process_data", mode="batch")
                     extracted = batch_extract_entity_data(
                         temp_path=slot["temp_path"],
                         entity_name=slot["entity_name"],
@@ -960,6 +964,9 @@ def render_batch_processing_section():
 
                 status.info(f"⏳ Entity {idx + 1}/{total}: {slot['entity_name']} — running AI generation...")
                 try:
+                  with usage_ledger.scope(file=slot.get("file_name"), entity=slot["entity_name"]):
+                    usage_ledger.record_event("ai_run", mode="batch",
+                                              model=st.session_state.get("model_name") or st.session_state.get("model_type"))
                     outcome = batch_run_ai_for_entity(
                         extracted=extracted,
                         model_type=st.session_state.get("model_type", "local"),
@@ -1034,6 +1041,18 @@ def render_batch_processing_section():
 # Initialize
 init_session_state()
 
+# Usage ledger attribution for everything this rerun does (fdd_utils/usage_ledger.py):
+# which browser session, which upload, which entity. Set at the top of every
+# rerun; worker threads pick it up through usage_ledger.bind.
+if "usage_session_id" not in st.session_state:
+    import uuid as _uuid
+    st.session_state.usage_session_id = _uuid.uuid4().hex[:12]
+usage_ledger.set_context(
+    session=st.session_state.usage_session_id,
+    file=st.session_state.get("uploaded_filename"),
+    entity=st.session_state.get("entity_name") or None,
+)
+
 # Bridge Lab -- experimental, fully isolated from the main upload/process/AI/
 # PPTX flow below. Toggled from its own sidebar button; when active it takes
 # over the whole page and the normal sidebar/flow is skipped entirely.
@@ -1061,6 +1080,8 @@ else:
 
         if temp_path:
             with st.spinner("Processing..."):
+                usage_ledger.record_event("process_data", mode="single",
+                                          financials_from=bool(st.session_state.get("rollup_temp_path")))
                 try:
                     fdd_config = FDDConfig()
                     debug_mode = fdd_config.get_debug_mode()

@@ -768,7 +768,8 @@ def _call_repair_model(
         except Exception as exc:  # pragma: no cover - provider failures are normal
             box["error"] = exc
 
-    thread = threading.Thread(target=run, daemon=True)
+    from .. import usage_ledger  # a fresh thread does not inherit attribution
+    thread = threading.Thread(target=usage_ledger.bind(run), daemon=True)
     thread.start()
     thread.join(timeout=timeout)
     if "error" in box:
