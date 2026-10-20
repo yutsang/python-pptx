@@ -77,9 +77,9 @@ def main() -> int:
     except Exception:
         writable = False
     line(writable, f"logs folder writable: {logs}", "give the app's user write access to fdd_utils/logs")
-    from fdd_utils.usage_ledger import admin_secret
-    line(bool(admin_secret(config)), "admin.unlock_secret set (usage download can be unlocked)",
-         "add an `admin:` block with `unlock_secret: \"<long private phrase>\"` to config.yml")
+    from fdd_utils.usage_ledger import admin_code, admin_secret, admin_secret_is_custom
+    print(f"     admin unlock code today: {admin_code(admin_secret(config))} "
+          f"({'custom admin.unlock_secret' if admin_secret_is_custom(config) else 'built-in salt'})")
     cache = ((config.get("processing") or {}).get("response_cache"))
     print(f"     processing.response_cache = {cache!r} (a cached answer costs 0 tokens and is logged as such)")
 

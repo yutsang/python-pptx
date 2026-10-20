@@ -134,12 +134,17 @@ def read_jsonl(path: Path) -> list:
 # --- admin unlock -----------------------------------------------------------
 #
 # A .txt dropped into the databook uploader whose content is today's code
-# unlocks the usage download for that browser session. The code is derived
-# from a secret in config.yml (admin.unlock_secret, gitignored) and the date,
-# so it changes daily and cannot be worked out from the source. No secret
-# configured -> the feature is off and a .txt is rejected like any other
-# unsupported file. Yesterday's and tomorrow's codes are accepted too: the
-# server's clock may sit in another time zone from the person typing.
+# unlocks the usage download for that browser session. The code depends on the
+# date and a salt, so it changes daily and the owner can compute it on any
+# machine with this checkout (admin_code.py) without reaching the server --
+# which they can only get into now and then. The built-in salt is the default
+# on purpose; admin.unlock_secret in config.yml (or FDD_ADMIN_SECRET) replaces
+# it for anyone who wants a code that cannot be worked out from the source, and
+# then the same value has to be on both machines. Yesterday's and tomorrow's
+# codes are accepted too: the server's clock may sit in another time zone.
+
+_DEFAULT_ADMIN_SALT = "fdd-usage-ledger"
+
 
 def admin_secret(config: Optional[Dict[str, Any]] = None) -> str:
     if config is None:
@@ -149,7 +154,12 @@ def admin_secret(config: Optional[Dict[str, Any]] = None) -> str:
         except Exception:
             config = {}
     block = (config or {}).get("admin") or {}
-    return str(block.get("unlock_secret") or os.environ.get("FDD_ADMIN_SECRET") or "").strip()
+    return str(block.get("unlock_secret") or os.environ.get("FDD_ADMIN_SECRET")
+               or _DEFAULT_ADMIN_SALT).strip()
+
+
+def admin_secret_is_custom(config: Optional[Dict[str, Any]] = None) -> bool:
+    return admin_secret(config) != _DEFAULT_ADMIN_SALT
 
 
 def admin_code(secret: str, day: Optional[datetime] = None) -> str:
