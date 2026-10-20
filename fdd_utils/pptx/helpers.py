@@ -1198,6 +1198,75 @@ def _restructure_rollforward(plan: List[Dict[str, Any]], total_row: Optional[Dic
     return out
 
 
+#: Lines a detail table shows before the smallest are folded into one 其他 row
+#: (pptx.presentation_tables.max_rows). A real Crescent export (2026-10-20)
+#: drew every line the sheet's summary table carried -- the owner's complaint
+#: was "那麼多行都放進去": a 20-line 营业成本 is a schedule, not an exhibit.
+_TABLE_MAX_ROWS_DEFAULT = 8
+
+
+def _cap_presentation_table_rows(table: Optional[Dict[str, Any]], max_rows: int,
+                                 is_chinese_databook: bool) -> Optional[Dict[str, Any]]:
+    """The table with at most `max_rows` lines above its total, smallest folded.
+
+    Children go first (the line they break down stays, with its own figure);
+    then the lines whose largest absolute value over the periods is smallest
+    are summed per period into one 其他/Others line at the end, so the total
+    still ties. A line naming an adjustment (调整/adjustment) is always kept:
+    commentary discusses those by name. Tables with structure of their own --
+    sheet headings, a roll-forward, grouped categories -- are returned as
+    they are, since their rows are blocks that only add up together.
+    Returns a copy; the original (and the workbook's attrs) are untouched.
+    """
+    if not table or not max_rows or max_rows < 2:
+        return table
+    rows = table.get("rows") or []
+    if any(r.get("is_header") for r in rows):
+        return table
+    visible = len(rows) + sum(len(r.get("children") or []) for r in rows)
+    if visible <= max_rows:
+        return table
+    try:
+        plan = _build_presentation_table_plan(table, is_chinese_databook, 1)
+    except Exception:
+        return table
+    if any(e.get("kind") in ("group", "grouped") for e in plan):
+        return table
+    # The same label twice is two blocks of one list (rent and property fee per
+    # tenant, say) that the sheet gave no heading. Ranked as one list, the cap
+    # kept the larger tenant from each block and printed it twice -- on a real
+    # Kunshan AR table whose two blocks do not even add up to its total.
+    labels = [str(r.get("label") or "").strip() for r in rows]
+    if len(set(labels)) < len(labels):
+        return table
+
+    def _size(row: Dict[str, Any]) -> float:
+        return max((abs(v) for v in (row.get("values") or {}).values()
+                    if isinstance(v, (int, float)) and v == v), default=0.0)
+
+    other_label = "其他" if is_chinese_databook else "Others"
+    parents = [dict(r, children=[]) for r in rows]
+    if len(parents) <= max_rows:
+        return dict(table, rows=parents)
+    is_other = lambda r: str(r.get("label") or "").strip().lower() in ("其他", "其它", "other", "others")
+    pinned = [i for i, r in enumerate(parents)
+              if re.search(r"调整|adjust", str(r.get("label") or ""), re.I) and not is_other(r)]
+    ranked = sorted((i for i, r in enumerate(parents) if i not in pinned and not is_other(r)),
+                    key=lambda i: -_size(parents[i]))
+    keep = set(pinned) | set(ranked[:max(0, max_rows - 1 - len(pinned))])
+    folded = [r for i, r in enumerate(parents) if i not in keep]
+    if len(folded) < 2:
+        return dict(table, rows=parents)
+    others: Dict[str, float] = {}
+    for r in folded:
+        for period, v in (r.get("values") or {}).items():
+            if isinstance(v, (int, float)) and v == v:
+                others[period] = others.get(period, 0.0) + v
+    kept_rows = [r for i, r in enumerate(parents) if i in keep]
+    kept_rows.append({"label": other_label, "values": others, "children": [], "folded_rows": len(folded)})
+    return dict(table, rows=kept_rows)
+
+
 def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: bool, source_multiplier: float,
 ) -> List[Dict[str, Any]]:
     """Flattens a presentation table's rows -> children (indented) ->

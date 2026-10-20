@@ -22,6 +22,7 @@ from .helpers import (  # lifted out of PowerPointGenerator
     _planning_std_lh_pt,
     _prepare_structured_data_for_slides,
     _presentation_table_for_account,
+    _cap_presentation_table_rows,
     _select_presentation_tables,
     _strip_table_handoff,
     _SUBTABLE_DECISION_KEY,
@@ -2549,10 +2550,16 @@ class _PackingMixin:
         normal_items: List[Dict[str, Any]] = []
         last_table_pos: Optional[int] = None
         tagged_normal: List[Tuple[int, Dict[str, Any]]] = []
+        max_table_rows = self._presentation_table_max_rows()
         for pos, item in enumerate(structured_data):
             table = _presentation_table_for_account(item) if tables_enabled else None
             rejected_here = (table is not None and table_for_item is not None
                              and id(item) not in table_for_item)
+            # Capped HERE, before geometry and before the table is attached, so
+            # the height check, the measurer and the renderer all see the same
+            # rows. Selection above still counts the sheet's full breakdown.
+            if table is not None and table_style != "sublist":
+                table = _cap_presentation_table_rows(table, max_table_rows, bool(item.get("is_chinese")))
             if table is not None and not rejected_here:
                 # The cap said this table is worth drawing. Geometry gets the
                 # last word on whether it can be.

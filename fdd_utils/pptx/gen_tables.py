@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .helpers import (  # lifted out of PowerPointGenerator
+    _TABLE_MAX_ROWS_DEFAULT,
     _account_cost_key,
     _account_is_chinese,
     _add_commentary_slot_shape,
@@ -280,6 +281,16 @@ class _TablesMixin:
             return bool((self.pptx_settings.get("presentation_tables") or {}).get("enabled", True))
         except Exception:
             return True
+
+
+    def _presentation_table_max_rows(self) -> int:
+        """pptx.presentation_tables.max_rows; 0 shows every line the sheet has."""
+        try:
+            value = int((self.pptx_settings.get("presentation_tables") or {}).get(
+                "max_rows", _TABLE_MAX_ROWS_DEFAULT))
+        except (TypeError, ValueError):
+            return _TABLE_MAX_ROWS_DEFAULT
+        return max(value, 0)
 
 
     def _presentation_table_style(self) -> str:

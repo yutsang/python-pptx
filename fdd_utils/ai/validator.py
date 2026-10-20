@@ -1560,9 +1560,25 @@ _CONF_LLM_FLAG = 0.7
 _CONF_DEFAULT_REASONING = 0.5
 
 
+#: The piece of a sentence that states an inference: the part a reviewer has
+#: to check when the Validator calls the sentence reasoning.
+_INFERENCE_CLAUSE = re.compile(
+    r"预计|推测|估计|预期|可能|或因|或系|或与|有关|所致|导致|主要系|主要由于|由于|归因|"
+    r"受[^。；;，,\n]{1,20}影响|反映|表明|意味|"
+    r"likely|probably|expected to|suggest|indicat|reflect|due to|driven by|attributable|owing to",
+    re.IGNORECASE)
+#: ...and the narrower set that stays an inference even when every figure in
+#: the piece is verified: 「主要系基本户资金由0.58亿元降至0.01亿元」 is a
+#: checked decomposition, 「预计2026年…将增至X万元」 is still a guess.
+_SPECULATIVE_CLAUSE = re.compile(
+    r"预计|推测|估计|预期|可能|或因|或系|或与|有关|反映|表明|likely|probably|expected to|suggest",
+    re.IGNORECASE)
+
+
 def _combine_verdict(clause: str, det: Optional[Dict[str, Any]],
                      llm: Optional[Dict[str, Any]], highlight_min_conf: float,
-                     *, span: Optional[Tuple[int, int]] = None) -> Dict[str, Any]:
+                     *, span: Optional[Tuple[int, int]] = None,
+                     llm_marked: Optional[bool] = None) -> Dict[str, Any]:
     """Merge deterministic number-grounding with the LLM's soft judgement.
 
     Precedence: a deterministic unmatched-amount hallucination is authoritative
@@ -1570,6 +1586,10 @@ def _combine_verdict(clause: str, det: Optional[Dict[str, Any]],
     *reasoning* flag is preserved (numbers fine, inference unsupported) but an LLM
     *number-hallucination* claim is dropped (it was a false positive). Clauses with
     no checkable amount defer to the LLM; absent that, causal language => reasoning.
+
+    llm_marked: whether the LLM verdict this clause inherits covers a piece that
+    states the inference (_INFERENCE_CLAUSE). When it does, a "reasoning" flag
+    stays only on such pieces; None keeps the old sentence-wide behaviour.
     """
     llm_cat = str((llm or {}).get("category") or "").lower()
     llm_supported = bool((llm or {}).get("supported")) if llm else True
@@ -1579,14 +1599,16 @@ def _combine_verdict(clause: str, det: Optional[Dict[str, Any]],
         category, supported, conf, reason = "hallucination", False, _CONF_DET_HALLUCINATION, det["reason"]
         code = det.get("code") or "AMOUNT_UNSUPPORTED"
     elif det and det["category"] == "data-backed":
-        if llm and llm_cat == "reasoning" and not llm_supported:
+        if (llm and llm_cat == "reasoning" and not llm_supported
+                and (llm_marked is None or _SPECULATIVE_CLAUSE.search(clause))):
             category, supported, conf = "reasoning", False, _CONF_LLM_FLAG
             reason = (llm or {}).get("reason") or "Numbers verified; inference not directly supported."
             code = "LLM_UNSUPPORTED_CAUSE"
         else:
             # numbers matched -> drop any LLM 'hallucination' false positive
             category, supported, conf, reason = "data-backed", True, _CONF_DET_DATA_BACKED, det["reason"]
-    elif llm and llm_cat in ("reasoning", "hallucination") and not llm_supported:
+    elif (llm and llm_cat in ("reasoning", "hallucination") and not llm_supported
+          and not (llm_cat == "reasoning" and llm_marked and not _INFERENCE_CLAUSE.search(clause))):
         category, supported, conf = llm_cat, False, _CONF_LLM_FLAG
         reason = (llm or {}).get("reason") or "Flagged by validator."
         # The third branch: an LLM flag on a clause with no groundable amount.
@@ -1741,8 +1763,15 @@ def _signed_runon_amounts(span: str) -> List[Tuple[str, str]]:
 # added up exactly (54.7+16.3+10.0+18.9 = 99.9) was reported as 19%
 # unaccounted for. Non-greedy and bounded inside the clause, so it takes the
 # FIRST amount after 其余 and cannot reach into the next sentence.
+# ...and only when that amount IS the remainder. 「其余主要应付款项为关联方某公司的
+# 管理费67.8万元、某物业的物业管理费51.5万元…」 opens a second list, and its first
+# item was taken for the remainder: a real 应付账款 bullet had its correct 67.8万元
+# "patched" to 146.0万元 (the remainder it would have to be) and shipped that way.
+# A figure followed by 、 is a list item, and the gap may not step over another
+# amount to reach a later one.
 _RESIDUAL_ITEM = re.compile(
-    r"其余[^。；;]{0,40}?(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)"
+    r"其余(?:(?![\d,]+(?:\.\d+)?\s*(?:万元|亿元|元))[^。；;]){0,40}?"
+    r"(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)(?!\s*、)"
 )
 # The same closing component written the other way the model actually writes it:
 # 「其他小额应付款项（如法律服务费、维修费等）合计为负42.1万元」. Only 其余 was
@@ -1788,7 +1817,11 @@ _DRILL_DOWN = re.compile(r"[；;]\s*(?:其中|[^，,。；;]{0,20}?(?:主要(?:�
 #: 「预计主要系基本户余额由…0.58亿元降至…0.01亿元所致」 is a cause, and its two
 #: figures are one line in two periods. Read as a list it put a 1.23亿元 cash
 #: balance at "52% unaccounted for" on a real run.
-_CAUSAL = re.compile(r"所致|导致|引起|造成")
+#: 「主要系基本户资金由0.58亿元降至0.01亿元，预计与…有关」 has no 所致 and is the
+#: same kind of sentence: one line moving between two periods. Read as a list it
+#: put a 1.23亿元 cash balance at "52% unaccounted for" a second time (Crescent,
+#: 2026-10-20), red in the deck beside a breakdown that tied.
+_CAUSAL = re.compile(r"所致|导致|引起|造成|(?:降|增|升|减|回落|回升|扩大|缩小)至")
 #: 账面价值 / 账面净值 too: 「固定资产账面价值为6.65亿元，主要为一期房屋2.79亿元、
 #: 二期房屋2.64亿元及土地-1.10亿元」 lists 4.33 against 6.65 -- the 1.10 is the
 #: accumulated depreciation, not land -- and went unchecked because the total
@@ -1822,7 +1855,14 @@ def closing_remainder(text: str) -> Optional[float]:
             before = [(float(v.replace(",", "")), u, v)
                       for v, u in _RUNON_AMT.findall(body[previous:start])]
             start = previous
-        if len(before) in (1, 2) and not _STATED_TOTAL.search(body[start:match.start()]):
+        # 「…甲585.2万元、乙298.0万元、丙67.0万元，合计950.2万元，其余112.6万元为…」:
+        # the items are already added up in front of the 其余, so what it closes
+        # is the account total less that 合计 -- the total stated earlier.
+        _sub = list(_SUBTOTAL.finditer(body[start:match.start()]))
+        _added_up = bool(_sub) and bool(listed_subtotals(body[start:start + _sub[-1].end()]))
+        if _added_up:
+            before = [(float(_sub[-1].group(2).replace(",", "")), _sub[-1].group(3), _sub[-1].group(2))]
+        if len(before) in (1, 2) and (_added_up or not _STATED_TOTAL.search(body[start:match.start()])):
             # The total stated one sentence earlier: 「余额为1,062.8万元，系…保证金。
             # 该科目主要包括：1）甲585.2万元；2）乙298.0万元；3）其余179.6万元为…」.
             stated_total = _STATED_TOTAL.search(body[:start])
@@ -1844,6 +1884,34 @@ def closing_remainder(text: str) -> Optional[float]:
         if abs((total - items) - stated) <= 0.5 * step * (len(before) + 1):
             return abs(stated)
     return None
+
+
+_SUBTOTAL = re.compile(r"(?:合计|共计|总计|小计)\s*(?:约为|约|为)?\s*(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)")
+
+
+def listed_subtotals(text: str) -> List[float]:
+    """Every 「合计X」 that is the sum of the figures listed just before it.
+
+    Read off its own sentence: the last two or more amounts before the 合计,
+    added, must reach X within the rounding of the figures as printed. Returns
+    the subtotals in 元; a 合计 that adds nothing up is left out, so it is
+    still grounded (or not) against the source like any other amount.
+    """
+    body = str(text or "")
+    out: List[float] = []
+    for match in _SUBTOTAL.finditer(body):
+        start = max(body.rfind(mark, 0, match.start()) for mark in "。；;\n") + 1
+        before = [(float(v.replace(",", "")) * _SCALE.get(u, 1.0), v, u)
+                  for v, u in _RUNON_AMT.findall(body[start:match.start()])]
+        stated = float(match.group(2).replace(",", "")) * _SCALE.get(match.group(3), 1.0)
+        stated = -stated if match.group(1) else stated
+        for count in range(2, len(before) + 1):
+            tail = before[-count:]
+            step = max(_SCALE.get(u, 1.0) * 10 ** -len(raw.partition(".")[2]) for _, raw, u in tail)
+            if abs(sum(v for v, _, _ in tail) - stated) <= 0.5 * step * (count + 1):
+                out.append(abs(stated))
+                break
+    return out
 
 
 def check_composition_adds_up(mapping_key: str, text: str) -> List[str]:
@@ -1959,6 +2027,7 @@ def _composition_findings(mapping_key: str, text: str,
     # run-on span that already swallowed it must not count it twice.
     residual = (_RESIDUAL_ITEM.search(residual_scope) or _RESIDUAL_OTHER.search(residual_scope)
                 or _RESIDUAL_TAIL.search(residual_scope))
+    _counted = len(items)   # the items before the remainder, for the guard below
     if residual:
         sign, value, unit = residual.groups()
         signed = float(value.replace(",", "")) * (-1.0 if sign else 1.0)
@@ -2064,6 +2133,15 @@ def _composition_findings(mapping_key: str, text: str,
         # 434.2 + 163.8 + 39.2 leaves 37.3 of 674.5, and the sentence said
         # 「其余27.3万元」. Not an omission -- there is nothing left to omit once
         # "the rest" has been stated -- so it is arithmetic, and rewritable.
+        # Only if every amount between the total and the remainder was counted.
+        # 「余额合计877.2万元，其中…731.3万元…。其余主要应付款项为…67.8万元、…51.5万元…，
+        # 以及…合计约7.0万元」 tied exactly, but the list parser saw one item, so the
+        # 7.0 was "wrong" by 139.0 and patch_stated_remainder rewrote it -- a
+        # correct figure turned into a wrong one in the deck. Amounts the parse
+        # skipped mean it does not know what the list is; say nothing.
+        _between = _RUNON_AMT.findall(body[m.end():residual.start()])
+        if len(_between) > _counted:
+            return []
         stated = abs(float(residual.group(2).replace(",", ""))) * _SCALE.get(residual.group(3), 1.0)
         if details is not None:
             details.update(span=(residual.start(2), residual.end(2)), unit=residual.group(3),
@@ -2133,12 +2211,18 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
     # instruction. A remainder that closes its own list to within rounding is
     # arithmetic on grounded figures, so it joins the pool for this text. One
     # that does NOT close is untouched, and is COMPOSITION_RESIDUAL_WRONG.
+    # The 合计 of figures listed just before it is the same kind of arithmetic:
+    # 「前三大租户保证金为甲585.2万元、乙298.0万元、丙67.0万元，合计950.2万元」 was
+    # flagged "9,502,000 not found in source data" on a real run, patched, and
+    # regenerated twice, and shipped red in the deck for a sum that was right.
     try:
-        _remainder = closing_remainder(str(final_content or ""))
-        if _remainder is not None:
-            _extended = SourceIndex(list(source.facts) + [
-                _fact(_remainder, "composition_remainder",
-                      row_desc="stated total less the items listed with it")])
+        _derived = [_fact(_remainder, "composition_remainder",
+                          row_desc="stated total less the items listed with it")
+                    for _remainder in [closing_remainder(str(final_content or ""))] if _remainder is not None]
+        _derived += [_fact(_subtotal, "listed_subtotal", row_desc="sum of the items listed before it")
+                     for _subtotal in listed_subtotals(str(final_content or ""))]
+        if _derived:
+            _extended = SourceIndex(list(source.facts) + _derived)
             _extended.date_facts = list(getattr(source, "date_facts", []) or [])
             source = _extended
     except Exception:
@@ -2148,10 +2232,20 @@ def verify_commentary(final_content: str, df, llm_clause_reviews: Optional[List[
     # the coordinate system every span in this module is expressed in, so they
     # are carried through: the clause's own span, and the offset that rebases
     # ground_amounts' clause-relative amount spans onto final_content.
-    for start, end, clause in segment_clauses(final_content):
+    segments = [(start, end, clause, _lookup_llm_review(clause, llm_reviews))
+                for start, end, clause in segment_clauses(final_content)]
+    # The Validator judges whole sentences and segment_clauses cuts them at every
+    # comma, so one "reasoning" verdict used to colour every piece of its
+    # sentence -- 「由1.81亿元降至1.23亿元，」 orange beside the 「预计与…有关」
+    # that earned the flag. A real Crescent run had 55 orange clauses from about
+    # 16 flagged sentences. Where a flagged sentence has a piece that states
+    # the inference, only those pieces carry it.
+    marked = {id(llm) for _s, _e, clause, llm in segments
+              if llm is not None and _INFERENCE_CLAUSE.search(clause)}
+    for start, end, clause, llm in segments:
         det = ground_amounts(clause, source, offset=start)
-        llm = _lookup_llm_review(clause, llm_reviews)
-        out.append(_combine_verdict(clause, det, llm, highlight_min_conf, span=(start, end)))
+        out.append(_combine_verdict(clause, det, llm, highlight_min_conf, span=(start, end),
+                                    llm_marked=(id(llm) in marked) if llm is not None else None))
     out.extend(_composition_reviews(final_content))
     out.extend(_date_reviews(final_content, df, source=source))
     try:

@@ -238,6 +238,12 @@ pptx:
     # Enforced by _select_deck_subtables before either statement is planned,
     # since the per-statement planner runs BS first and cannot see the budget.
     max_per_deck: 5
+    # Lines a drawn table shows above its total (2026-10-20). Past this the
+    # smallest lines are folded into one 其他/Others line, so the total still
+    # ties; children (indented drill-downs) go first. Adjustment lines are
+    # always kept. Roll-forward and grouped tables (原值/累计折旧/净值) are
+    # never folded. 0 = show every line the sheet has (the old behaviour).
+    max_rows: 8
     # When more accounts qualify than max_per_deck allows, the INCOME
     # STATEMENT is served first and the balance sheet takes what is left --
     # a BS account's question is "how much", which the embedded BS grid

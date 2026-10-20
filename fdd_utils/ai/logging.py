@@ -370,6 +370,11 @@ class PipelineRunLogger:
         if results:
             with open(self.results_file, "w", encoding="utf-8") as file:
                 yaml.dump(results, file, default_flow_style=False, allow_unicode=True)
+            try:
+                with open(os.path.join(self.run_folder, "summary.txt"), "w", encoding="utf-8") as file:
+                    file.write(render_run_summary(results, run_id=self.run_id))
+            except Exception as exc:  # a summary must never cost the run its results
+                self.logger.warning("summary.txt not written: %s", exc)
 
         self.logger.info("=== Completed AI processing run: %s ===", self.run_id)
         self.logger.info(
@@ -378,4 +383,74 @@ class PipelineRunLogger:
             total_duration,
             total_tokens,
         )
+def _short(text: Any, limit: int) -> str:
+    body = " ".join(str(text or "").split())
+    return body if len(body) <= limit else body[: limit - 1] + "…"
+
+
+def render_run_summary(results: Dict[str, Any], *, run_id: str = "") -> str:
+    """The run as a reviewer reads it: one block per account, nothing repeated.
+
+    results.yml stays the complete record every tool in ad-hoc/workbench reads.
+    It is also several thousand lines for one entity -- every stage's text,
+    every retry's text, the Validator's raw JSON, a verdict for every comma --
+    and it is what got pasted back for review. This is the part a person
+    needs: the shipped text and its length, what was flagged (grouped, since
+    one verdict covers several pieces of a sentence), what was retried or
+    patched, and the run's health. Written next to results.yml as summary.txt.
+    """
+    out: List[str] = []
+    run = results.get("__run__") if isinstance(results.get("__run__"), dict) else {}
+    health = results.get("__run_health__") if isinstance(results.get("__run_health__"), dict) else {}
+    state_accounts = ((run.get("state") or {}).get("accounts") or {}) if isinstance(run, dict) else {}
+    accounts = [k for k, v in results.items() if isinstance(v, dict) and not str(k).startswith("__")]
+
+    out.append(f"RUN {run_id}  accounts {len(accounts)}  calls ok {health.get('calls_succeeded', '?')} / "
+               f"failed {health.get('calls_failed', '?')}  safe_to_export {health.get('safe_to_export', '?')}")
+    codes = run.get("defect_codes") or {}
+    if codes:
+        out.append("flags: " + ", ".join(f"{k} {v}" for k, v in sorted(codes.items(), key=lambda kv: -kv[1])))
+    failed = [e for e in ((run.get("facts") or {}).get("links") or [])
+              if isinstance(e, dict) and e.get("passed") is False]
+    for edge in failed:
+        evidence = edge.get("evidence") or {}
+        detail = evidence.get("outside_band") or evidence.get("differing_periods") or ""
+        out.append(f"check failed: {edge.get('kind')} {edge.get('source')} -> {edge.get('target')} {detail}")
+    if health.get("first_failure"):
+        out.append(f"first failure: {_short(health.get('first_failure'), 200)}")
+
+    for key in sorted(accounts):
+        entry = results[key]
+        final = str(entry.get("final") or entry.get("subagent_4") or entry.get("subagent_2")
+                    or entry.get("subagent_1") or "")
+        state = state_accounts.get(key) if isinstance(state_accounts.get(key), dict) else {}
+        head = [str(state.get("phase") or "?"), f"{len(final)}字"]
+        retries = entry.get("feedback_retries")
+        if retries:
+            chosen = (entry.get("feedback_arbiter") or {}).get("chosen")
+            head.append(f"{retries} retries, kept {chosen}" if chosen else f"{retries} retries")
+        reviews = ((entry.get("agent_4_validation") or {}).get("clause_reviews") or [])
+        flagged = [r for r in reviews if isinstance(r, dict) and not r.get("supported")]
+        if flagged:
+            head.append(f"{len(flagged)} flagged piece(s)")
+        out.append("")
+        out.append(f"== {key}  [{', '.join(head)}]")
+        out.append(final.strip())
+        groups: Dict[tuple, List[str]] = {}
+        for review in flagged:
+            group = (str(review.get("category") or ""), str(review.get("code") or ""), str(review.get("reason") or ""))
+            groups.setdefault(group, []).append(str(review.get("clause") or "").strip())
+        for (category, code, reason), clauses in groups.items():
+            out.append(f"  ✗ {category} {code}: 「{_short(''.join(clauses), 120)}」")
+            out.append(f"      {_short(reason, 160)}")
+        for repair in entry.get("repair_log") or []:
+            if isinstance(repair, dict):
+                verdict = "ok" if repair.get("verified") else f"failed ({_short(repair.get('reason'), 60)})"
+                out.append(f"  ~ repair {repair.get('code')} {verdict}")
+        if entry.get("remainder_patch"):
+            out.append(f"  ~ remainder patched: {entry.get('remainder_patch')}")
+    out.append("")
+    return "\n".join(out)
+
+
 # --- end ai/logging.py ---

@@ -3087,16 +3087,22 @@ class PromptEngine:
         # cannot see the basis for, and prompts.yml already hands it
         # {variance_analysis_guidance} for exactly that reason -- a computed
         # fact the Generator was given and the Auditor was not is a fact that
-        # gets cut. The Validator is left out on purpose: it checks assertions
-        # against the data and adds no content, and a ratio is invisible to the
-        # money-expression matcher anyway, so the tokens would buy nothing.
+        # gets cut. The Validator was left out on purpose at first: it checks
+        # assertions against the data and adds no content, and a ratio is
+        # invisible to the money-expression matcher anyway, so the tokens looked
+        # like they would buy nothing. They do: the Validator flags as a
+        # hallucination every fact the Generator was legitimately given and it
+        # was not. A real Crescent run (2026-10-20) had 9 such "hallucinations"
+        # -- the 我方补计提 adjustments from the bridge block, facts from another
+        # account -- each shipped red, and three accounts regenerated twice for
+        # them. The three blocks below now reach the Validator too.
         #
         # Appended rather than substituted because no YAML template carries
         # the placeholder yet and the YAML files are outside this change. If
         # one is added later, this skips itself rather than printing the block
         # twice.
         cross_block = str(format_params.get("cross_account_guidance") or "").strip()
-        if cross_block and self.normalize_agent_name(agent_name) in ("1_Generator", "2_Auditor"):
+        if cross_block and self.normalize_agent_name(agent_name) in ("1_Generator", "2_Auditor", "4_Validator"):
             placeholder = "{cross_account_guidance}"
             if placeholder not in str(system_prompt or "") and placeholder not in str(user_prompt_template or ""):
                 cross_label = "跨科目已核实事实" if language == "Chi" else "Cross-account verified fact"
@@ -3105,13 +3111,14 @@ class PromptEngine:
 
         # The account's audit and indicative adjustments from the bridge sheets
         # (authority.adjustment_bridge). To the Generator, which writes about
-        # them, and the Auditor, which would otherwise cut what it cannot trace.
+        # them, the Auditor, which would otherwise cut what it cannot trace,
+        # and the Validator, which would otherwise call them hallucinations.
         bridge_block = bridge_note(df, language) if isinstance(df, pd.DataFrame) else ""
-        if bridge_block and self.normalize_agent_name(agent_name) in ("1_Generator", "2_Auditor"):
+        if bridge_block and self.normalize_agent_name(agent_name) in ("1_Generator", "2_Auditor", "4_Validator"):
             rendered_user_prompt = f"{rendered_user_prompt}\n\n{bridge_block}"
 
         brief_block = str(format_params.get("account_brief_guidance") or "").strip()
-        if brief_block and self.normalize_agent_name(agent_name) in ("1_Generator", "2_Auditor"):
+        if brief_block and self.normalize_agent_name(agent_name) in ("1_Generator", "2_Auditor", "4_Validator"):
             placeholder = "{account_brief_guidance}"
             if placeholder not in str(system_prompt or "") and placeholder not in str(user_prompt_template or ""):
                 brief_label = "本科目已核实分析简报" if language == "Chi" else "Verified account brief"
@@ -3135,17 +3142,34 @@ class PromptEngine:
             # trim -- the Auditor's measured failure in this repo is deleting
             # analysis it cannot see the basis for -- so in this mode they are
             # told which kind of sentence to leave alone.
+            # Length used to be "the writer's" here too, which with a brief that
+            # also left length open meant nothing anywhere capped it: a real
+            # Crescent run (2026-10-20) shipped 300-500字 on accounts the team's
+            # final report covers in 40-280, and the Auditor -- told not to cut
+            # -- passed every draft through unchanged. The brief now carries a
+            # ceiling, and the Auditor may trim to it; the Validator still does
+            # not shorten anything.
             if language == "Chi":
-                keep = ("【分析模式】这份草稿是按分析模式撰写的：结构、顺序和篇幅由撰写者决定。"
+                keep = ("【分析模式】这份草稿是按分析模式撰写的：结构和顺序由撰写者决定。"
                         "请只修正与数据不符的金额、日期、比例和格式问题，以及没有依据的事实陈述；"
                         "以「预计」「推测」标示并给出依据的推断、对交易含义的判断和向管理层提出的问题都要保留，"
                         "不要为了符合固定格式而重排或删减。")
+                if stage == "2_Auditor":
+                    keep += ("篇幅例外：一般科目超过约150字、多构成项或涉及收入/借款/关联方/示意性调整的科目超过约250字时，"
+                             "压缩到该上限以内——先删以前各期的逐期变动、明细表已列示的逐项金额和重复表述，"
+                             "构成、调整、核对结论和推断保留。")
             else:
-                keep = ("[ANALYSIS MODE] This draft was written in analysis mode: its structure, order and "
-                        "length are the writer's. Correct only amounts, dates, ratios and formatting that "
+                keep = ("[ANALYSIS MODE] This draft was written in analysis mode: its structure and order are "
+                        "the writer's. Correct only amounts, dates, ratios and formatting that "
                         "disagree with the data, and statements of fact with no basis. Keep inferences marked "
                         "'likely' with their reasons, judgements on what the account means for the deal, and "
                         "questions for management; do not reorder or cut to fit a fixed format.")
+                if stage == "2_Auditor":
+                    keep += (" Length is the exception: over about 90 words for most accounts, or about 160 for "
+                             "one with several material components, adjustments, or about revenue, borrowings or "
+                             "related parties, cut it to that ceiling -- earlier-period movements, figures the "
+                             "detail table already lists and repetition first; keep composition, adjustments, "
+                             "procedures and inferences.")
             rendered_user_prompt = f"{rendered_user_prompt}\n\n{keep}"
 
         if self.normalize_agent_name(agent_name) == "1_Generator":
