@@ -1145,6 +1145,21 @@ def _build_presentation_table_plan(table: Dict[str, Any], is_chinese_databook: b
         _blocked = _head_repeated_blocks(plan, str(table.get("title") or ""), is_chinese_databook)
         plan = _blocked if _blocked is not None else _group_plan_rows_by_category(
             plan, str(table.get("title") or ""))
+    else:
+        # The sheet kept SOME of its headings -- on real Portfolio III fixed-asset
+        # tables only the one before the last block survived, so cost and
+        # accumulated depreciation still ran together above it under the same
+        # four names. The rows before the first kept heading get the same
+        # block recovery as a table with none, as long as it does not invent a
+        # heading the sheet already has.
+        first_group = next((i for i, e in enumerate(plan) if e["kind"] == "group"), None)
+        if first_group and first_group >= 4:
+            prefix = _head_repeated_blocks(plan[:first_group], str(table.get("title") or ""),
+                                           is_chinese_databook)
+            existing = {str(e["label"]).strip() for e in plan if e["kind"] == "group"}
+            if prefix is not None and not ({str(e["label"]).strip() for e in prefix
+                                            if e["kind"] == "group"} & existing):
+                plan = prefix + plan[first_group:]
     total_row = table.get("total_row")
     plan = _name_net_block(plan, (total_row or {}).get("label"), is_chinese_databook)
     if total_row:
