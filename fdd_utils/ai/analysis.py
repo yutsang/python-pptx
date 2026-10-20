@@ -82,6 +82,12 @@ class AccountView:
     components: Dict[str, Dict[str, float]] = field(default_factory=dict)  # label -> period -> value
     notes: str = ""
     has_detail: bool = True
+    # The same components, one entry per sheet row and NOT summed by label.
+    # `components` adds rows that share a label, which is right for a
+    # counterparty split across lines and wrong for a roll-forward that lists
+    # each asset at cost and again at net under the same name. Empty when the
+    # adapter cannot tell rows apart (views_from_evidence).
+    rows: List[Tuple[str, Dict[str, float]]] = field(default_factory=list)
 
     @property
     def periods(self) -> List[str]:
@@ -504,8 +510,11 @@ def _rule_depreciation_rate(views: Dict[str, AccountView]) -> List[Observation]:
         # adjustment lines are left out, and an asset listed twice (cost, then
         # net, under the same name once the prefix is gone) counts its larger
         # figure -- cost is never below net.
+        period, _total = fa.latest()
+        pairs = ([(label, float(vals.get(period, 0.0) or 0.0)) for label, vals in fa.rows]
+                 if fa.rows and period is not None else list(latest.items()))
         by_asset: Dict[str, float] = {}
-        for k, v in latest.items():
+        for k, v in pairs:
             if v <= 0 or _is_contra(k) or _is_adjustment(k) or re.search(r"净值|净额|账面价值|账面净值", str(k)):
                 continue
             base = re.split(r"\s*[-－—]\s*", str(k).strip())[-1]
@@ -832,6 +841,7 @@ def views_from_frames(dfs: Dict[str, Any], facts: Optional[Dict[str, Any]] = Non
         attrs = getattr(df, "attrs", None) or {}
         analysis = attrs.get("prompt_analysis_df")
         components: Dict[str, Dict[str, float]] = {}
+        row_list: List[Tuple[str, Dict[str, float]]] = []
         if analysis is not None and getattr(analysis, "columns", None) is not None:
             try:
                 label_col = analysis.columns[0]
@@ -847,12 +857,16 @@ def views_from_frames(dfs: Dict[str, Any], facts: Optional[Dict[str, Any]] = Non
                     if not name or (declared and name not in declared) or _is_total(name):
                         continue
                     slot = components.setdefault(name, {})
+                    own: Dict[str, float] = {}
                     for col in cols:
                         value = row[col]
                         if isinstance(value, (int, float)) and value == value:
                             slot[str(col)] = slot.get(str(col), 0.0) + float(value)
+                            own[str(col)] = float(value)
+                    row_list.append((name, own))
             except Exception:
                 components = {}
+                row_list = []
         notes_parts: List[str] = []
         for bucket in ("supporting_notes", "adjacent_detail_rows", "table_linked_remarks"):
             for item in (attrs.get(bucket) or []):
@@ -864,5 +878,6 @@ def views_from_frames(dfs: Dict[str, Any], facts: Optional[Dict[str, Any]] = Non
             components=components,
             notes=" ".join(notes_parts)[:4000],
             has_detail=bool(components),
+            rows=row_list,
         )
     return views

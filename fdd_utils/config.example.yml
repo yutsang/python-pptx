@@ -96,6 +96,7 @@ dashscope:
     - id: "kimi-k2.6_chat"
       kind: chat
       label: "Kimi-K2.6"
+      listed: false   # 2026-10-21: gateway answers "Access Denied" for this account -- hidden from the dropdown
     - id: "dashscope_deepseek-v4-flash-0731"
       kind: chat
       label: "DeepSeek-V4-Flash"
@@ -138,6 +139,13 @@ agents:
     materiality_threshold_pct: 5
 
 processing:
+  # Cell styles (Excel indent / bold) of each tab, read straight from the .xlsx
+  # zip. Their only use is the indent-based roll-up check: an indented line
+  # whose parent already equals the sum of its children is treated as a
+  # breakdown of that parent rather than as a separate line. false skips the
+  # read entirely (a real databook once spent 20 minutes on it, before the
+  # read was rewritten on 2026-10-21) at the cost of that check.
+  read_cell_styles: true
   data_format_for_ai: "json"
   # Per-account example sentences from mappings.yml go into the Generator
   # prompt. They were written when a much weaker local model needed a concrete
