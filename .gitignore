@@ -156,3 +156,4 @@ dp_packing_report.txt
 
 # Recorded eval baselines are keyed to per-machine databooks -- never commit
 ad-hoc/workbench/golden_verdicts.json
+fdd_deploy_*.zip
