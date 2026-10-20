@@ -3236,7 +3236,16 @@ def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
     return combined
 
 
-def inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
+def inspect_one(*args, **kwargs) -> Dict[str, Any]:
+    """_inspect_one, with sections 1-4 and the AI run sharing ONE extraction of
+    the workbook (fdd_utils.workbook.reuse_extraction) instead of paying for it
+    twice."""
+    from fdd_utils.workbook import reuse_extraction
+    with reuse_extraction():
+        return _inspect_one(*args, **kwargs)
+
+
+def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                  model_type: str, model_name: Optional[str], limit: Optional[int] = None,
                  workers: Optional[int] = None, dump_tab_name: Optional[str] = None,
                  accounts: Optional[List[str]] = None, export_pptx: bool = False,

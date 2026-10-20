@@ -13,6 +13,7 @@ import warnings
 import os
 import re
 import logging
+import threading
 import time
  
 warnings.simplefilter(action='ignore', category=UserWarning)
@@ -376,6 +377,34 @@ def _merge_normalization_error_reasons(resolution: Dict[str, Any], profiles: Dic
     resolution["unresolved_sheets"] = sorted(entries, key=lambda entry: str(entry.get("sheet_name")))
 
 
+#: Opt-in reuse of one extraction within a single caller's scope (see
+#: reuse_extraction). Off by default: the app re-extracts on every Process Data.
+#: Per thread, so --entity-workers entities never share or reset each other's.
+_EXTRACTION_REUSE = threading.local()
+
+
+class reuse_extraction:
+    """Within this block, a second identical extract_normalized_data_from_excel
+    call gets a deep copy of the first one's result instead of redoing it.
+
+    inspect_databook extracts every workbook twice -- once for its free
+    sections 1-4, once inside process_workbook_data for the AI run -- with the
+    same path, entity, mode and overrides. On a real 49-tab databook that is the
+    whole resolve/normalize/digest pass paid twice. A pristine copy is kept and
+    a fresh deep copy handed out, so neither caller can see what the other
+    mutates (authority overrides, digest reach marks).
+    """
+
+    def __enter__(self):
+        self._previous = getattr(_EXTRACTION_REUSE, "cache", None)
+        _EXTRACTION_REUSE.cache = {}
+        return self
+
+    def __exit__(self, *exc):
+        _EXTRACTION_REUSE.cache = self._previous
+        return False
+
+
 def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=None, mapping_overrides=None):
     """
     Build integrity-aware normalized schedule payloads for the workbook.
@@ -383,6 +412,27 @@ def extract_normalized_data_from_excel(databook_path, mode="All", entity_name=No
     Returns:
         Tuple of (normalized_results, workbook_list, overall_result_type, report_language, resolution)
     """
+    cache = getattr(_EXTRACTION_REUSE, "cache", None)
+    if cache is None:
+        return _extract_normalized_data_from_excel(databook_path, mode, entity_name, mapping_overrides)
+    import copy
+    try:
+        key = (os.path.abspath(str(databook_path)), os.path.getmtime(databook_path), mode,
+               entity_name or "", repr(sorted((mapping_overrides or {}).items())))
+    except OSError:
+        return _extract_normalized_data_from_excel(databook_path, mode, entity_name, mapping_overrides)
+    if key in cache:
+        result = copy.deepcopy(cache[key])
+        timings = (result[4] or {}).get("timings") if isinstance(result[4], dict) else None
+        if isinstance(timings, dict):
+            result[4]["timings"] = {"reused_extraction": 0.0}
+        return result
+    result = _extract_normalized_data_from_excel(databook_path, mode, entity_name, mapping_overrides)
+    cache[key] = copy.deepcopy(result)
+    return result
+
+
+def _extract_normalized_data_from_excel(databook_path, mode="All", entity_name=None, mapping_overrides=None):
     overall_started = time.perf_counter()
     profiles_started = time.perf_counter()
     profiles = profile_workbook(databook_path)

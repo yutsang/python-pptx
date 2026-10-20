@@ -282,6 +282,7 @@ from .databook import (  # noqa: F401
     build_dataframes_from_normalized_results,
     detect_databook_language,
     extract_data_from_excel,
+    reuse_extraction,
     extract_normalized_data_from_excel,
     filter_detail_accounts,
     filter_zero_value_rows,
