@@ -448,14 +448,19 @@ def build_section_summaries(
                 summary = PowerPointGenerator.generate_section_fallback(
                     joined, is_chinese=is_chinese_db)
             else:
-                summary = PowerPointGenerator.generate_section_summary(
-                    joined,
-                    is_chinese=is_chinese_db,
-                    language=("chinese" if is_chinese_db else "english"),
-                    model_type=model_type,
-                    model_name=model_name,
-                    preface=statement_text,
-                )
+                # Its AIClient keeps the default agent name ("agent_1", whose
+                # sampling config it relies on), so the usage ledger could not
+                # tell these calls from any other -- the stage is named here.
+                from .. import usage_ledger
+                with usage_ledger.scope(stage=f"executive_summary_{stmt}"):
+                    summary = PowerPointGenerator.generate_section_summary(
+                        joined,
+                        is_chinese=is_chinese_db,
+                        language=("chinese" if is_chinese_db else "english"),
+                        model_type=model_type,
+                        model_name=model_name,
+                        preface=statement_text,
+                    )
             if not summary:
                 summary = PowerPointGenerator.generate_section_fallback(
                     joined, is_chinese=is_chinese_db)
@@ -521,7 +526,36 @@ def build_section_summaries(
             "back to spliced first sentences): %s", label or "?", exc,
         )
         return {}
+    _save_section_summaries(run_folder, section_summaries, model_type, model_name, grounding_out)
     return section_summaries
+
+
+#: Written next to results.yml, so a later offline re-export
+#: (inspect_databook.py --from-run) ships the summary this run's deck shipped
+#: instead of paying for a new one -- or, without it, a different band.
+SECTION_SUMMARIES_FILE = "section_summaries.json"
+
+
+def _save_section_summaries(run_folder: Optional[str], summaries: Dict[str, str],
+                            model_type: Optional[str], model_name: Optional[str],
+                            grounding: Optional[Dict[str, Any]]) -> None:
+    if not run_folder or not summaries:
+        return
+    try:
+        import json
+        import os
+        from datetime import datetime
+        record = {
+            "written_at": datetime.now().isoformat(timespec="seconds"),
+            "model_type": model_type, "model_name": model_name,
+            "summaries": dict(summaries),
+            "deterministic_fallback": {stmt: bool((grounding or {}).get(stmt, {}).get("deterministic_fallback"))
+                                       for stmt in summaries},
+        }
+        with open(os.path.join(str(run_folder), SECTION_SUMMARIES_FILE), "w", encoding="utf-8") as fh:
+            json.dump(record, fh, ensure_ascii=False, indent=1)
+    except Exception as exc:  # a lost copy must never cost the export
+        logger.warning("Could not save the executive summaries to the run folder: %s", exc)
 
 
 # ---------------------------------------------------------------------------

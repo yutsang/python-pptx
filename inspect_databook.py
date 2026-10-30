@@ -2788,6 +2788,7 @@ def export_and_inspect_pptx(
     databook_path: str, sheet_name: Optional[str], dfs: Dict[str, pd.DataFrame], ai_results: Dict[str, Any],
     language: str, model_type: str, out_path: str, model_name: Optional[str] = None,
     financials_from: Optional[str] = None,
+    offline_summaries: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """Runs the FULL remaining pipeline (build payloads -> export .pptx),
     captures every [PPTX] stdout line and fdd_utils.pptx logger record
@@ -2797,6 +2798,7 @@ def export_and_inspect_pptx(
     file — all in one pass, no separate manual export+inspect steps."""
     _hr("8. PPTX EXPORT (build payloads -> export .pptx, capturing logs)")
     from fdd_utils.pptx import build_pptx_structured_payloads, export_pptx_from_structured_data_combined
+    from fdd_utils.pptx.helpers import _rendered_bullet_label
     from fdd_utils.workbook import find_mapping_key
     from fdd_utils.workbook import synthesize_balance_sheet_and_income_statement
     import inspect_pptx as _inspect_pptx
@@ -2864,6 +2866,7 @@ def export_and_inspect_pptx(
         _dropped.append((_mk, _attrs.get("any_period_nonzero_by_description"),
                          _attrs.get("prompt_analysis_stage"),
                          list(getattr(_df, "columns", [])) or None))
+    _dropped_before_export = list(_dropped)
     if _dropped:
         print(f"\n⚠️  {len(_dropped)} account(s) had commentary generated but were DROPPED "
               f"before the deck (paid-for AI output that never ships):")
@@ -2886,18 +2889,25 @@ def export_and_inspect_pptx(
     from fdd_utils.ui import build_section_summaries
     _summary_started_at = time.perf_counter()
     _summary_grounding = {}
-    section_summaries = build_section_summaries(
-        ai_results=ai_results,
-        mappings=mappings,
-        is_chinese_db=is_chinese,
-        model_type=model_type,
-        model_name=model_name,
-        label=Path(databook_path).stem,
-        grounding_out=_summary_grounding,
-        bs_is_results=bs_is_results,
-    )
-    print(f"\nExecutive summaries generated: {sorted(section_summaries) or 'NONE (band will use the spliced fallback)'}"
-          f"  [{time.perf_counter() - _summary_started_at:.1f}s]")
+    if offline_summaries is not None:
+        # --from-run: the summaries the run already wrote, never a new model call.
+        section_summaries = dict(offline_summaries)
+        print(f"\nExecutive summaries reused from the run: {sorted(section_summaries) or 'NONE'}"
+              + ("" if {"BS", "IS"} <= set(section_summaries)
+                 else "  (missing ones use the exporter's deterministic page summary)"))
+    else:
+        section_summaries = build_section_summaries(
+            ai_results=ai_results,
+            mappings=mappings,
+            is_chinese_db=is_chinese,
+            model_type=model_type,
+            model_name=model_name,
+            label=Path(databook_path).stem,
+            grounding_out=_summary_grounding,
+            bs_is_results=bs_is_results,
+        )
+        print(f"\nExecutive summaries generated: {sorted(section_summaries) or 'NONE (band will use the spliced fallback)'}"
+              f"  [{time.perf_counter() - _summary_started_at:.1f}s]")
     for _stmt, _grounding in sorted(_summary_grounding.items()):
         _dropped = len(_grounding.get("dropped_sentences") or [])
         if _grounding.get("ungrounded"):
@@ -3024,7 +3034,220 @@ def export_and_inspect_pptx(
         "stage_times": stage_times,
         "layout": layout,
         "population": population,
+        "dropped_accounts": [str(d[0]) for d in _dropped_before_export],
+        "payload_labels": {
+            statement: [_rendered_bullet_label(item, is_chinese) for item in items]
+            for statement, items in payloads.items()
+        },
     }
+
+
+def _write_run_identity(path: str, ai_summary: Dict[str, Any], **identity: Any) -> None:
+    """run_identity.json next to the run's results.yml, so --from-run can prove
+    later that this commentary was written from this workbook."""
+    results = (ai_summary or {}).get("results") or {}
+    run_folder = ((results.get("__run__") or {}).get("run_folder")) if isinstance(results, dict) else None
+    if not run_folder:
+        return
+    try:
+        from fdd_utils import run_identity
+        accounts = [k for k in results if not str(k).startswith("__")]
+        written = run_identity.write_identity(
+            str(run_folder), run_identity.build_identity(workbook=path, entity=identity.pop("entity_name"),
+                                                         accounts=accounts, **identity))
+        if written:
+            print(f"🪪 run identity saved: {written}  (re-export later with --from-run "
+                  f"{Path(str(run_folder)).name.replace('run_', '')})")
+    except Exception as exc:
+        print(f"  (run identity not saved: {type(exc).__name__}: {exc})")
+
+
+#: Layout findings that fail an offline re-export, by the text inspect_pptx
+#: writes for them -- the three CLAUDE.md names plus a collapsed L/R page.
+_REEXPORT_BLOCKING = (
+    ("overflow", "OVERFLOW RISK"),
+    ("placeholder_leak", "PLACEHOLDER LEAKED"),
+    ("table_overlap", "table overlaps"),
+    ("lr_collision", "L/R collision"),
+)
+
+
+def _classify_layout_warning(detail: str) -> str:
+    for kind, needle in _REEXPORT_BLOCKING:
+        if needle.lower() in detail.lower():
+            return kind
+    for kind, needle in (("under_filled", "under-filled"), ("autofit_shrink", "AUTOFIT SHRINK"),
+                         ("full_legal_name", "FULL LEGAL NAME"), ("summary", "summary"), ("table", "table")):
+        if needle.lower() in detail.lower():
+            return kind
+    return "other"
+
+
+def reexport_from_run(
+    path: str, run: str, ai_dfs: Dict[str, pd.DataFrame], language: str, selected_sheet: Optional[str],
+    entity_name: str, *, financials_from: Optional[str], financials_sheet: Optional[str], out_path: str,
+    model_type: str, model_name: Optional[str], summary_fallback: bool = False,
+    allow_unverified: bool = False,
+) -> Dict[str, Any]:
+    """Lay out a previous run's commentary again with the current code, no model calls.
+
+    For layout, packing and table work: the text stays fixed between attempts,
+    so a change in the deck is the change in the code. Checked first, and each
+    failure named in the verdict:
+
+      * identity -- run_identity.json's workbook/Financials hashes, entity,
+        sheet and language against this invocation (runs that predate it, or
+        were started from the app, have none: noted, and the per-account
+        check below carries the proof);
+      * data -- each account's frame fingerprint, taken after the same
+        subtable settlement the pipeline does, against its last checkpoint
+        line. A workbook edited since the run fails here, account by account;
+      * summaries -- section_summaries.json, or --summary-fallback for the
+        exporter's deterministic page summary;
+      * model calls -- AIClient.get_response is blocked for the whole export;
+        any attempt is recorded and fails the run;
+      * the deck -- no overflow, placeholder leak, table-over-text or
+        collapsed L/R page; every account with commentary on a slide; at
+        least one content slide.
+
+    Verdict PASS / FAIL / UNVERIFIED (--allow-unverified got past an identity
+    or data mismatch). Written to <deck>.reexport.json next to the deck.
+    """
+    _hr(f"5R. OFFLINE RE-EXPORT FROM RUN {run} (no model calls)")
+    from fdd_utils import run_identity
+    from fdd_utils.ai.evidence import frame_fingerprint
+    from fdd_utils.ai.pipeline import settle_subtable_selection
+
+    report: Dict[str, Any] = {"run": run, "verdict": "FAIL", "problems": [], "notes": [],
+                              "deck": str(Path(out_path).resolve())}
+    report_path = Path(out_path).with_suffix(".reexport.json")
+
+    def _finish() -> Dict[str, Any]:
+        mismatch = report.pop("_identity_mismatch", False)
+        if not report["problems"]:
+            report["verdict"] = "UNVERIFIED" if mismatch else "PASS"
+        try:
+            report_path.write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str),
+                                   encoding="utf-8")
+        except Exception as exc:
+            print(f"  (report not written: {exc})")
+        print(f"\nRE-EXPORT VERDICT: {report['verdict']}  ({len(report['problems'])} problem(s), "
+              f"{len(report.get('provider_call_attempts') or [])} model call(s) attempted)")
+        for problem in report["problems"]:
+            print(f"  ❌ {problem}")
+        for note in report["notes"]:
+            print(f"  ℹ️  {note}")
+        print(f"  report: {report_path.resolve()}")
+        return report
+
+    folder = run_identity.resolve_run_folder(run)
+    if not folder:
+        report["problems"].append(f"no run folder with a results.yml for {run!r} under fdd_utils/logs")
+        return _finish()
+    report["run_folder"] = folder
+    loaded = run_identity.load_run(folder)
+    results = loaded["results"]
+    accounts = [k for k, v in results.items() if not str(k).startswith("__") and isinstance(v, dict)]
+    run_accounts = list((((results.get("__run__") or {}).get("state") or {}).get("accounts") or {})) or accounts
+    settle_subtable_selection([k for k in run_accounts if k in ai_dfs], ai_dfs)
+
+    current = run_identity.build_identity(
+        workbook=path, entity=entity_name, sheet=selected_sheet, financials_from=financials_from,
+        financials_sheet=financials_sheet, language=language, model_type=model_type,
+        model_name=model_name, accounts=accounts)
+    saved = loaded["identity"]
+    report["identity"] = {"run": saved, "now": current}
+    mismatches: List[str] = []
+    if saved:
+        mismatches += [f"identity differs -- {m}" for m in run_identity.compare_identity(saved, current)]
+    else:
+        report["notes"].append("the run has no run_identity.json (started from the app, or before it "
+                               "existed): only the per-account data fingerprints prove its source")
+    fingerprints = loaded["fingerprints"]
+    missing = [k for k in accounts if k not in ai_dfs]
+    changed = [k for k in accounts if k in ai_dfs and fingerprints.get(k)
+               and fingerprints[k] != frame_fingerprint(ai_dfs[k])]
+    unprinted = [k for k in accounts if k in ai_dfs and not fingerprints.get(k)]
+    mismatches += [f"account not in this workbook's frames: {k}" for k in missing]
+    mismatches += [f"account data differs from the run's (fingerprint): {k}" for k in changed]
+    if unprinted and not saved:
+        mismatches.append(f"{len(unprinted)} account(s) carry no data fingerprint and the run no identity "
+                          f"file, so nothing ties them to this workbook: {', '.join(unprinted[:8])}")
+    report["accounts"] = {"in_run": len(accounts), "fingerprint_matched": len(accounts) - len(missing)
+                          - len(changed) - len(unprinted), "changed": changed, "missing": missing,
+                          "no_fingerprint": unprinted}
+    print(f"  run folder: {folder}")
+    print(f"  accounts: {len(accounts)} in the run, {report['accounts']['fingerprint_matched']} with matching "
+          f"data, {len(changed)} changed, {len(missing)} missing, {len(unprinted)} without a fingerprint")
+    if mismatches and not allow_unverified:
+        report["problems"] += mismatches
+        report["problems"].append("not re-exported: the commentary may not describe this workbook "
+                                  "(--allow-unverified to lay it out anyway)")
+        return _finish()
+    if mismatches:
+        report["notes"] += mismatches
+        report["_identity_mismatch"] = True
+
+    summaries = loaded["summaries"]
+    if summaries:
+        report["summaries"] = {stmt: "saved" for stmt in summaries}
+    elif summary_fallback:
+        summaries = {}
+        report["summaries"] = "deterministic page summary (--summary-fallback)"
+        report["notes"].append("no saved executive summary: the band uses the exporter's deterministic "
+                               "page summary, so it differs from the original deck")
+    else:
+        report["problems"].append("the run saved no executive summary (section_summaries.json); "
+                                  "pass --summary-fallback to use the deterministic page summary")
+        return _finish()
+
+    pptx_summary: Optional[Dict[str, Any]] = None
+    with run_identity.offline_provider_block() as attempts:
+        try:
+            with _compact("8-10 PPTX export + layout",
+                          keep=("DROPPED", "⚠️", "OVERFLOW RISK", "OVERLAPS REAL TEXT",
+                                "LEAKED", "warning(s) found")):
+                pptx_summary = export_and_inspect_pptx(
+                    path, selected_sheet, ai_dfs, results, language, model_type, out_path,
+                    model_name=model_name, financials_from=financials_from, offline_summaries=summaries,
+                )
+        except Exception as exc:
+            report["problems"].append(f"export failed: {type(exc).__name__}: {exc}")
+    report["provider_call_attempts"] = list(attempts)
+    if attempts:
+        report["problems"].append(f"{len(attempts)} model call(s) attempted during the re-export "
+                                  f"(blocked; first: {attempts[0]})")
+    report["environment"] = {"run": {k: (saved or {}).get(k) for k in ("code_revision", "config_sha256",
+                                                                         "template_sha256")},
+                             "now": run_identity.environment_fingerprint()}
+    if not pptx_summary:
+        return _finish()
+    report["pptx"] = {"out_path": pptx_summary.get("out_path")}
+    layout = pptx_summary.get("layout") or {}
+    by_kind: Dict[str, List[str]] = {}
+    for detail in layout.get("warning_details") or []:
+        by_kind.setdefault(_classify_layout_warning(str(detail)), []).append(str(detail))
+    report["layout"] = {"total_slides": layout.get("total_slides"), "content_slides": layout.get("content_slides"),
+                        "warnings_by_kind": by_kind}
+    for kind, _needle in _REEXPORT_BLOCKING:
+        for detail in by_kind.get(kind, []):
+            report["problems"].append(f"layout {kind}: {detail}")
+    if not layout.get("content_slides"):
+        report["problems"].append("the deck has no content slide this project's template names")
+    for dropped in pptx_summary.get("dropped_accounts") or []:
+        report["problems"].append(f"commentary never reached the deck: {dropped}")
+    try:
+        from pptx import Presentation
+        deck_text = "\n".join(shape.text_frame.text for slide in Presentation(out_path).slides
+                              for shape in slide.shapes if getattr(shape, "has_text_frame", False))
+        absent = [label for labels in (pptx_summary.get("payload_labels") or {}).values()
+                  for label in labels if f"■ {label}" not in deck_text]
+        report["accounts"]["absent_from_deck"] = absent
+        for label in absent:
+            report["problems"].append(f"account has no bullet in the deck: {label}")
+    except Exception as exc:
+        report["notes"].append(f"deck coverage not checked: {type(exc).__name__}: {exc}")
+    return _finish()
 
 
 def analyze_population_fill(
@@ -3267,7 +3490,9 @@ def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool
                  workers: Optional[int] = None, dump_tab_name: Optional[str] = None,
                  accounts: Optional[List[str]] = None, export_pptx: bool = False,
                  pptx_out_dir: Optional[str] = None, financials_from: Optional[str] = None,
-                 financials_sheet: Optional[str] = None, resume_from: Optional[str] = None) -> Dict[str, Any]:
+                 financials_sheet: Optional[str] = None, resume_from: Optional[str] = None,
+                 from_run: Optional[str] = None, summary_fallback: bool = False,
+                 allow_unverified: bool = False) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
     _file_started = time.perf_counter()
     _CAPTURE.times = []
@@ -3436,7 +3661,7 @@ def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool
         except Exception as _exc:
             print(f"  (insight summary failed: {type(_exc).__name__}: {_exc})")
 
-    if run_ai:
+    if run_ai or from_run:
         # sheet_names is legitimately [] here when no Financials-like sheet was
         # found (see above) -- process_workbook_data's selected_sheet and
         # run_ai_checks's sheet_name (which it never actually uses -- see
@@ -3452,6 +3677,20 @@ def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool
             financials_from=financials_from, fallback_dfs=dfs,
         )
         _section_times().append(("process_workbook_data", time.perf_counter() - _frames_started))
+        if from_run:
+            Path(pptx_out_path).parent.mkdir(parents=True, exist_ok=True)
+            summary["reexport"] = reexport_from_run(
+                path, from_run, ai_dfs, language, selected_sheet_for_ai, entity_name,
+                financials_from=financials_from, financials_sheet=financials_sheet,
+                out_path=pptx_out_path, model_type=model_type, model_name=model_name,
+                summary_fallback=summary_fallback, allow_unverified=allow_unverified,
+            )
+            if isinstance(summary["reexport"].get("pptx"), dict):
+                summary["pptx"] = summary["reexport"]["pptx"]
+            _total = time.perf_counter() - _file_started
+            summary["timings"] = list(_section_times())
+            print(f"TIME {_total:.0f}s: " + " · ".join(f"{label} {secs:.0f}s" for label, secs in _section_times()))
+            return summary
         # --accounts narrows the run to read the commentary itself (5c), so
         # nothing is hidden then.
         _ai_quiet = nullcontext() if accounts else _compact(
@@ -3467,6 +3706,9 @@ def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool
             )
         summary["ai"] = ai_summary
         _record_scorecard(path, model_type, model_name, ai_summary)
+        _write_run_identity(path, ai_summary, entity_name=entity_name, sheet=selected_sheet_for_ai,
+                            financials_from=financials_from, financials_sheet=financials_sheet,
+                            language=language, model_type=model_type, model_name=model_name)
 
         if export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
             out_path = pptx_out_path            # resolved and lock-checked up front
@@ -3831,6 +4073,20 @@ def main() -> int:
                          "checkpoint.jsonl (fdd_utils/logs/run_<RUN_ID>/), so only the stages it "
                          "did not reach are paid for again. A run that died at the eighteenth "
                          "account used to restart from zero. One databook at a time.")
+    ap.add_argument("--from-run", default=None, metavar="RUN_ID",
+                    help="OFFLINE re-export, zero model calls: lay out the commentary and executive "
+                         "summaries a previous run already produced (fdd_utils/logs/run_<RUN_ID>/) with "
+                         "the CURRENT payload/packing/PPTX code, then inspect the deck. The run's workbook "
+                         "identity and per-account data fingerprints are checked first; any model call is "
+                         "blocked and fails the check. Implies --export-pptx; not with --run-ai. Exits 1 "
+                         "unless the verdict is PASS. Writes <deck>.reexport.json.")
+    ap.add_argument("--summary-fallback", action="store_true",
+                    help="with --from-run: when the run saved no executive summary (runs before "
+                         "section_summaries.json existed), use the exporter's deterministic page "
+                         "summary instead of failing. The summary band then differs from the original deck.")
+    ap.add_argument("--allow-unverified", action="store_true",
+                    help="with --from-run: re-export even when the run's identity or an account's data "
+                         "fingerprint does not match this workbook. The verdict says UNVERIFIED.")
     ap.add_argument("--financials-sheet", default=None, metavar="SHEET_NAME",
                     help="sheet name within --financials-from to use as the Financials summary "
                          "(e.g. '南通通海Financials'). No auto-matching by entity name -- named "
@@ -3919,8 +4175,14 @@ def main() -> int:
     except Exception as _exc:
         print(f"Per-account subtables: could not resolve setting ({_exc})")
 
-    if args.export_pptx and not args.run_ai:
-        print("❌ --export-pptx requires --run-ai (it needs AI-generated commentary to build the PPTX payloads).")
+    if args.from_run and args.run_ai:
+        print("❌ --from-run re-exports a previous run's commentary with no model calls; drop --run-ai.")
+        return 1
+    if args.from_run:
+        args.export_pptx = True
+    if args.export_pptx and not args.run_ai and not args.from_run:
+        print("❌ --export-pptx needs commentary: --run-ai to generate it, or --from-run <RUN_ID> to "
+              "re-export a previous run's offline.")
         return 1
 
     if bool(args.financials_from) != bool(args.financials_sheet):
@@ -4038,7 +4300,8 @@ def main() -> int:
                            export_pptx=args.export_pptx, pptx_out_dir=args.pptx_out,
                            financials_from=args.financials_from or (str(auto_hit[0]) if auto_hit else None),
                            financials_sheet=args.financials_sheet or (auto_hit[1] if auto_hit else None),
-                           resume_from=args.resume)
+                           resume_from=args.resume, from_run=args.from_run,
+                           summary_fallback=args.summary_fallback, allow_unverified=args.allow_unverified)
 
     def _failed(f, exc) -> Dict[str, Any]:
         print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
@@ -4201,6 +4464,10 @@ def main() -> int:
                   f"entity, and its\n     own slides carry no commentary. The preview file is "
                   f"still on disk.")
         print("\n     (the per-entity previews are kept as well)")
+    if args.from_run:
+        verdicts = [str((entry.get("reexport") or {}).get("verdict") or "FAIL")
+                    for entry in summaries if isinstance(entry, dict)]
+        return 0 if verdicts and all(v == "PASS" for v in verdicts) else 1
     return 0
 
 

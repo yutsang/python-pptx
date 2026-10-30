@@ -157,3 +157,8 @@ dp_packing_report.txt
 # Recorded eval baselines are keyed to per-machine databooks -- never commit
 ad-hoc/workbench/golden_verdicts.json
 fdd_deploy*.zip
+
+# inspect_databook.py --export-pptx / --from-run output: decks and their .reexport.json
+# reports name client workbooks and accounts.
+pptx_previews/
+*.reexport.json
