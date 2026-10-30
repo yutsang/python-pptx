@@ -3480,7 +3480,11 @@ def inspect_one(*args, **kwargs) -> Dict[str, Any]:
     from fdd_utils.workbook import reuse_extraction
     path = args[0] if args else kwargs.get("path", "")
     entity = (args[2] if len(args) > 2 else kwargs.get("entity_name")) or None
-    with reuse_extraction(), usage_ledger.scope(session="cli", file=Path(str(path)).name, entity=entity):
+    # One session per invocation and file. A constant "cli" merged every CLI run
+    # of a workbook into one, so usage_summary.py counted a second run's calls
+    # as retries of the first.
+    session = f"cli-{time.strftime('%Y%m%d_%H%M%S')}"
+    with reuse_extraction(), usage_ledger.scope(session=session, file=Path(str(path)).name, entity=entity):
         usage_ledger.record_event("cli_run", run_ai=bool(args[3] if len(args) > 3 else kwargs.get("run_ai")))
         return _inspect_one(*args, **kwargs)
 

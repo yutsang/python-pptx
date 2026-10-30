@@ -107,7 +107,9 @@ def summarise(rows: List[Dict[str, Any]], top: int = 10) -> str:
                                                           for r in sent).most_common()))
 
     # Repeats: the first call for (session, file, account, stage) is the plan;
-    # every further one was a retry, a patch or a re-run.
+    # every further one was a retry, a patch or a re-run. Until 2026-10-30 every
+    # CLI run logged session "cli", so two CLI runs of one workbook read as one
+    # run with every call of the second counted here.
     seen: Counter = Counter()
     repeat_calls = repeat_tokens = 0
     for r in sorted(sent, key=lambda r: str(r.get("time") or "")):
