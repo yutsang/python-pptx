@@ -673,11 +673,15 @@ def inspect_pptx(pptx_path: str, config: dict, *, quiet: bool = False, dump_text
                 # then net book value -- where only the middle block was given a
                 # heading row, so the third block reads as the first one repeated
                 # with different numbers against the same account names.
-                _print(f"  ⚠️  SAME LABEL, DIFFERENT NUMBERS: {_label!r} at r{_first} "
-                       f"and r{_again}; a block heading is probably missing between them")
+                # Named by the table's own title band: the shape name ("Table
+                # 15") says nothing, and a pasted run could not tell which
+                # account's table this was without opening the deck.
+                _print(f"  ⚠️  SAME LABEL, DIFFERENT NUMBERS in {tbl.cell(0, 0).text.strip()!r}: "
+                       f"{_label!r} at r{_first} and r{_again}; a block heading is probably "
+                       f"missing between them")
                 warning_details.append(
-                    f"Slide {slide_idx + 1}: table {_t.name!r} reuses a label at rows "
-                    f"{_first} and {_again}")
+                    f"Slide {slide_idx + 1}: table {_t.name!r} ({tbl.cell(0, 0).text.strip()}) reuses a "
+                    f"label at rows {_first} and {_again}")
                 _tbl_warnings += 1
             if dup_labels:
                 # The whole label column on one line, with the sign of each

@@ -3238,7 +3238,16 @@ def reexport_from_run(
         report["problems"].append(f"commentary never reached the deck: {dropped}")
     try:
         from pptx import Presentation
-        deck_text = "\n".join(shape.text_frame.text for slide in Presentation(out_path).slides
+        _deck = Presentation(out_path)
+        # Which tables were drawn, by their title band and data-row count, so a
+        # pasted verdict says which account a table warning is about and how
+        # long each table came out.
+        tables = [(index, shape.table.cell(0, 0).text.strip(), len(shape.table.rows) - 2)
+                  for index, slide in enumerate(_deck.slides, 1) for shape in slide.shapes
+                  if getattr(shape, "has_table", False)]
+        report["layout"]["tables"] = [{"slide": i, "title": t, "data_rows": n} for i, t, n in tables]
+        print("  tables drawn: " + " · ".join(f"s{i} {t or '(untitled)'} {n}行" for i, t, n in tables))
+        deck_text = "\n".join(shape.text_frame.text for slide in _deck.slides
                               for shape in slide.shapes if getattr(shape, "has_text_frame", False))
         absent = [label for labels in (pptx_summary.get("payload_labels") or {}).values()
                   for label in labels if f"■ {label}" not in deck_text]

@@ -1898,7 +1898,8 @@ _LEDGER_LINE = re.compile(r"^\s*[*＊]")
 
 def _ledger_grouped_rows(row_entries: List[Dict[str, Any]],
                          stage_columns: List[Dict[str, Any]]) -> Optional[List[Dict[str, Any]]]:
-    """The schedule's account rows, each carrying its * ledger lines as children.
+    """The schedule's account rows, each carrying its lines (* ledger lines, or
+    breakdown rows on a sheet with no *) as children.
 
     The breakdown-only synthesis below keeps the rows _row_type called
     "breakdown" and nothing else. On a sheet laid out as account rows with
@@ -1922,17 +1923,35 @@ def _ledger_grouped_rows(row_entries: List[Dict[str, Any]],
         return float(v) if isinstance(v, (int, float)) and v == v else 0.0
 
     body = [e for e in row_entries if str(e.get("row_type") or "").lower() not in ("total", "subtotal")]
-    if sum(1 for e in body if _LEDGER_LINE.match(str(e.get("description") or ""))) < 2:
+    # Which rows are lines under an account. Where the sheet marks them with *,
+    # the * says so whatever _row_type called each one (安永 under 预提费用 is
+    # typed "detail"). Where it does not, the breakdown rows are the lines: a
+    # real Kunshan 营业收入 lists its ten tenants under 租金收入 and again under
+    # 物业管理费收入, and the breakdown-only table printed all twenty with each
+    # name twice and neither revenue line. That second reading must find at
+    # least two accounts with lines -- one header over its own items is the
+    # ordinary breakdown table, and grouping it would fold the items away.
+    starred = sum(1 for e in body if _LEDGER_LINE.match(str(e.get("description") or ""))) >= 2
+
+    def is_line(entry: Dict[str, Any]) -> bool:
+        if starred:
+            return bool(_LEDGER_LINE.match(str(entry.get("description") or "")))
+        return str(entry.get("row_type") or "").lower() == "breakdown"
+
+    if not starred and sum(1 for e in body if is_line(e)) < 2:
         return None
     groups: List[Tuple[Dict[str, Any], List[Dict[str, Any]]]] = []
     for entry in body:
-        if _LEDGER_LINE.match(str(entry.get("description") or "")):
+        if is_line(entry):
             if not groups:
                 return None
             groups[-1][1].append(entry)
         else:
             groups.append((entry, []))
-    totals = [e for e in row_entries if str(e.get("row_type") or "").lower() == "total"]
+    totals = ([e for e in row_entries if str(e.get("row_type") or "").lower() == "total"]
+              or [e for e in row_entries if str(e.get("row_type") or "").lower() == "subtotal"])
+    if not totals:
+        return None
     latest = next((c for c in reversed(stage_columns)
                    if any(abs(value(t, c)) > 1e-9 for t in totals)), stage_columns[-1])
     total_now = max((value(t, latest) for t in totals), key=abs, default=None)
@@ -1944,7 +1963,7 @@ def _ledger_grouped_rows(row_entries: List[Dict[str, Any]],
               if lines or total_now is None or abs(total_now) <= 1e-9 or len(groups) < 3
               or abs(value(parent, latest) - total_now) > tolerance(total_now)]
     accounts_with_lines = [(parent, lines) for parent, lines in groups if lines]
-    if len(groups) < 2 or not accounts_with_lines:
+    if len(groups) < 2 or not accounts_with_lines or (not starred and len(accounts_with_lines) < 2):
         return None
     tied = 0
     for parent, lines in accounts_with_lines:
@@ -1975,6 +1994,14 @@ def _ledger_grouped_rows(row_entries: List[Dict[str, Any]],
             "children": [{"label": str(l.get("description") or "").strip(), "values": figures(l)}
                          for l in lines if has_figures(l)],
         })
+    # And the accounts must add up to the table's total. Each account tying to
+    # its own lines says nothing about rows with no lines of their own: a real
+    # Foshan 营业成本 has Depreciation above Buildings / Machinery / Renovation,
+    # all typed detail, and read as peers they listed the depreciation twice.
+    if total_now is not None and abs(sum(value(p, latest) for p, _ in groups
+                                          if has_figures(p) or any(has_figures(l) for l in _))
+                                      - total_now) > tolerance(total_now):
+        return None
     return rows if len(rows) >= 2 else None
 
 
