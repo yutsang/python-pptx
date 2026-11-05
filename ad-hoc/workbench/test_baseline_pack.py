@@ -337,7 +337,7 @@ class Pack(unittest.TestCase):
         w = World()
         out, plan, result = self.write(w)
         self.assertTrue(result["ok"], result)
-        names = {str(p.relative_to(out)) for p in out.rglob("*") if p.is_file()}
+        names = {p.relative_to(out).as_posix() for p in out.rglob("*") if p.is_file()}
         self.assertIn("databook/ClientNameDatabook.xlsx", names)
         self.assertIn("run/run_20260101_100000/results.yml", names)
         self.assertIn("run/run_20260101_100000/run_identity.json", names)
