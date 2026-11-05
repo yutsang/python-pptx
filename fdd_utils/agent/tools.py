@@ -308,6 +308,25 @@ def update_deck(session: SourceSession, path: str, out_path: str = "") -> Dict[s
     return out
 
 
+def find_capability(session: SourceSession, query: str, k: int = 8) -> Dict[str, Any]:
+    """Look up existing code by what it does, without reading files."""
+    from . import codemap
+    hits = codemap.get_map().find(str(query or ""), int(k or 8))
+    return {"query": query, "hits": hits, "searched": "names, docstrings, comments and module summaries of fdd_utils and the root scripts",
+            "limits": "English words match best (the code is documented in English); tests are looked for under ad-hoc/ only; "
+                      "a hit is a lead, not a verdict: read explain_capability before relying on it"}
+
+
+def explain_capability(session: SourceSession, name: str, source_lines: int = 0) -> Dict[str, Any]:
+    from . import codemap
+    return codemap.get_map().explain(str(name or ""), int(source_lines or 0))
+
+
+def code_overview(session: SourceSession, package: str = "") -> Dict[str, Any]:
+    from . import codemap
+    return codemap.get_map().overview(str(package or ""))
+
+
 _TOOLS: List[Tool] = [
     Tool("inspect_sources", "What was read: source version, statement source, which accounts are in scope and why not, hidden sheets, staleness.",
          {}, inspect_sources, reads_evidence=False),
@@ -363,6 +382,16 @@ _TOOLS += [
     Tool("adjustment_evidence", "Per period: the tab's total, the Financials total, the one the deck uses, the difference, the adjustment entries (N refs) "
          "behind it, whether they add up, and whether the difference has no explanation on the visible sheets.",
          {"account": {"type": "str", "required": True, "help": ""}}, I.adjustment_evidence),
+    Tool("find_capability", "Look up code that already exists (wrapping, character counts, packing, verification, formatting) by what it does. Returns signature, "
+         "what it touches, tests, callers and how many warning/measurement comments it carries. Use it before writing anything new.",
+         {"query": {"type": "str", "required": True, "help": "English words, e.g. 'characters per line wrap width'"},
+          "k": {"type": "int", "required": False, "help": "default 8, at most 20"}}, find_capability, reads_evidence=False),
+    Tool("explain_capability", "One existing function, method or class in detail: docstring, the comments that record why it is that way, who calls it, "
+         "what it calls and the tests that mention it; the source only if source_lines is set.",
+         {"name": {"type": "str", "required": True, "help": "full name from find_capability, or an unambiguous short name"},
+          "source_lines": {"type": "int", "required": False, "help": "lines of source to include, default 0, at most 120"}}, explain_capability, reads_evidence=False),
+    Tool("code_overview", "The modules of the code, one line each (a package prefix narrows it).",
+         {"package": {"type": "str", "required": False, "help": "e.g. 'fdd_utils/pptx'"}}, code_overview, reads_evidence=False),
 ]
 TOOLS: Dict[str, Tool] = {t.name: t for t in _TOOLS}
 

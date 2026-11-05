@@ -382,6 +382,29 @@ rebuild), and a round trip of the four local workbooks (every sheet equal as pan
 reads it, every account's fingerprint equal). Those four hold no indentation, bold or
 number formats at all, so the style path has only been exercised on a synthetic file.
 
+### 5.5 The code map
+
+`fdd_utils/agent/codemap.py` indexes the repo's own Python with the standard `ast`
+module (no import of the code, no model): every function, method and class with its
+signature, docstring, size, callers, callees and the tests that name it; what it
+touches (Streamlit, files, a provider, config, global state, python-pptx objects,
+PowerPoint COM, pandas); and the comment lines inside it that record a measurement,
+a revert or a warning. The agent looks code up with `find_capability`,
+`explain_capability` and `code_overview` instead of reading files, and decides for
+itself whether to use a piece as it is, wrap it, or rewrite it. The `reuse` field is a
+hint built only from those signals; it decides nothing.
+
+Limits that matter: callers, callees and tests are matched by name, so a name defined
+in several places lists all of them; tests are looked for under `ad-hoc/` only, and
+most of the hand-tuned layout code (wrapping, packing, measurement) has none, so
+its behaviour is pinned by its comments and by real PowerPoint output, not by a
+test; English words match best.
+
+```
+python ad-hoc/workbench/code_map.py find "characters per line wrap width"   free, seconds
+python ad-hoc/workbench/code_map.py explain <name> [--source 40]
+```
+
 ## 6. Deck lineage and returned decks
 
 An exported deck carries a manifest: per commentary paragraph, the account, slide,
