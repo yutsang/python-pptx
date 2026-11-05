@@ -1,0 +1,525 @@
+#!/usr/bin/env python3
+"""Combines the raw-data bridge extractor (extract_bridge_from_raw.py) with
+the waterfall chart builder (bridge_chart_prototype.py): computes the
+price/occupancy/days factor decomposition per phase per year-transition
+directly from a raw AB-* tab (no pre-built '<entity>-量价桥图' helper tab
+needed), then renders a real PPTX waterfall chart -- across EVERY AB- tab
+in the workbook in one pass, covering the entities that don't have a
+manually-built bridge tab (16 of the 17 real ones, per this session's
+17-tab scan -- only 成都/AB-CD has one).
+
+Decomposition formula -- confirmed bit-exact against AB-CD's OWN real
+bridge-tab formulas (2024->2025 transition, all 3 phases) this session,
+sequential substitution in price -> area -> days order:
+    price_effect = (price_B - price_A) * area_A * days_A / 1000
+    area_effect  = price_B * (area_B - area_A) * days_A / 1000
+    days_effect  = price_B * area_B * (days_B - days_A) / 1000
+Each phase contributes 3 factor bars per year-transition; the bridge starts
+at year_A's total revenue (summed across all phases) and ends at year_B's.
+
+The LATEST year in a real workbook is usually a partial/LTM period (e.g.
+"2026" only has data through June). Comparing it directly against a full
+prior calendar year would make the 'days effect' swing by roughly negative
+half a year -- a period-length artifact, not a real change. The REAL
+'成都-量价桥图' bridge tab's own second transition avoids this WITHOUT any
+annualization/extrapolation assumption: it compares the last full calendar
+year against a trailing-12-month (LTM) window ending at the latest
+available month (e.g. "2025年收入" -> "2025年7月至2026年6月收入") -- both
+sides then have the same ~365 days, using only actual monthly data already
+on hand, no assumption about how the rest of the year will look. This
+script reproduces that exact convention for the tail transition.
+
+Usage:
+    python -m fdd_utils.generate_bridge_waterfall_batch "databooks/xx.xlsx"
+        # every AB- tab: full-year-to-full-year transitions for all
+        # complete years, plus one LTM transition at the tail if the
+        # latest year is partial
+    python -m fdd_utils.generate_bridge_waterfall_batch "databooks/xx.xlsx" --tab AB-CD --validate
+        # cross-checks BOTH real bridge blocks (2024->2025 and the LTM
+        # 2025->Jul25-Jun26 transition) against AB-CD's own real bridge-tab
+        # factor values (the "answer key")
+"""
+import argparse
+import re
+import sys
+from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional, Tuple
+
+from openpyxl import load_workbook, Workbook
+from openpyxl.styles import Font
+
+from .extract_bridge_from_raw import (
+    find_phase_blocks, extract_annual_series, extract_ltm_series,
+    find_month_row, format_ltm_label, PhaseBlock,
+    find_aggregate_revenue_rows, sum_row_over_cols, _year_col_map,
+)
+from .inspect_ab_tabs_structure import find_labeled_rows
+from .bridge_chart_prototype import BridgeItem, BridgeBlock, build_waterfall_chart, build_excel_waterfall_chart
+
+from pptx import Presentation
+from pptx.util import Inches
+
+_FACTOR_SUFFIX = {"price": "单价变动", "area": "出租率/面积变动", "days": "运营天数变动"}
+_PARTIAL_YEAR_DAYS_THRESHOLD = 350
+
+
+def _is_partial_year(days: float) -> bool:
+    return 0 < days < _PARTIAL_YEAR_DAYS_THRESHOLD
+
+
+def decompose_transition(phase_label: str, series_a: Dict[str, float], series_b: Dict[str, float],
+                          block: Optional[PhaseBlock] = None, sheet_name: str = "") -> List[BridgeItem]:
+    price_a, price_b = series_a["unit_rent"], series_b["unit_rent"]
+    area_a, area_b = series_a["area"], series_b["area"]
+    days_a, days_b = series_a["days"], series_b["days"]
+
+    price_effect = (price_b - price_a) * area_a * days_a / 1000
+    area_effect = price_b * (area_b - area_a) * days_a / 1000
+    days_effect = price_b * area_b * (days_b - days_a) / 1000
+
+    source = ""
+    if block is not None:
+        sheet_prefix = f"'{sheet_name}'!" if sheet_name else ""
+        source = (f"{sheet_prefix}phase '{phase_label}': revenue row {block.revenue_row}, "
+                   f"area row {block.area_row} -- price×area×days factor decomposition "
+                   f"(run with --trace-cells for the exact columns each period used)")
+
+    return [
+        BridgeItem(label=f"{phase_label}{_FACTOR_SUFFIX['price']}", kind="delta", value=price_effect, source_note=source),
+        BridgeItem(label=f"{phase_label}{_FACTOR_SUFFIX['area']}", kind="delta", value=area_effect, source_note=source),
+        BridgeItem(label=f"{phase_label}{_FACTOR_SUFFIX['days']}", kind="delta", value=days_effect, source_note=source),
+    ]
+
+
+def find_year_days_rows(ws_values) -> Dict[str, Optional[int]]:
+    labeled = find_labeled_rows(ws_values)
+    year_row = days_row = None
+    for r in sorted(labeled):
+        cats = {cat for _, _, cat in labeled[r]}
+        if year_row is None and "period_year" in cats:
+            year_row = r
+        if days_row is None and "period_days" in cats:
+            days_row = r
+    return {"year_row": year_row, "days_row": days_row}
+
+
+def cross_check_entity(ws_values, tab_name: str, blocks: List[PhaseBlock], year_row: int, days_row: int,
+                        log: Callable[[str], None] = print) -> None:
+    """Independent sanity check for the 16 entities that have no pre-built
+    '<entity>-量价桥图' answer-key tab to run --validate against: sums this
+    extractor's own per-phase revenue for each year and compares it to
+    every candidate grand-total row the analyst's OWN sheet already
+    computes (find_aggregate_revenue_rows) -- a number this tool never
+    derived itself. A close match is real (if indirect) evidence the row/
+    column selection generalized correctly to this entity; a mismatch
+    means it likely picked up the wrong rows for this entity's layout."""
+    agg_rows = find_aggregate_revenue_rows(ws_values, blocks)
+    if not agg_rows:
+        log(f"  ⚠️ {tab_name}: no aggregate/grand-total revenue row found below the phase blocks -- "
+            f"nothing to cross-check against")
+        return
+    years = _year_col_map(ws_values, year_row, ws_values.max_column)
+    all_series = {b.label: extract_annual_series(ws_values, b, year_row, days_row) for b in blocks}
+    for year, cols in sorted(years.items()):
+        my_total = sum(all_series[b.label].get(year, {}).get("revenue_k", 0.0) * 1000 for b in blocks)
+        if abs(my_total) < 1.0:
+            continue  # no real data this year, nothing meaningful to compare
+        scored = []
+        for row, label in agg_rows:
+            agg_total = sum_row_over_cols(ws_values, row, cols)
+            pct = ((agg_total - my_total) / agg_total) if abs(agg_total) > 1.0 else None
+            scored.append((abs(pct) if pct is not None else float("inf"), row, label, agg_total, pct))
+        scored.sort(key=lambda t: t[0])
+        _, row, label, agg_total, pct = scored[0]
+        ok = pct is not None and abs(pct) < 0.01
+        pct_s = f"{pct * 100:+.2f}%" if pct is not None else "n/a"
+        log(f"  {'✅' if ok else '⚠️'} {tab_name} {year}: my sum-of-phases={my_total:,.1f} vs row {row} "
+            f"{label!r}={agg_total:,.1f} ({pct_s})")
+        if not ok:
+            for _, row2, label2, agg_total2, pct2 in scored[1:3]:
+                pct2_s = f"{pct2 * 100:+.2f}%" if pct2 is not None else "n/a"
+                log(f"      other candidate: row {row2} {label2!r}={agg_total2:,.1f} ({pct2_s})")
+
+
+def _assemble_bridge(blocks: List[PhaseBlock], series_a: List[Dict[str, float]], series_b: List[Dict[str, float]],
+                      start_label: str, end_label: str, sheet_name: str = "") -> BridgeBlock:
+    total_a = sum(s["revenue_k"] for s in series_a)
+    total_b = sum(s["revenue_k"] for s in series_b)
+
+    sheet_prefix = f"'{sheet_name}'!" if sheet_name else ""
+    revenue_rows = [b.revenue_row for b in blocks if b.revenue_row]
+    total_source = f"{sheet_prefix}sum of every phase's revenue row: {revenue_rows}"
+
+    items: List[BridgeItem] = [BridgeItem(label=start_label, kind="total", value=total_a, source_note=total_source)]
+    for block, sa, sb in zip(blocks, series_a, series_b):
+        items.extend(decompose_transition(block.label, sa, sb, block=block, sheet_name=sheet_name))
+    items.append(BridgeItem(label=end_label, kind="total", value=total_b, source_note=total_source))
+
+    reconstructed = total_a + sum(it.value for it in items[1:-1])
+    # A real client-data residual is expected here (confirmed in AB-CD's own
+    # notes: revenue is "all-in" but leased area excludes some pallet-priced
+    # space, so price*area*days never reconstructs revenue PERFECTLY) --
+    # this is informational, not a reason to withhold the chart.
+    check_ok = abs(reconstructed - total_b) < max(5.0, abs(total_b) * 0.02)
+    return BridgeBlock(header_row=-1, label_col=-1, base_col=-1, change_col=-1, items=items, check_ok=check_ok)
+
+
+def build_bridge_for_transition(ws_values, blocks: List[PhaseBlock], year_row: int, days_row: int,
+                                 year_a: int, year_b: int, start_label: str, end_label: str,
+                                 sheet_name: str = "") -> Optional[BridgeBlock]:
+    all_series = [extract_annual_series(ws_values, b, year_row, days_row) for b in blocks]
+    if any(year_a not in s or year_b not in s for s in all_series):
+        return None
+    series_a = [s[year_a] for s in all_series]
+    series_b = [s[year_b] for s in all_series]
+    return _assemble_bridge(blocks, series_a, series_b, start_label, end_label, sheet_name=sheet_name)
+
+
+def build_ltm_bridge(ws_values, blocks: List[PhaseBlock], year_row: int, month_row: int, days_row: int,
+                      last_full_year: int, end_year: int, end_month: int, sheet_name: str = "") -> Optional[BridgeBlock]:
+    all_series_a = [extract_annual_series(ws_values, b, year_row, days_row) for b in blocks]
+    if any(last_full_year not in s for s in all_series_a):
+        return None
+    series_a = [s[last_full_year] for s in all_series_a]
+    series_b = [extract_ltm_series(ws_values, b, year_row, month_row, days_row, end_year, end_month) for b in blocks]
+    if any(s is None for s in series_b):
+        return None
+    start_label = f"{last_full_year}年收入"
+    end_label = format_ltm_label(end_year, end_month)
+    return _assemble_bridge(blocks, series_a, series_b, start_label, end_label, sheet_name=sheet_name)
+
+
+# Hardcoded from the REAL '成都-量价桥图' bridge tab's own values (already
+# confirmed this session against the real file) -- the "answer key" for
+# --validate, covering BOTH real bridge blocks.
+_AB_CD_EXPECTED_FACTORS_2024_2025 = {
+    "干仓": {"price": 2059.545458900859, "area": 1463.5320655100995, "days": 3298.960105589041},
+    "综合楼": {"price": 66.9393853357857, "area": -55.45101747277201, "days": 29.103442136986306},
+    "冷库": {"price": 0.0, "area": 0.0, "days": 3061.83285},
+}
+_AB_CD_EXPECTED_FACTORS_LTM = {
+    "干仓": {"price": 1185.257478889836, "area": 1082.3849911101638, "days": 0.0},
+    "综合楼": {"price": -0.2670081709406935, "area": 19.893338170940705, "days": 0.0},
+    "冷库": {"price": -614.8229452141594, "area": 818.0862552141591, "days": 0.0},
+}
+
+
+def _fmt_series(label: str, s: Dict[str, float]) -> str:
+    return (f"{label}: revenue={s['revenue_k']:,.2f}k area={s['area']:,.2f} "
+            f"days={s['days']:.0f} unit_rent={s['unit_rent']:.4f}")
+
+
+def dump_transition_detail(blocks: List[PhaseBlock], series_a: List[Dict[str, float]],
+                            series_b: List[Dict[str, float]], label_a: str, label_b: str):
+    for block, sa, sb in zip(blocks, series_a, series_b):
+        print(f"    [{block.label}]")
+        print(f"      {_fmt_series(label_a, sa)}")
+        print(f"      {_fmt_series(label_b, sb)}")
+        items = decompose_transition(block.label, sa, sb)
+        for it in items:
+            print(f"      -> {it.label}: {it.value:,.2f}k")
+
+
+_INVALID_SHEET_CHARS_RE = re.compile(r"[:\\/?*\[\]]")
+
+
+def _safe_sheet_name(name: str, existing: set) -> str:
+    """Excel sheet names: <=31 chars, no : \\ / ? * [ ], not blank, unique
+    in the workbook -- AB- tab names are already short and clean, but this
+    guards against the rare tab whose name would collide or overflow once
+    the output is one-sheet-per-entity instead of one shared sheet."""
+    cleaned = _INVALID_SHEET_CHARS_RE.sub("_", name).strip() or "Sheet"
+    base = cleaned[:31]
+    candidate = base
+    n = 2
+    while candidate in existing:
+        suffix = f"_{n}"
+        candidate = base[:31 - len(suffix)] + suffix
+        n += 1
+    existing.add(candidate)
+    return candidate
+
+
+def _write_breakdown_table(ws, blocks: List[PhaseBlock], res: "BridgeResult", start_row: int,
+                            start_col: int = 1) -> int:
+    """Writes the same per-phase raw revenue/area/days/unit_rent detail
+    dump_transition_detail prints to the console (both sides of the
+    transition, plus the 3 resulting factor deltas) as an actual table in
+    the deliverable, directly above that transition's chart -- so a number
+    in the chart can be traced back to its raw inputs without a separate
+    --dump-detail run."""
+    bold = Font(bold=True)
+    r = start_row
+    ws.cell(row=r, column=start_col, value=f"{res.title} -- 明細 Breakdown").font = bold
+    r += 1
+    label_a = f"{res.year_a}"
+    label_b = f"LTM {res.year_b}-{res.latest_month:02d}" if res.is_ltm else f"{res.year_b}"
+    headers = ["Phase", "Period", "Revenue (k)", "Area", "Days", "Unit Rent"]
+    for c, h in enumerate(headers):
+        ws.cell(row=r, column=start_col + c, value=h).font = bold
+    r += 1
+    for block, sa, sb in zip(blocks, res.series_a, res.series_b):
+        for period_label, s in ((label_a, sa), (label_b, sb)):
+            ws.cell(row=r, column=start_col, value=block.label)
+            ws.cell(row=r, column=start_col + 1, value=period_label)
+            ws.cell(row=r, column=start_col + 2, value=round(s["revenue_k"], 2))
+            ws.cell(row=r, column=start_col + 3, value=round(s["area"], 2))
+            ws.cell(row=r, column=start_col + 4, value=round(s["days"]))
+            ws.cell(row=r, column=start_col + 5, value=round(s["unit_rent"], 4))
+            r += 1
+        for it in decompose_transition(block.label, sa, sb):
+            ws.cell(row=r, column=start_col, value=f"  -> {it.label}")
+            ws.cell(row=r, column=start_col + 2, value=round(it.value, 2))
+            r += 1
+    return r + 1
+
+
+@dataclass
+class BridgeResult:
+    """One rendered-ready bridge transition. Carries everything BOTH callers
+    need: the CLI (main) prints/validates/renders PPTX from it, and the
+    Streamlit Bridge Lab renders an Excel chart from `.bridge`."""
+    title: str                          # chart title, e.g. "AB-CD2025年收入量价桥图" (matches the real chart's own convention)
+    start_label: str
+    end_label: str
+    bridge: BridgeBlock
+    series_a: List[Dict[str, float]]    # per-phase raw series for each side (for --dump-detail)
+    series_b: List[Dict[str, float]]
+    year_a: Optional[int]
+    year_b: Optional[int]
+    is_ltm: bool
+    latest_month: Optional[int] = None  # only set for LTM results (the anchor month)
+
+
+def build_bridges_for_ab_tab(
+    ws_values, tab_name: str, skip_partial: bool = False,
+    log: Callable[[str], None] = lambda _m: None,
+) -> Tuple[Optional[List[PhaseBlock]], List[BridgeResult]]:
+    """Side-effect-free bridge builder for one raw AB-* tab -- the SINGLE
+    source of the transition-selection logic, shared by main() (CLI, PPTX)
+    and the Streamlit Bridge Lab (Excel). Full-year-to-full-year transitions
+    for every complete year, plus one LTM transition at the tail when the
+    latest year is partial (matching AB-CD's own real methodology).
+
+    Returns (blocks, results). `blocks` is None when the tab isn't an AB--
+    style raw tab at all (no Year/Days rows or no phase blocks) -- the caller
+    uses that to fall through to the pre-built Base/Change path. Diagnostic
+    messages go to the injected `log` (main passes print; the UI a no-op)."""
+    yd = find_year_days_rows(ws_values)
+    if not yd["year_row"] or not yd["days_row"]:
+        log(f"--- {tab_name}: ⚠️ no Year/Days row found, skipping ---")
+        return None, []
+    blocks = find_phase_blocks(ws_values)
+    if not blocks:
+        log(f"--- {tab_name}: ⚠️ no phase blocks found, skipping ---")
+        return None, []
+
+    all_series = {b.label: extract_annual_series(ws_values, b, yd["year_row"], yd["days_row"]) for b in blocks}
+    years = sorted({y for series in all_series.values() for y in series.keys()})
+    log(f"--- {tab_name}: {len(blocks)} phase(s) [{', '.join(b.label for b in blocks)}], years {years} ---")
+    if not years:
+        return blocks, []
+
+    results: List[BridgeResult] = []
+    max_year = years[-1]
+    max_year_days = max((all_series[b.label].get(max_year, {}).get("days", 0) for b in blocks), default=0)
+    tail_is_partial = _is_partial_year(max_year_days)
+    full_years = years[:-1] if tail_is_partial else years
+
+    for year_a, year_b in zip(full_years, full_years[1:]):
+        bridge = build_bridge_for_transition(
+            ws_values, blocks, yd["year_row"], yd["days_row"], year_a, year_b,
+            start_label=f"{year_a}年收入", end_label=f"{year_b}年收入", sheet_name=tab_name,
+        )
+        if bridge is None:
+            continue
+        # Title convention matches the REAL '成都-量价桥图' chart's own title
+        # exactly (confirmed via inspect_bridge_format.py): "{entity}
+        # {end-period label}量价桥图" -- entity name direct-concatenated, no
+        # arrow, no start year (its own chart titles only ever showed
+        # "成都青白江2025年收入量价桥图", never "2024→2025"). tab_name is the raw
+        # AB- code (e.g. 'AB-KS1'), not a Chinese display name -- this
+        # entity has none available in the data this extractor reads.
+        results.append(BridgeResult(
+            title=f"{tab_name}{year_b}年收入量价桥图",
+            start_label=f"{year_a}年收入", end_label=f"{year_b}年收入", bridge=bridge,
+            series_a=[all_series[b.label][year_a] for b in blocks],
+            series_b=[all_series[b.label][year_b] for b in blocks],
+            year_a=year_a, year_b=year_b, is_ltm=False,
+        ))
+
+    if tail_is_partial and not skip_partial:
+        last_full_year = full_years[-1] if full_years else None
+        month_row = find_month_row(ws_values)
+        if last_full_year is None or month_row is None:
+            log(f"    ⚠️ tail year {max_year} is partial ({max_year_days:.0f}d) but no Month row / prior "
+                f"full year found -- skipping tail transition (pass --skip-partial to silence)")
+            return blocks, results
+        latest_month = None
+        for m in range(12, 0, -1):
+            days = 0
+            for b in blocks:
+                s = extract_ltm_series(ws_values, b, yd["year_row"], month_row, yd["days_row"], max_year, m, window=1)
+                if s:
+                    days = max(days, s["days"])
+            if days > 0:
+                latest_month = m
+                break
+        if latest_month is None:
+            log(f"    ⚠️ tail year {max_year} is partial but no month with data found -- skipping")
+            return blocks, results
+        bridge = build_ltm_bridge(ws_values, blocks, yd["year_row"], month_row, yd["days_row"],
+                                   last_full_year, max_year, latest_month, sheet_name=tab_name)
+        if bridge is None:
+            log(f"    ⚠️ tail year {max_year} is partial ({max_year_days:.0f}d) but LTM window couldn't be "
+                f"built (incomplete monthly data) -- skipping tail transition")
+            return blocks, results
+        # format_ltm_label already ends in "收入" (e.g. "2025年7月至2026年6月收入"),
+        # matching the real chart's own LTM title exactly when concatenated
+        # the same way as the regular-transition title above.
+        results.append(BridgeResult(
+            title=f"{tab_name}{format_ltm_label(max_year, latest_month)}量价桥图",
+            start_label=f"{last_full_year}年收入", end_label=format_ltm_label(max_year, latest_month),
+            bridge=bridge,
+            series_a=[all_series[b.label][last_full_year] for b in blocks],
+            series_b=[extract_ltm_series(ws_values, b, yd["year_row"], month_row, yd["days_row"],
+                                          max_year, latest_month) for b in blocks],
+            year_a=last_full_year, year_b=max_year, is_ltm=True, latest_month=latest_month,
+        ))
+    return blocks, results
+
+
+def _validate_against(bridge: BridgeBlock, expected: Dict[str, Dict[str, float]], label: str) -> bool:
+    all_ok = True
+    for phase_name, exp in expected.items():
+        got_items = [it for it in bridge.items if it.label.startswith(phase_name)]
+        if len(got_items) < 3:
+            print(f"      ⚠️  {phase_name}: expected 3 factor items, found {len(got_items)}")
+            all_ok = False
+            continue
+        got = {"price": got_items[0].value, "area": got_items[1].value, "days": got_items[2].value}
+        for factor in ("price", "area", "days"):
+            tol = max(0.5, abs(exp[factor]) * 0.005)
+            ok = abs(got[factor] - exp[factor]) <= tol
+            all_ok = all_ok and ok
+            status = "✅" if ok else "❌"
+            print(f"      {status} [{label}] {phase_name} {factor}: got={got[factor]:.4f} expected={exp[factor]:.4f}")
+    return all_ok
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("path", help="path to the databook .xlsx")
+    ap.add_argument("--tab", default=None, help="only process this one AB- tab (default: every AB- tab)")
+    ap.add_argument("--validate", action="store_true",
+                     help="cross-check --tab AB-CD's 2024->2025 AND the tail LTM transition against "
+                          "its own real bridge-tab factor values")
+    ap.add_argument("--dump-detail", action="store_true",
+                     help="print each phase's raw (revenue/area/days/unit_rent) for both sides of "
+                          "every transition, plus the resulting 3 factor values -- use this to trace "
+                          "a chart number that looks wrong back to its exact source inputs")
+    ap.add_argument("--skip-partial", action="store_true",
+                     help="skip the tail transition entirely instead of building an LTM window for it "
+                          "(e.g. if monthly data isn't available to construct one)")
+    ap.add_argument("--cross-check", action="store_true",
+                     help="for every entity (not just AB-CD, which has an answer-key tab to run "
+                          "--validate against), sum this extractor's own per-phase revenue per year "
+                          "and compare it to the entity's own grand-total revenue row(s) -- an "
+                          "independent sanity check using a number this tool never derived itself, "
+                          "for the 16 entities with no answer key to validate against")
+    ap.add_argument("--out", default="bridge_waterfall_batch_output.pptx", help="output pptx path")
+    ap.add_argument("--excel-out", default=None,
+                     help="also write a standalone .xlsx, ONE SHEET PER ENTITY (named after its AB- tab) "
+                          "so you can jump straight to whichever entity you want -- each sheet stacks a "
+                          "raw revenue/area/days/unit_rent breakdown table (same detail --dump-detail "
+                          "prints) directly above that transition's native Excel waterfall chart "
+                          "(including the '來源 (Source)' traceability column)")
+    args = ap.parse_args()
+
+    print(f"Loading {args.path!r}...")
+    wb_values = load_workbook(args.path, data_only=True)
+    all_sheets = wb_values.sheetnames
+    ab_tabs = [s for s in all_sheets if s.startswith("AB-") or s.startswith("AB")]
+    if args.tab:
+        ab_tabs = [s for s in ab_tabs if s == args.tab]
+        if not ab_tabs:
+            print(f"❌ tab {args.tab!r} not found among AB- sheets.")
+            return 1
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.33)
+    prs.slide_height = Inches(7.5)
+    blank_layout = prs.slide_layouts[6]
+
+    excel_wb = None
+    used_sheet_names = set()
+    if args.excel_out:
+        excel_wb = Workbook()
+        excel_wb.remove(excel_wb.active)
+
+    slides_added = 0
+    all_ok = True
+    for tab in ab_tabs:
+        ws = wb_values[tab]
+        blocks, results = build_bridges_for_ab_tab(ws, tab, skip_partial=args.skip_partial, log=print)
+        if blocks is None:
+            continue  # already logged by the shared builder
+
+        if args.cross_check:
+            yd = find_year_days_rows(ws)
+            if yd["year_row"] and yd["days_row"]:
+                cross_check_entity(ws, tab, blocks, yd["year_row"], yd["days_row"], log=print)
+
+        excel_ws = None
+        excel_next_row = 1
+        if excel_wb is not None and results:
+            excel_ws = excel_wb.create_sheet(_safe_sheet_name(tab, used_sheet_names))
+
+        for res in results:
+            bridge = res.bridge
+            check_msg = "✅" if bridge.check_ok else "⚠️ residual > tolerance"
+            arrow = f"{res.year_a}->LTM({res.end_label})" if res.is_ltm else f"{res.year_a}->{res.year_b}"
+            print(f"    {arrow}: start={bridge.items[0].value:,.1f}k "
+                  f"end={bridge.items[-1].value:,.1f}k  {check_msg}")
+
+            if args.dump_detail:
+                label_a = f"{res.year_a} (raw)"
+                label_b = (f"LTM ending {res.year_b}-{res.latest_month:02d}"
+                           if res.is_ltm else f"{res.year_b} (raw)")
+                dump_transition_detail(blocks, res.series_a, res.series_b, label_a, label_b)
+
+            if args.validate and tab == "AB-CD":
+                if not res.is_ltm and (res.year_a, res.year_b) == (2024, 2025):
+                    all_ok = _validate_against(bridge, _AB_CD_EXPECTED_FACTORS_2024_2025, "2024->2025") and all_ok
+                elif res.is_ltm and res.year_a == 2025 and res.year_b == 2026:
+                    all_ok = _validate_against(bridge, _AB_CD_EXPECTED_FACTORS_LTM, "LTM") and all_ok
+
+            slide = prs.slides.add_slide(blank_layout)
+            build_waterfall_chart(slide, bridge, res.title,
+                                   left=Inches(0.5), top=Inches(0.5), width=Inches(12.3), height=Inches(6.3))
+            slides_added += 1
+
+            if excel_ws is not None:
+                excel_next_row = _write_breakdown_table(excel_ws, blocks, res, start_row=excel_next_row)
+                excel_next_row = build_excel_waterfall_chart(excel_ws, bridge, res.title, start_row=excel_next_row)
+
+    prs.save(args.out)
+    print(f"\nSaved {slides_added} chart(s) to {args.out!r}.")
+    if excel_wb is not None:
+        if not excel_wb.sheetnames:
+            print(f"⚠️ No entity produced any bridge transition -- skipping {args.excel_out!r} "
+                  f"(nothing to write).")
+        else:
+            excel_wb.save(args.excel_out)
+            print(f"Saved {slides_added} chart(s) across {len(excel_wb.sheetnames)} entity sheet(s) to "
+                  f"{args.excel_out!r} -- one sheet per AB- tab, each with a breakdown table above its "
+                  f"chart(s), check the '來源 (Source)' column.")
+    if args.validate:
+        print("✅ Factor decomposition matches AB-CD's own real values." if all_ok
+              else "❌ MISMATCH -- do not trust this decomposition yet.")
+        return 0 if all_ok else 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

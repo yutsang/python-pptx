@@ -1,0 +1,4488 @@
+"""Databook inspection tool — run this against each real client databook
+(Windows-side "inputs" folder) BEFORE trusting the pipeline's output on it.
+
+Built to answer these specific questions from a real-databook QA pass:
+  1. Are financial + breakdown tabs actually being read correctly?
+  2. Does reconciliation match up — and for anything that doesn't, which
+     tab names actually exist so a mapping can be added? If the Financials
+     sheet's Balance Sheet or Income Statement section couldn't be located
+     at all, this automatically prints a full trace (section 4b) from the
+     real extractor's own debug mode — showing exactly which header-keyword
+     search failed, rather than leaving "no rows" unexplained. Use this when
+     an entire statement type (e.g. all of IS) is missing from output.
+  3. Does the databook have indented / total-then-breakdown row structures
+     that a human eye catches but extraction might misread? Section 3b
+     specifically targets Excel's own indent level (Format > Cells >
+     Alignment > Indent) and leading whitespace, read directly via openpyxl
+     — signals the production pipeline's row classifier never looks at
+     (every read goes through pandas, which strips both). Use this when a
+     visually-indented "缩行" sub-item is ending up as its own standalone
+     account instead of being merged into its parent.
+  4. Are '000-style unit markers (CNY'000 / 人民币千元) being detected
+     correctly per tab, or could a tab silently fall back to a 1x
+     multiplier when it should be 1000x?
+
+Everything above is DETERMINISTIC — no AI calls, fast, safe to run against
+any real client file without touching API budgets or the network.
+
+Usage:
+    python inspect_databook.py "inputs/SomeClient.databook.xlsx"
+        # Compact by default: sections 1-4 collapse "everything is fine" detail (every
+        # unit-marker line, full row-by-row structure listing, explanatory paragraphs)
+        # into one-line-per-tab summaries. Findings/flags always print in full either
+        # way. Add --verbose for the full per-tab detail when you need to actually skim
+        # a specific tab's structure against real Excel.
+    python inspect_databook.py "inputs/"                    # scans every .xlsx in the folder,
+                                                              # prints a final aggregate summary table
+    python inspect_databook.py "inputs/SomeClient.databook.xlsx" --sheet Financials
+    python inspect_databook.py "inputs/" --run-ai --model workbench   # adds AI-dependent checks (see below)
+    python inspect_databook.py "inputs/" --run-ai --model workbench --limit 5
+        # fast smoke test: only the first 5 mapped accounts per file go to AI, across
+        # every file in the folder — use this to sanity-check the whole batch before
+        # committing to a full (potentially hours-long) unlimited run
+    python inspect_databook.py "inputs/SomeClient.databook.xlsx" --dump-tab 固定资产
+        # DETERMINISTIC, no AI, runs in seconds: prints raw Excel cell values next to
+        # the final (unit-marker-multiplied) dfs values for ONE tab, row by row. Use
+        # this to trace a numeric-grounding 🔴 warning back to its source WITHOUT
+        # re-running the (slow, token-costing) AI pipeline — if the raw cell already
+        # holds an actual-CNY-sized number but still gets multiplied by 1000, that's
+        # the extraction-side 1000x bug (item 9 class), not an AI hallucination.
+    python inspect_databook.py "databooks/南通通海.xlsx" \
+        --financials-from "databooks/Portfolio I.databook. 主表.xlsx" --financials-sheet 南通通海Financials
+        # Some portfolios keep each sub-entity's own file free of any Financials-pattern
+        # sheet at all -- the real summary lives inside a sibling roll-up ("主表")
+        # workbook instead, one sheet per entity. This sources the Financials summary
+        # from that second file for reconciliation while breakdown tabs (dfs) still
+        # come from the entity's own file as normal. Requires both flags together --
+        # no auto-matching by entity name, you name the exact sheet.
+    python inspect_databook.py "databooks/"
+        # FOLDER MODE AUTO-DETECTS the above pattern instead of needing it spelled out
+        # per file: files named "...Portfolio {I,II,III}...主表....xlsx" are treated as
+        # that portfolio's roll-up, every other "...Portfolio {I,II,III}...xlsx" in the
+        # same folder is treated as one of its entities (entity name = whatever's left
+        # of the filename after stripping the "Portfolio X." prefix and a leading
+        # "databook" token), matched to a roll-up sheet via suggest_rollup_sheet_for_entity
+        # (fdd_utils/workbook.py -- same fuzzy entity-name matcher the batch UI's roll-up
+        # dropdown already uses). Prints what it matched before processing anything, and
+        # only ever picks a sheet above that function's own confidence floor -- an entity
+        # file with no confident match just runs without a financials_from override
+        # (same as if it weren't in a portfolio at all), never a silent wrong guess.
+        # Pass --no-auto-rollup to disable and fall back to old per-file default behaviour.
+
+AI-dependent checks (only with --run-ai; needs a configured provider in
+fdd_utils/config.yml, costs real tokens/time — run once per databook when
+ready to review quality, not on every edit). Only accounts that passed
+reconciliation with an included Match status go to AI — exactly mirroring
+production (fdd_utils/ui.py:derive_reconciliation_matched_keys) — so this
+never wastes tokens on tabs the real pipeline would never send, and the
+timing numbers are directly comparable across databooks/models. A tqdm
+progress bar shows live stage/account progress during the run:
+  5. Runs the full AI pipeline once and reports wall-clock time and
+     per-agent retry counts (compare qwen local vs GPT-5.5 workbench by
+     re-running with --model).
+  6. Numeric grounding sweep: extracts every number mentioned in generated
+     commentary and cross-checks it against the ground-truth dfs value at
+     1x, 1000x, 0.001x, 10000x, and 0.0001x. Flags any number that ONLY
+     matches at a non-1x scale — this is the generalized version of the
+     1000x-scaling bug fixed this session (fdd_utils/pptx.py
+     embed_financial_tables mutating bs_is_results in place). If a
+     different databook layout reintroduces a scaling bug anywhere in the
+     pipeline, this check catches it automatically instead of relying on
+     a human noticing a wrong number in a slide.
+  7. Chinese unit-label sanity check: for Chinese output, flags any
+     万元/亿元 amount that doesn't reconcile to the underlying actual-CNY
+     ground truth within tolerance — the 千元→萬元 mislabeling class of bug.
+
+Output is plain text to stdout — copy/paste it back for review; nothing is
+written back to the workbook.
+"""
+from __future__ import annotations
+
+import os
+import sys as _sys
+import time as _time
+
+# When the process started, so main() can say how long the imports alone took
+# (on a corporate Windows box antivirus scans every .pyc the first time).
+_PROCESS_STARTED = _time.perf_counter()
+
+# Windows swaps the console encoding away from UTF-8 the moment output is piped
+# or redirected: attached to a terminal, printing goes through the console's own
+# Unicode writer, but `... | findstr` / `... > out.txt` falls back to
+# locale.getpreferredencoding() -- cp1252 on this user's box -- and every CJK
+# character this tool prints (主表, 固定资产, the account names themselves) then
+# raises UnicodeEncodeError mid-print. It crashed a real `--help | findstr`.
+# errors="replace" so a genuinely undisplayable glyph degrades to a placeholder
+# rather than killing a 12-minute run on its last line.
+for _stream in (_sys.stdout, _sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+import argparse
+import io
+import json
+import logging
+import re
+import sys
+import threading
+import time
+import traceback
+from concurrent.futures import ThreadPoolExecutor
+from itertools import combinations
+from contextlib import nullcontext, redirect_stdout
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
+from tqdm import tqdm
+
+from fdd_utils.workbook import (
+    _build_indent_signal_index,
+    _cell_text,
+    _coerce_numeric,
+    _date_row_index,
+    _find_description_column,
+    _forward_fill_stage_row,
+    _infer_indent_hierarchy,
+    _is_numeric_enough,
+    _multiply_factor,
+    _select_entity_block,
+    _stage_row_index,
+    _unit_markers,
+    canonical_stage_label,
+    extract_data_from_excel,
+    extract_balance_sheet_and_income_statement,
+    find_account_in_dfs,
+    get_effective_mappings,
+    load_mappings,
+    load_workbook_frames,
+    normalize_financial_schedule,
+    parse_date,
+    PREFERRED_STAGE,
+    profile_sheet,
+    reconcile_financial_statements,
+    suggest_rollup_sheet_for_entity,
+)
+from fdd_utils.ui import build_insight_summary, derive_reconciliation_matched_keys
+from fdd_utils.financial_common import get_pipeline_result_text
+
+pd.set_option("display.width", 200)
+
+# Set from --verbose in main(). Module-level (not threaded through every
+# call) since these check functions are also called directly by scratch
+# scripts/other tools without going through argparse -- default stays
+# compact either way. Controls: whether the multi-line "how to read this"
+# explanations print, and whether per-tab detail sections print every row
+# vs. a one-line count summary. Findings (mismatches/flags) always print in
+# full regardless -- this only trims the "everything is fine" noise, which
+# is what makes a multi-file batch run unpasteable.
+VERBOSE = False
+
+
+def assert_pptx_output_writable(out_path: str) -> None:
+    """Fail now if the deck we are about to overwrite is open in PowerPoint.
+
+    PowerPoint keeps an exclusive lock on an open .pptx, so python-pptx's save
+    raises only at the very end -- after a full --run-ai pass has been paid for
+    in both minutes and tokens. Checking up front turns a wasted run into a
+    two-second message.
+
+    Opening for append rather than write is deliberate: it takes the same lock
+    the save will need without truncating a deck the user may still want.
+    """
+    target = Path(out_path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"\n❌ Cannot create the output folder {target.parent}: {exc}")
+        sys.exit(2)
+
+    try:
+        if target.exists():
+            with open(target, "a+b"):
+                pass
+        else:
+            probe = target.with_suffix(target.suffix + ".writetest")
+            with open(probe, "wb"):
+                pass
+            probe.unlink()
+    except PermissionError:
+        print("\n" + "=" * 78)
+        print("  ❌ OUTPUT FILE IS LOCKED -- stopping before any work is done")
+        print("=" * 78)
+        print(f"  {target.resolve()}")
+        print()
+        print("  This deck is open in PowerPoint (or another program holds it).")
+        print("  The export would run the full AI pipeline first and only fail at")
+        print("  the save, so it is stopped here instead.")
+        print()
+        print("  Close the file in PowerPoint and run the same command again.")
+        print("  To keep it open, pass --pptx-out-dir <other folder>.")
+        sys.exit(2)
+    except OSError as exc:
+        print(f"\n❌ Cannot write {target.resolve()}: {exc}")
+        sys.exit(2)
+
+
+def _hr(title: str = "") -> None:
+    print("\n" + "=" * 78)
+    if title:
+        print(f"  {title}")
+        print("=" * 78)
+
+
+# Compact mode (the default) runs a noisy section with its output captured and
+# prints back only the lines `keep` accepts, plus one line saying how much was
+# hidden. A whole Portfolio run printed ~20k lines before this, most of it
+# per-row diagnostics that were fine, which is too much to paste back. The
+# capture is per-thread, so --entity-workers keeps working.
+_CAPTURE = threading.local()
+
+_ALWAYS_KEEP = ("❌", "Traceback", "FAILED")
+
+
+class _CaptureAwareStdout:
+    def __init__(self, stream):
+        self._stream = stream
+
+    def write(self, data):
+        buf = getattr(_CAPTURE, "buf", None)
+        return (buf or self._stream).write(data)
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+class _compact:
+    """with _compact("label", keep=("marker", ...)): ... -- see _CAPTURE above."""
+
+    def __init__(self, label: str, keep: Tuple[str, ...] = (), keep_next: Tuple[str, ...] = ()):
+        self.label = label
+        self.keep = tuple(keep) + _ALWAYS_KEEP
+        # A kept line whose NEXT line starts with one of these keeps that line
+        # too (the Validator prints the category and the clause on two lines).
+        self.keep_next = tuple(keep_next)
+
+    def __enter__(self):
+        self._started = time.perf_counter()
+        if VERBOSE:
+            return self
+        if not isinstance(sys.stdout, _CaptureAwareStdout):
+            sys.stdout = _CaptureAwareStdout(sys.stdout)
+        self._prev = getattr(_CAPTURE, "buf", None)
+        _CAPTURE.buf = io.StringIO()
+        return self
+
+    def __exit__(self, *exc):
+        elapsed = time.perf_counter() - self._started
+        _section_times().append((self.label, elapsed))
+        if VERBOSE:
+            return False
+        text = _CAPTURE.buf.getvalue()
+        _CAPTURE.buf = self._prev
+        kept: List[str] = []
+        lines = text.splitlines()
+        hidden = 0
+        carry = False
+        for line in lines:
+            stripped = line.strip()
+            if any(m in line for m in self.keep) or (carry and stripped.startswith(self.keep_next)):
+                kept.append(line)
+                carry = bool(self.keep_next)
+            else:
+                carry = False
+                if stripped and not stripped.startswith("="):
+                    hidden += 1
+        for line in kept:
+            print(line)
+        print(f"  [{self.label}: {elapsed:.0f}s"
+              + (f", {hidden} line(s) hidden, --verbose shows them]" if hidden else "]"))
+        return False
+
+
+def _section_times() -> List[Tuple[str, float]]:
+    """This thread's (label, seconds) log, for the per-file TIME line."""
+    times = getattr(_CAPTURE, "times", None)
+    if times is None:
+        times = _CAPTURE.times = []
+    return times
+
+
+def real_accounts(results: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The account entries of a pipeline results dict, without the sentinels.
+
+    The pipeline files run-level records in the same dict under dunder keys
+    (__run__ for RunState, __run_health__ for the harness tally; the demo path
+    uses __BS_summary__ the same way). They are not accounts and have no
+    commentary, so every loop that treats a key as an account has to skip them
+    -- the first real Portfolio run reported both sentinels as accounts that
+    "came back with EMPTY final output", i.e. two invented missing-commentary
+    warnings per entity.
+    """
+    return {
+        key: value for key, value in (results or {}).items()
+        if not str(key).startswith("__")
+    }
+
+
+def check_font_metrics_available() -> Dict[str, bool]:
+    """Load both client font-metrics files before anything expensive runs.
+
+    They are what every width decision in the deck is measured against -- line
+    fill, split points, table column widths. Missing one is not fatal: the
+    measurers fall back to an average character width, which UNDER-counts (a
+    4.78in line comes out 37 characters against a real 42), so the result is
+    slightly emptier columns rather than text spilling past the box. But it is
+    a silent downgrade, and the export only reports which ruler it used at
+    section 8b, after the AI run has been paid for.
+
+    Loading here also warms text_metrics' own lru_cache, so the files are read
+    once for the whole process rather than on first use mid-render.
+    """
+    from fdd_utils.pptx.helpers import _resolve_font_metrics_path
+    from fdd_utils.pptx.payloads import _load_pptx_settings
+    from fdd_utils.text_metrics import get_measurer
+
+    packing = ((_load_pptx_settings() or {}).get("commentary_packing") or {})
+    out: Dict[str, bool] = {}
+    lines = []
+    for label, is_chinese, probe in (("CHI", True, "测"), ("ENG", False, "M")):
+        path = _resolve_font_metrics_path(is_chinese, packing)
+        ok = False
+        if path:
+            try:
+                measurer = get_measurer(
+                    "Microsoft YaHei" if is_chinese else "Arial", 9.0,
+                    is_cjk=is_chinese, metrics_path=path,
+                )
+                ok = measurer.source == "client-metrics" and measurer.text_width_pt(probe) > 0
+            except Exception as exc:
+                lines.append(f"  ⚠️  {label}: failed to load {path} -- {exc}")
+        out[label] = ok
+        if ok:
+            lines.append(f"  ✅ {label}: client-metrics  ({path})")
+        elif path:
+            lines.append(f"  ⚠️  {label}: {path} did not load -- falling back to a system font "
+                         f"(columns will be measured with an average width and come out emptier)")
+        else:
+            lines.append(f"  ⚠️  {label}: no metrics file resolved -- falling back to a system font "
+                         f"(columns will be measured with an average width and come out emptier)")
+    _hr("0. FONT METRICS PREFLIGHT (what every width in the deck is measured against)")
+    print("\n".join(lines))
+    if not all(out.values()):
+        print("\n  Both files ship in fdd_utils/font_metrics/. Check "
+              "pptx.commentary_packing.font_metrics_path_chi / _eng in config.yml "
+              "if either is being pointed elsewhere.")
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 1. Tab read summary
+# ---------------------------------------------------------------------------
+
+def check_tab_read_summary(databook_path: str, entity_name: str = "",
+                           resolution_out: Optional[Dict[str, Any]] = None) -> Dict[str, pd.DataFrame]:
+    """resolution_out, when a dict is passed, is filled in place with the
+    resolver's own output. It was computed here and discarded; section 5d's
+    insight summary reads the per-account scores and unresolved_sheets out of
+    it, and on a run WITHOUT --run-ai there is no other place that has it (the
+    process_workbook_data call that would carry it only happens under
+    --run-ai). An out-parameter rather than a second return value so every
+    existing call site keeps working unchanged."""
+    _hr("1. TAB READ SUMMARY")
+    xl = pd.ExcelFile(databook_path)
+    print(f"Sheets found in workbook: {xl.sheet_names}")
+
+    dfs, workbook_list, overall_result_type, language, resolution = extract_data_from_excel(
+        databook_path=databook_path, entity_name=entity_name, mode="All",
+        return_resolution=True,
+    )
+    if resolution_out is not None and isinstance(resolution, dict):
+        resolution_out.update(resolution)
+    print(f"\nDetected language: {language}")
+    print(f"Tabs successfully parsed into dfs: {len(dfs)} of {len(xl.sheet_names)} sheets")
+    dfs_keys_normalized = {str(k).strip() for k in dfs.keys()}
+    unparsed = [
+        s for s in xl.sheet_names
+        if s.strip() not in dfs_keys_normalized and s.strip().lower() != "financials"
+    ]
+    if unparsed:
+        print(f"⚠️  Sheets NOT parsed into any account tab (check if these should map): {unparsed}")
+
+    normalization_errors = (resolution or {}).get("normalization_errors") or {}
+    if normalization_errors:
+        print(
+            f"\n❌ {len(normalization_errors)} sheet(s) WERE matched to a mapped account name but "
+            "FAILED to extract data (this is distinct from the 'not parsed' list above, which "
+            "includes intentionally-irrelevant nav/cover/TB tabs — these sheets were expected to "
+            "become account tabs and didn't). The most common cause is a stage/column-header "
+            "vocabulary the extractor doesn't recognize (e.g. no 'Indicative adjusted'/'Audited'/"
+            "'Mgt acc' label, or an unusual date-row layout) — see CANONICAL_STAGE_LABELS in "
+            "fdd_utils/workbook.py. These accounts are silently MISSING from the pipeline entirely, "
+            "not just under-filled, so check them first if a client's databook produces fewer "
+            "accounts than expected."
+        )
+        resolved = (resolution or {}).get("resolved") or {}
+        matched_by_sheet: Dict[str, List[Dict[str, Any]]] = {}
+        for mapping_key, chosen in resolved.items():
+            matched_by_sheet.setdefault(chosen.get("sheet_name", ""), []).append({
+                "mapping_key": mapping_key,
+                "matched_alias": chosen.get("matched_alias", ""),
+                "score": chosen.get("score", ""),
+                "resolution_method": chosen.get("resolution_method", ""),
+            })
+        for sheet_name, err in normalization_errors.items():
+            print(f"    - {sheet_name!r}: {err}")
+            for match in matched_by_sheet.get(sheet_name, []):
+                print(
+                    f"        -> matched to mapping_key={match['mapping_key']!r} via "
+                    f"alias={match['matched_alias']!r} score={match['score']} "
+                    f"method={match['resolution_method']!r} — if this sheet is actually "
+                    "a nav/cover/JE/support tab (not a real account), the match itself is "
+                    "the bug (fdd_utils/workbook.py's alias-scoring in _score_candidate is "
+                    "too permissive for this alias/sheet-name pair), not the extraction step."
+                )
+
+    for key, df in dfs.items():
+        if df is None or df.empty:
+            print(f"  ⚠️  {key}: EMPTY dataframe")
+            continue
+        date_cols = [c for c in df.columns if not str(c).endswith("_formatted") and not str(c).startswith("__")]
+        print(f"  {key}: {len(df)} rows, columns={date_cols[:8]}{'...' if len(date_cols) > 8 else ''}")
+
+    # Every non-empty cell of every tab, mapped or not, and how much of each
+    # reaches the model. Reach is read off the frames' own provenance (source
+    # rows x analysis-stage columns, adjacent detail rows) plus the figures in
+    # the attrs the prompt renders; a tab no account reads says why.
+    _digest = resolution.get("workbook_digest") if isinstance(resolution, dict) else None
+    if _digest:
+        try:
+            from fdd_utils.workbook.digest import format_coverage, mark_reached
+            mark_reached(_digest, dfs)
+            _hr("1c. TAB COVERAGE — every non-empty cell, and how much of each tab reaches the model")
+            for _line in format_coverage(_digest):
+                print("  " + _line)
+        except Exception as _exc:
+            print(f"\n  (tab coverage skipped: {type(_exc).__name__}: {_exc})")
+    return dfs
+
+
+# ---------------------------------------------------------------------------
+# 2. Unit-marker sanity check (root cause class of the 1000x bug)
+# ---------------------------------------------------------------------------
+
+def check_unit_markers(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None:
+    _hr("2. UNIT-MARKER SANITY CHECK (CNY'000 / 人民币千元 detection per tab)")
+    if VERBOSE:
+        print(
+            "Each tab is scanned independently for a thousands-unit marker in its\n"
+            "first 8 rows. If a tab's marker ISN'T found here, its multiplier\n"
+            "silently falls back to 1x instead of 1000x — this is the failure mode\n"
+            "that produces numbers 1000x too small for THAT tab specifically.\n"
+            "Only tabs that actually parsed into an account (see section 1) are\n"
+            "flagged as missing — navigation/cover/TB/pivot tabs are expected to\n"
+            "have no unit marker and are listed but not counted as a problem.\n"
+        )
+    relevant_tabs = {str(k).strip() for k in dfs.keys()}
+    xl = pd.ExcelFile(databook_path)
+    any_missing = False
+    missing_relevant: List[str] = []
+    ok_count = 0
+    skip_count = 0
+    SKIPPED_STATUS = "·  (not a parsed account tab, skipped)"
+    for sheet in xl.sheet_names:
+        try:
+            df = xl.parse(sheet, header=None, nrows=12)
+        except Exception as exc:
+            print(f"  ⚠️  {sheet}: could not read ({exc})")
+            continue
+        markers_8 = _unit_markers(df.head(8))
+        markers_12 = _unit_markers(df)
+        is_relevant = sheet.strip() in relevant_tabs or sheet.strip().lower() == "financials"
+        if markers_8:
+            status = "✅"
+            ok_count += 1
+        elif markers_12:
+            status = "⚠️ found beyond row 8"
+        elif is_relevant:
+            status = "❌ NOT FOUND"
+            any_missing = True
+            missing_relevant.append(sheet)
+        else:
+            status = SKIPPED_STATUS
+            skip_count += 1
+        # Irrelevant nav/cover/TB tabs (SKIPPED_STATUS) are expected to have no
+        # marker and aren't a problem -- printing one line per such sheet was
+        # pure noise on 100+-sheet template workbooks where most sheets are
+        # irrelevant; only actual anomalies print individually now.
+        if VERBOSE or status not in ("✅", SKIPPED_STATUS):
+            print(f"  {status}  {sheet}: markers(first 8 rows)={markers_8}  markers(first 12 rows)={markers_12}")
+    if not VERBOSE:
+        print(f"  {ok_count}/{len(xl.sheet_names)} sheet(s) ✅ (marker found in first 8 rows), "
+              f"{skip_count} not a parsed account tab (skipped) -- not printed individually, "
+              f"use --verbose for the full per-sheet list.")
+    if any_missing:
+        print(
+            f"\n⚠️  {len(missing_relevant)} PARSED account tab(s) have no unit marker in the\n"
+            f"   scanned window: {missing_relevant}\n"
+            "   If the databook actually reports in thousands, those tabs' values will\n"
+            "   be under-scaled by 1000x relative to tabs where the marker IS found.\n"
+            "   Fix: either the tab needs its own 'CNY'000' header repeated, or\n"
+            "   _unit_markers()'s max_rows=8 scan window needs widening for this\n"
+            "   databook's layout (paste this output back for a targeted fix)."
+        )
+    else:
+        print("\n✅ All parsed account tabs declare a unit marker within the scan window.")
+
+
+# ---------------------------------------------------------------------------
+# 2b. Raw-vs-final dump for ONE tab — pinpoints whether a 1000x scaling bug
+#     (item 9 class) is happening at extraction, for a specific tab in a
+#     specific databook. Fully deterministic, no AI, runs in seconds — use
+#     this INSTEAD of a full --run-ai pass when a numeric grounding warning
+#     needs to be traced back to its source instead of re-running the LLM.
+# ---------------------------------------------------------------------------
+
+def _diagnose_sheet_headers(databook_path: str, sheet_name: str) -> None:
+    """Compact, always-works diagnostic for WHY a sheet's stage/date-row
+    detection succeeded or failed — works even when the sheet never made it
+    into dfs (extraction failure), unlike the dfs-dependent dump below.
+    Prints only the header rows' resolved meaning (~10-30 lines), not a full
+    per-cell raw-vs-final table, so it's short enough to paste."""
+    frames = load_workbook_frames(databook_path)
+    raw_df = frames.get(sheet_name)
+    if raw_df is None:
+        close = [k for k in frames.keys() if sheet_name.lower() in str(k).lower()]
+        print(f"❌ Sheet {sheet_name!r} not found in workbook. Available sheets: {sorted(frames.keys())}")
+        if close:
+            print(f"   Did you mean: {close}")
+        return
+
+    stage_row_idx = _stage_row_index(raw_df)
+    date_row_idx = _date_row_index(raw_df, stage_row_idx)
+    print(f"stage_row_idx = {stage_row_idx}   date_row_idx = {date_row_idx}")
+
+    def _row_summary(row_idx, detector, label):
+        if row_idx is None:
+            print(f"  {label} row: NOT FOUND")
+            return
+        print(f"  {label} row {row_idx} (distinct cell values only):")
+        seen = set()
+        for col_idx, value in enumerate(raw_df.iloc[row_idx].tolist()):
+            text = _cell_text(value).strip()
+            if not text:
+                continue
+            result = detector(text)
+            key = (text, result)
+            if key in seen:
+                continue
+            seen.add(key)
+            print(f"    col {col_idx:>3}: {text!r:30s} -> {result}")
+
+    _row_summary(stage_row_idx, canonical_stage_label, "stage")
+    _row_summary(
+        date_row_idx,
+        lambda v: (parse_date(v).strftime("%Y-%m-%d") if parse_date(v) else None),
+        "date",
+    )
+
+    if stage_row_idx is None:
+        print(
+            "\n  No stage row detected at all in the first 12 rows -- no cell matched any "
+            "CANONICAL_STAGE_LABELS variant (fdd_utils/workbook.py). Check the raw text above "
+            "against that list."
+        )
+        return
+
+    try:
+        profile = profile_sheet(raw_df, sheet_name)
+        normalize_financial_schedule(
+            workbook_path=databook_path, sheet_name=sheet_name,
+            profile=profile, sheet_df=raw_df,
+        )
+        print("\n  ✅ normalize_financial_schedule succeeded from this raw profile.")
+    except Exception as exc:
+        print(f"\n  ❌ normalize_financial_schedule failed: {exc}")
+        if "No financial value columns" in str(exc):
+            _diagnose_column_selection(raw_df, sheet_name, stage_row_idx)
+        else:
+            print(
+                "  Stage row WAS found (see above) but no single column satisfied "
+                "stage+date+numeric all together."
+            )
+
+
+def _diagnose_column_selection(raw_df: pd.DataFrame, sheet_name: str, stage_row_idx: int) -> None:
+    """Replicates normalize_financial_schedule's exact per-column stage+date+numeric
+    selection loop and prints why EVERY column was rejected, so a 'No financial value
+    columns detected' failure can be root-caused without guessing (desc_col_idx
+    misdetection, entity-block misselection, forward-fill gaps, or a genuine missing
+    numeric-data column all look identical from the outside otherwise)."""
+    desc_col_idx = _find_description_column(raw_df)
+    print(f"\n  desc_col_idx = {desc_col_idx} (column loop starts at {desc_col_idx + 1 if desc_col_idx is not None else '?'})")
+    if desc_col_idx is None:
+        print("  ❌ No description column detected at all — this is the root cause.")
+        return
+
+    selected_block = _select_entity_block(raw_df, sheet_name, stage_row_idx, None)
+    block_stage_row_idx = selected_block["stage_row_idx"]
+    block_date_row_idx = selected_block["date_row_idx"]
+    if block_stage_row_idx != stage_row_idx:
+        print(f"  ⚠️  _select_entity_block picked a DIFFERENT stage_row_idx ({block_stage_row_idx}) than the "
+              f"top-level detector ({stage_row_idx}) — this is likely the root cause.")
+    print(f"  block stage_row_idx = {block_stage_row_idx}   block date_row_idx = {block_date_row_idx}")
+
+    stage_map = _forward_fill_stage_row(raw_df.iloc[block_stage_row_idx])
+    data_start_row = max(block_stage_row_idx, block_date_row_idx) + 1
+
+    print(f"\n  per-column breakdown (col_idx: stage | raw_date_cell -> parsed_date | numeric_enough):")
+    any_stage_date_match = False
+    for col_idx in range(desc_col_idx + 1, len(raw_df.columns)):
+        stage = stage_map.get(col_idx)
+        raw_date_cell = raw_df.iloc[block_date_row_idx, col_idx]
+        parsed_date = parse_date(raw_date_cell)
+        if not stage and not parsed_date:
+            continue
+        numeric_ok = _is_numeric_enough(raw_df, col_idx, data_start_row) if (stage and parsed_date) else None
+        if stage and parsed_date:
+            any_stage_date_match = True
+        print(f"    col {col_idx:>3}: {stage!r:22s} | {_cell_text(raw_date_cell)!r:15s} -> {parsed_date} | numeric_enough={numeric_ok}")
+
+    if not any_stage_date_match:
+        print("\n  ❌ Root cause: no column ever has BOTH a resolved stage label AND a parseable date "
+              "at the same column index. Compare the stage row's forward-fill span above against where "
+              "the date row actually places its date text — they don't line up.")
+    else:
+        print("\n  ⚠️  Some columns had stage+date but still got excluded — check numeric_enough=False above; "
+              "that means the entire column (from data_start_row down) coerced to no numeric values.")
+
+
+def _compute_tab_mismatches(
+    databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str, entity_name: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Core of the raw-Excel-vs-final-dfs-value comparison, without any
+    printing -- shared by the single-tab deep-dive (dump_tab) and the
+    all-tabs batch scan (check_all_tabs_scaling) so both use the literal
+    same accounting instead of two implementations drifting apart.
+
+    Returns None if this tab can't be checked at all (not in dfs, no
+    recorded source sheet, or normalize_financial_schedule itself raised).
+    Otherwise a dict with keys: sheet_name, computed_multiplier,
+    stored_multiplier, checked (pair count), unverifiable (cells whose
+    col_idx/row_idx didn't resolve against raw_df's actual shape -- a
+    structural row/column-resolution mismatch, distinct from a scaling
+    mismatch, and worth surfacing on its own), mismatches (list of
+    (row_idx, desc, col_key, raw_val, final_val)).
+    """
+    df_final = dfs.get(tab_name)
+    if df_final is None:
+        return None
+
+    sheet_name = df_final.attrs.get("source_sheet_name")
+    stored_multiplier = df_final.attrs.get("source_multiplier")
+    if not sheet_name:
+        return None
+
+    frames = load_workbook_frames(databook_path)
+    raw_df = frames.get(sheet_name)
+    if raw_df is None:
+        return None
+
+    profile = profile_sheet(raw_df, sheet_name)
+    computed_multiplier = _multiply_factor(profile)
+
+    try:
+        normalized = normalize_financial_schedule(
+            workbook_path=databook_path, sheet_name=sheet_name,
+            profile=profile, entity_name=entity_name, sheet_df=raw_df,
+        )
+    except Exception:
+        return None
+
+    checked = 0
+    unverifiable = 0
+    mismatches: List[Tuple[int, str, str, Any, Any]] = []
+    for row in normalized["row_entries"]:
+        row_idx = row["row_idx"]
+        desc = row["description"][:40]
+        for col in normalized["columns"]:
+            # row_idx/col_idx come from normalize_financial_schedule, which for
+            # multi-entity sheets may resolve them against an entity-scoped
+            # block rather than raw_df's own full shape (raw_df here is always
+            # the FULL sheet, unfiltered by entity) -- an out-of-bounds access
+            # is a real, distinct signal (entity/column resolution drifted from
+            # the raw sheet), not a tool bug to silently swallow, but it must
+            # not abort the whole batch scan over one tab's structural quirk.
+            try:
+                raw_val = _coerce_numeric(raw_df.iloc[row_idx, col["col_idx"]])
+            except (IndexError, KeyError):
+                unverifiable += 1
+                continue
+            final_val = row["values"].get(col["key"])
+            expected = round(raw_val * computed_multiplier, 0) if raw_val is not None else None
+            checked += 1
+            if raw_val is not None and final_val is not None and expected is not None and abs(final_val - expected) > 1:
+                mismatches.append((row_idx, desc, col["key"], raw_val, final_val))
+
+    return {
+        "sheet_name": sheet_name,
+        "computed_multiplier": computed_multiplier,
+        "stored_multiplier": stored_multiplier,
+        "checked": checked,
+        "unverifiable": unverifiable,
+        "mismatches": mismatches,
+    }
+
+
+def check_all_tabs_scaling(databook_path: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "") -> int:
+    _hr("2b. RAW-VS-FINAL SCALING CHECK — every breakdown tab, not just Financials")
+    if VERBOSE:
+        print(
+            "For every extracted tab, compares each non-empty cell's raw Excel value (before\n"
+            "any unit-multiplier scaling) against the final value that actually lands in dfs\n"
+            "and gets sent to the AI. A tab-level flag here means the CODE's own scaling of\n"
+            "that tab doesn't match what the raw Excel cell says, independent of whether the\n"
+            "AI wrote anything wrong -- this is a breakdown-tab extraction check, not an AI\n"
+            "grounding check (that's covered separately by 6-7 under --run-ai).\n"
+        )
+    clean, flagged, skipped, structural = 0, [], [], []
+    for tab_name in sorted(dfs.keys()):
+        try:
+            result = _compute_tab_mismatches(databook_path, dfs, tab_name, entity_name=entity_name)
+        except Exception as exc:
+            # One tab's structural quirk (e.g. a multi-entity sheet whose
+            # resolved row/col indices don't line up with the raw sheet's own
+            # shape) must never abort the whole batch scan.
+            structural.append((tab_name, f"{type(exc).__name__}: {exc}"))
+            continue
+        if result is None:
+            skipped.append(tab_name)
+            continue
+        if result.get("unverifiable"):
+            structural.append((tab_name, f"{result['unverifiable']} cell(s) had a row/col index "
+                                          f"that doesn't resolve against the raw sheet's own shape"))
+        if result["mismatches"]:
+            flagged.append((tab_name, result))
+        else:
+            clean += 1
+
+    print(f"{clean} tab(s) clean, {len(flagged)} tab(s) with a raw-vs-final mismatch, "
+          f"{len(skipped)} tab(s) skipped (no recorded source sheet -- can't trace back).")
+    if skipped:
+        print(f"  Skipped: {skipped}")
+    if structural:
+        print(f"\n⚠️  {len(structural)} tab(s) with a structural row/col resolution mismatch "
+              f"(distinct from a scaling mismatch -- likely an entity-block/raw-sheet indexing "
+              f"drift, worth its own look):")
+        for tab_name, note in structural:
+            print(f"    - {tab_name}: {note}")
+    if not flagged:
+        print("✅ No breakdown-tab scaling mismatches found.")
+        return 0
+    print(f"\n⚠️  {len(flagged)} tab(s) with mismatches (use --dump-tab '<name>' for the full row-by-row trace):")
+    for tab_name, result in flagged:
+        mismatches = result["mismatches"]
+        print(f"\n  '{tab_name}' (sheet {result['sheet_name']!r}, multiplier={result['computed_multiplier']}): "
+              f"{len(mismatches)}/{result['checked']} pair(s) mismatched")
+        for row_idx, desc, col_key, raw_val, final_val in mismatches[:3]:
+            print(f"      row {row_idx:>4}  {desc:40s} {col_key:22s} raw={raw_val!s:>16s} final={final_val!s:>16s}")
+        if len(mismatches) > 3:
+            print(f"      ... and {len(mismatches) - 3} more")
+    return len(flagged)
+
+
+def _print_row_survival(tab_name: str, dfs: Dict[str, pd.DataFrame],
+                        normalized: Dict[str, Any], columns: List[Dict[str, Any]]) -> None:
+    """Every row the sheet has, against the ones the AI actually receives.
+
+    The scaling check above answers "is each number right"; it cannot answer
+    "where did the other twelve rows go", which is what a tab that reaches the
+    deck as a bare 合计 needs. A commentary bullet can only enumerate what it
+    was given, so a row dropped here is a component the deck can never name.
+    """
+    rows = normalized.get("row_entries") or []
+    if not rows:
+        return
+
+    # The AI does NOT read the frame this CLI hands around. production
+    # (fdd_utils/workbook/flow.py) feeds it the "detail_analysis" variant, which
+    # is normalize_financial_schedule's prompt_analysis_df; the CLI's own dfs
+    # come from extract_data_from_excel's default variant, i.e. projection_df.
+    # An earlier version of this section compared against the latter and so
+    # reported no change after a fix that only ever touched the former.
+    analysis_df = normalized.get("prompt_analysis_df")
+    deck_df = dfs.get(tab_name)
+
+    # Match on row_idx, not description. A sheet repeats the same label under
+    # different parents -- 应交增值税 appears at rows 4 and 18, the same tenant
+    # under both 租金收入 and 物业管理费收入 -- so a description match reports a
+    # dead row as surviving because its namesake elsewhere did.
+    def _surviving_row_idx(frame):
+        if frame is None or "__source_row_idx" not in getattr(frame, "columns", []):
+            return None
+        return {int(v) for v in frame["__source_row_idx"].tolist() if pd.notna(v)}
+
+    def _first_col_values(frame):
+        if frame is None or not len(getattr(frame, "columns", [])):
+            return set()
+        return {str(v).strip() for v in frame.iloc[:, 0].tolist()}
+
+    survived_idx = _surviving_row_idx(analysis_df)
+    survived = _first_col_values(analysis_df)
+    deck_rows = _first_col_values(deck_df)
+
+    print(f"\n{'=' * 78}")
+    print(f"  ROW SURVIVAL — every row on the sheet vs what reached the AI")
+    print(f"{'=' * 78}")
+    print(f"  sheet has {len(rows)} row(s)")
+    print(f"  ✅/❌ below is against prompt_analysis_df — the 'analysis' variant, "
+          f"which is what\n     production actually sends the AI: {len(survived)} row(s)")
+    print(f"  for reference, the default variant the deck's tables use "
+          f"(projection_df): {len(deck_rows)} row(s)")
+    print(f"\n  {'?':<3}{'row':>5}  {'type':<10}{'description':<34}{'values by period':<40}")
+    dropped = 0
+    for row in rows:
+        desc = str(row.get("description") or "").strip()
+        rtype = str(row.get("row_type") or "?")
+        vals = row.get("values") or {}
+        nonzero = {k: v for k, v in vals.items() if isinstance(v, (int, float)) and abs(v) > 0.5}
+        ridx = row.get("row_idx")
+        ok = (ridx in survived_idx) if survived_idx is not None else (desc in survived)
+        if not ok:
+            dropped += 1
+        has_any = any(v is not None for v in vals.values())
+        shown = "  ".join(
+            f"{k.split('|')[-1]}={v:,.0f}" for k, v in list(nonzero.items())[:3]
+        ) or ("zero in every period" if has_any else "no value in any period")
+        print(f"  {'✅' if ok else '❌':<3}{row.get('row_idx', '?'):>5}  {rtype:<10}{desc[:32]:<34}{shown[:40]:<40}")
+
+    if dropped:
+        print(f"\n  ❌ {dropped} row(s) never reach the AI. Likely reasons, in the order they bite:")
+        print("     - every period reads 0/empty  -> dropped as a dead row")
+        print("     - description matched a working-remark keyword (check/差异/对账单/recon)")
+        print("       -> pulled out of the table into supporting_notes, listed above")
+        print("     - row_type is not one the schedule keeps (see normalize_financial_schedule)")
+        print("     - the row sits in a second block further down the sheet that the main")
+        print("       table extraction never reached")
+        print("     Cross-check the ❌ rows against the real Excel: a row with a real value")
+        print("     in the latest period that still shows ❌ is a genuine extraction bug.")
+    else:
+        print("\n  ✅ Every row on the sheet reached the AI.")
+
+
+def dump_unreached_cells(digest: Optional[Dict[str, Any]], dfs: Dict[str, pd.DataFrame],
+                         tab_name: str, limit: int = 60) -> None:
+    """Every non-zero number on the sheet that no prompt carries, with its labels.
+
+    ROW SURVIVAL above lists the rows extraction recognised. A figure on a row
+    it did not recognise is on neither side of that table: one real tab read
+    "zero in every period" on all four of its rows while the sheet held four
+    non-zero cells and the Financials line for the account was not nil.
+    """
+    frame = dfs.get(tab_name)
+    sheet = (getattr(frame, "attrs", {}) or {}).get("source_sheet_name") or tab_name
+    entry = ((digest or {}).get("sheets") or {}).get(sheet)
+    _hr(f"  NON-ZERO CELLS ON '{sheet}' THAT REACH NO PROMPT (Excel row / column, 1-based)")
+    if entry is None:
+        print("  (no digest for this sheet)")
+        return
+    cells = entry["cells"]
+    missed = [i for i, v in enumerate(cells["v"]) if v != 0 and not cells["reach"][i]]
+    total = sum(1 for v in cells["v"] if v != 0)
+    print(f"  {len(missed)} of {total} non-zero number(s) reach no prompt."
+          + (f" Showing the first {limit}." if len(missed) > limit else ""))
+    row_labels, col_labels = entry.get("row_labels", {}), entry.get("col_labels", {})
+    for i in missed[:limit]:
+        r, c = cells["r"][i], cells["c"][i]
+        print(f"    row {r + 1:>4} col {c + 1:>3}  {cells['v'][i]:>18,.2f}  "
+              f"row label={row_labels.get(str(r))!r}  column label={col_labels.get(str(c))!r}")
+    rows = sorted({cells["r"][i] for i in missed})
+    if rows:
+        print(f"  Sheet rows holding them (1-based): {[r + 1 for r in rows][:40]}")
+        print("  Every text cell on those rows:")
+        for t in entry.get("texts", []):
+            if t[0] in rows:
+                print(f"    row {t[0] + 1:>4} col {t[1] + 1:>3}  {t[2]!r}")
+
+
+def dump_tab(databook_path: str, dfs: Dict[str, pd.DataFrame], tab_name: str,
+             entity_name: str = "") -> None:
+    _hr(f"DUMP TAB: {tab_name!r} (raw Excel value vs final extracted value)")
+
+    if tab_name not in dfs:
+        print(f"⚠️  {tab_name!r} is not in dfs (extraction did not succeed for this tab) — "
+              f"falling back to a raw header-row diagnosis instead of the raw-vs-final table below.\n")
+        _diagnose_sheet_headers(databook_path, tab_name)
+        return
+    df_final = dfs.get(tab_name)
+    if df_final is None:
+        close = [k for k in dfs.keys() if tab_name.lower() in str(k).lower()]
+        print(f"❌ {tab_name!r} not found in dfs. Available keys: {sorted(dfs.keys())}")
+        if close:
+            print(f"   Did you mean: {close}")
+        return
+
+    sheet_name = df_final.attrs.get("source_sheet_name")
+    stored_multiplier = df_final.attrs.get("source_multiplier")
+    if not sheet_name:
+        print(f"❌ {tab_name!r} has no recorded source_sheet_name — cannot trace back to raw Excel.")
+        return
+    print(f"Backing Excel sheet: {sheet_name!r}   stored source_multiplier={stored_multiplier}")
+
+    # Print the REAL production dfs[tab_name] table — this, not the
+    # recomputed raw*multiplier below, is what the AI pipeline actually
+    # receives as ground truth (extract_data_from_excel applies further
+    # steps — projection selection, filter_detail_accounts,
+    # filter_zero_value_rows, annualization — on top of
+    # normalize_financial_schedule's row_entries, so the two CAN diverge).
+    # If a number here doesn't match raw*multiplier below for the same
+    # description/period, that divergence — not the AI's writing — is the
+    # actual bug source.
+    _hr(f"  dfs['{tab_name}'] AS ACTUALLY SEEN BY THE AI PIPELINE")
+    desc_col = df_final.columns[0]
+    numeric_cols = [c for c in df_final.columns if not str(c).endswith("_formatted") and not str(c).startswith("__")]
+    print(df_final[[desc_col] + [c for c in numeric_cols if c != desc_col]].to_string(index=False))
+
+    supporting_notes = df_final.attrs.get("supporting_notes") or []
+    if supporting_notes:
+        table_descriptions = set(str(v).strip() for v in df_final[desc_col].tolist())
+        print(f"\n⚠️  {len(supporting_notes)} supporting_notes entries (text shown to the AI as remarks, separate "
+              f"from the structured table above). Each is labelled below as EXCLUDED (its own description also "
+              f"matched a remark keyword like 'check'/'diff'/'差异'/'对账单'/'recon' in fdd_utils/workbook.py:2835, "
+              f"so this row's numeric values were pulled OUT of the table entirely and this note IS its only "
+              f"trace) vs present-too (the row's description is ALSO a normal row in the table above — this note "
+              f"is just supplementary all-period context, not a data loss):")
+        for note in supporting_notes:
+            label = str(note).split(" | ", 1)[0].strip()
+            tag = "EXCLUDED from table" if label not in table_descriptions else "present-too (not a loss)"
+            print(f"    - [{tag}] {note}")
+
+    frames = load_workbook_frames(databook_path)
+    raw_df = frames.get(sheet_name)
+    if raw_df is None:
+        print(f"❌ Sheet {sheet_name!r} not found via load_workbook_frames.")
+        return
+
+    profile = profile_sheet(raw_df, sheet_name)
+    computed_multiplier = _multiply_factor(profile)
+    print(f"Detected unit_markers (first 8 rows): {profile.get('unit_markers')}")
+    print(f"Computed multiplier from THIS profile: {computed_multiplier}"
+          + ("  ⚠️ MISMATCH vs stored_multiplier!" if stored_multiplier is not None
+             and computed_multiplier != stored_multiplier else ""))
+
+    try:
+        normalized = normalize_financial_schedule(
+            workbook_path=databook_path, sheet_name=sheet_name,
+            profile=profile, entity_name=entity_name, sheet_df=raw_df,
+        )
+    except Exception as exc:
+        print(f"❌ normalize_financial_schedule failed for {sheet_name!r}: {exc}")
+        return
+
+    columns = normalized["columns"]
+    print(f"\nColumns: {[c['key'] for c in columns]}")
+
+    # Compact by default: only print (row, column) pairs where final doesn't
+    # match raw*multiplier — that mismatch is the only thing this check exists
+    # to catch. When everything lines up (the common case), this collapses to
+    # one confirming line instead of a row_idx x column-sized table.
+    checked = 0
+    mismatches = []
+    for row in normalized["row_entries"]:
+        row_idx = row["row_idx"]
+        desc = row["description"][:40]
+        for col in columns:
+            raw_val = _coerce_numeric(raw_df.iloc[row_idx, col["col_idx"]])
+            final_val = row["values"].get(col["key"])
+            expected = round(raw_val * computed_multiplier, 0) if raw_val is not None else None
+            checked += 1
+            if raw_val is not None and final_val is not None and expected is not None and abs(final_val - expected) > 1:
+                mismatches.append((row_idx, desc, col["key"], raw_val, final_val))
+
+    print(f"\nChecked {checked} (row, column) pairs across {len(normalized['row_entries'])} rows.")
+    if not mismatches:
+        print("✅ Every non-empty cell matches raw * computed_multiplier exactly — no scaling bug here.")
+    else:
+        print(f"⚠️  {len(mismatches)} mismatch(es) where final != raw * {computed_multiplier}:")
+        print(f"{'row_idx':>8} {'description':40s} {'column':22s} {'raw':>18s} {'final':>18s}")
+        for row_idx, desc, col_key, raw_val, final_val in mismatches:
+            print(f"{row_idx:>8} {desc:40s} {col_key:22s} {raw_val!s:>18s} {final_val!s:>18s}")
+
+    _print_row_survival(tab_name, dfs, normalized, columns)
+
+    print(
+        f"\nHow to read this: 'raw' is the number exactly as it sits in the Excel cell,\n"
+        f"before ANY scaling. 'final' is raw * {computed_multiplier} (the multiplier this tab\n"
+        f"was detected to use), which is what actually lands in dfs['{tab_name}'] and gets\n"
+        f"sent to the AI as ground truth. If the raw cell value ITSELF already looks like\n"
+        f"an actual-CNY amount (e.g. 384000000) but the sheet's unit marker says '000\n"
+        f"(CNY'000 / 人民币千元), then the multiplier is being applied to a value that was\n"
+        f"NEVER expressed in thousands in the first place — i.e. the marker is real but the\n"
+        f"row itself is not actually in thousands (mixed-unit sheet), OR the raw value is a\n"
+        f"rollup/subtotal computed differently upstream. Compare the 'raw' column above\n"
+        f"against what you see directly in Excel for sheet {sheet_name!r} at the given row_idx."
+    )
+
+
+# ---------------------------------------------------------------------------
+# 3. Row-structure sanity check (indentation / total-then-breakdown)
+# ---------------------------------------------------------------------------
+
+def check_row_structures(dfs: Dict[str, pd.DataFrame]) -> None:
+    _hr("3. ROW-STRUCTURE SANITY CHECK (indentation / total-then-breakdown)")
+    if VERBOSE:
+        print(
+            "Reports how each tab's rows were auto-classified (breakdown / subtotal\n"
+            "/ total / plain). Skim each tab's list against the real Excel layout —\n"
+            "if a row that's visually a breakdown item got classified as a total (or\n"
+            "vice versa), that's exactly the class of layout the auto-detector can\n"
+            "misread. Only tabs with a NON-trivial mix of types are printed in full;\n"
+            "tabs with all-plain rows are summarized in one line.\n"
+        )
+    else:
+        print("Per-tab type counts only -- use --verbose for the full row-by-row listing to skim against real Excel.\n")
+    for key, df in dfs.items():
+        if df is None or df.empty:
+            continue
+        row_types = df.attrs.get("row_types_by_description") or {}
+        desc_col = df.columns[0]
+        descriptions = [str(v) for v in df[desc_col].tolist()]
+        if not row_types or all(row_types.get(d, "plain") == "plain" for d in descriptions):
+            print(f"  {key}: {len(descriptions)} rows, all classified 'plain' (no total/subtotal/breakdown detected)")
+            continue
+        if not VERBOSE:
+            counts: Dict[str, int] = {}
+            for desc in descriptions:
+                rtype = row_types.get(desc, "plain")
+                counts[rtype] = counts.get(rtype, 0) + 1
+            counts_str = ", ".join(f"{n} {t}" for t, n in sorted(counts.items()))
+            # A tab whose main block is a single total is not automatically a
+            # problem: most databooks put the breakdown in a SEPARATE block
+            # lower down, which extract_presentation_detail_table picks up and
+            # the deck renders as a subtable. Reported "很多 acct 只有合計"
+            # could not be judged from this line alone, because it showed the
+            # main block only -- a tab with its detail elsewhere looked
+            # identical to one with no detail at all. Say which it is.
+            _detail = (df.attrs.get("presentation_detail_table") or {})
+            _detail_rows = len(_detail.get("rows") or [])
+            if _detail_rows:
+                _note = f"  + {_detail_rows}-row detail table (renders as a subtable)"
+            elif len(descriptions) <= 1:
+                _note = "  ⚠️ total only, and NO detail table found anywhere on the sheet"
+            else:
+                _note = ""
+            print(f"  {key}: {len(descriptions)} rows ({counts_str}){_note}")
+            continue
+        print(f"  {key}:")
+        for desc in descriptions:
+            rtype = row_types.get(desc, "plain")
+            marker = {"total": "Σ TOTAL", "subtotal": "Σ subtotal", "breakdown": "  breakdown"}.get(rtype, "  plain")
+            print(f"      [{marker:12s}] {desc}")
+
+
+# ---------------------------------------------------------------------------
+# 3b. Indent / sub-item signal check -- cell.alignment.indent (Excel's own
+#     "increase indent" level) and leading whitespace are NEVER read anywhere
+#     by the production pipeline. Every read of a description cell goes
+#     through _cell_text()/pandas, which calls .strip() -- that destroys
+#     leading whitespace (including full-width U+3000) before _row_type()
+#     ever sees it, and openpyxl's own indent attribute is never requested at
+#     all (pandas' read_excel discards style objects). So a genuinely
+#     Excel-indented sub-item ("缩行") row survives ONLY if it happens to
+#     also match one of _row_type()'s purely textual heuristics ("其中"/"of
+#     which" prefix, a total/subtotal keyword, a 6+ digit code, or an
+#     implicit sum-to-parent relationship) -- otherwise it's classified
+#     "detail", identical to a real top-level account, and extracted as its
+#     own standalone account rather than merged into its parent. This check
+#     opens the workbook via raw openpyxl (bypassing pandas' lossy read
+#     entirely) to see the indent/whitespace signal directly, and flags any
+#     row where that signal exists but the pipeline's own classification
+#     (row_types_by_description, already computed by check_row_structures)
+#     is NOT "breakdown".
+# ---------------------------------------------------------------------------
+
+def check_indent_signals(databook_path: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "") -> None:
+    _hr("3b. INDENT / SUB-ITEM SIGNAL CHECK (Excel indent level + leading whitespace)")
+    if VERBOSE:
+        print(
+            "For every tab, reads the RAW description-column cells directly via openpyxl\n"
+            "(not through pandas, which discards both the indent style attribute and any\n"
+            "leading whitespace via .strip()). A row is flagged if it has a real Excel\n"
+            "indent level (Format > Cells > Alignment > Indent) or leading whitespace, but\n"
+            "the pipeline's own row classifier did NOT mark it 'breakdown' -- meaning this\n"
+            "row is currently being extracted as its own standalone account instead of\n"
+            "being recognized as a sub-item of the row above it.\n"
+            "\n"
+            "ALSO reconstructs the full indent hierarchy (parent = nearest preceding row\n"
+            "with a strictly lower indent level, handling multi-level nesting) and checks\n"
+            "whether each parent row's own value already equals the SUM of its direct\n"
+            "children -- this is the key design question for any fix: if parent == sum(children)\n"
+            "everywhere, the parent row ALREADY holds the rolled-up total and children should\n"
+            "just be excluded from becoming standalone accounts (reclassified 'breakdown', same\n"
+            "as an existing '其中'/'of which' row); if parents have NO value of their own, the\n"
+            "indent structure is purely a presentational category label, not a rollup, and a\n"
+            "genuinely different fix (still exclude from account list, but nothing to re-sum).\n"
+        )
+    from openpyxl import load_workbook as _load_workbook_raw
+
+    try:
+        wb_raw = _load_workbook_raw(databook_path, data_only=True)
+    except Exception as exc:
+        print(f"⚠️  Could not open workbook via openpyxl for indent inspection: {exc}")
+        return
+
+    frames = load_workbook_frames(databook_path)
+    total_flagged = 0
+    tabs_with_signal = 0
+    tabs_checked = 0
+    rollup_confirmed_tabs: List[str] = []
+    rollup_mismatch_tabs: List[str] = []
+    no_parent_value_tabs: List[str] = []
+    deep_trace_done = False
+    for tab_name in sorted(dfs.keys()):
+        df = dfs.get(tab_name)
+        if df is None or df.empty:
+            continue
+        sheet_name = df.attrs.get("source_sheet_name")
+        if not sheet_name or sheet_name not in wb_raw.sheetnames:
+            continue
+        raw_df = frames.get(sheet_name)
+        if raw_df is None:
+            continue
+        desc_col_idx = _find_description_column(raw_df)
+        if desc_col_idx is None:
+            continue
+        tabs_checked += 1
+        ws = wb_raw[sheet_name]
+        row_types = df.attrs.get("row_types_by_description") or {}
+
+        all_rows: List[Tuple[int, int, str]] = []  # (row_idx 0-based, indent_level, label)
+        flagged_rows: List[Tuple[int, int, bool, str, str]] = []
+        sheet_has_signal = False
+        for row_idx in range(len(raw_df)):
+            cell = ws.cell(row=row_idx + 1, column=desc_col_idx + 1)  # openpyxl is 1-indexed
+            raw_value = cell.value
+            if raw_value is None or not isinstance(raw_value, str):
+                continue
+            indent_level = 0
+            try:
+                indent_level = int(cell.alignment.indent or 0)
+            except Exception:
+                indent_level = 0
+            stripped_desc = raw_value.strip()
+            if not stripped_desc:
+                continue
+            all_rows.append((row_idx, indent_level, stripped_desc))
+            has_leading_ws = raw_value != raw_value.lstrip(" 　\t")
+            if indent_level <= 0 and not has_leading_ws:
+                continue
+            sheet_has_signal = True
+            classification = row_types.get(stripped_desc, "plain")
+            if classification != "breakdown":
+                flagged_rows.append((row_idx + 1, indent_level, has_leading_ws, raw_value, classification))
+
+        if sheet_has_signal:
+            tabs_with_signal += 1
+        # Rollup check: does a parent row's own value already equal the sum
+        # of its direct children? Needs at least one real indent level (a
+        # leading-whitespace-only tab has no reliable multi-level structure
+        # to build a hierarchy from). Computed BEFORE the flagged-rows print
+        # (moved up from its original position after that print) so a FRESH,
+        # single-threaded normalize_financial_schedule call's own row_type
+        # can be shown alongside the PRODUCTION (extract_data_from_excel,
+        # which runs this same function inside a ThreadPoolExecutor)
+        # classification for the identical row -- if these two disagree, that
+        # is direct proof the discrepancy is specific to the threaded call
+        # path, not the reclassification logic itself; if they agree (both
+        # still non-'breakdown'), the bug is elsewhere and threading is a
+        # red herring, needing a different fix than the one already shipped.
+        has_real_indent = any(lvl > 0 for _, lvl, _ in all_rows)
+        normalized = None
+        fresh_row_types: Dict[str, str] = {}
+        if has_real_indent:
+            children_of = _infer_indent_hierarchy(all_rows)
+            if children_of:
+                try:
+                    profile = profile_sheet(raw_df, sheet_name)
+                    normalized = normalize_financial_schedule(
+                        workbook_path=databook_path, sheet_name=sheet_name,
+                        profile=profile, entity_name=entity_name, sheet_df=raw_df,
+                    )
+                    fresh_row_types = {
+                        row["description"]: row["row_type"] for row in normalized["row_entries"]
+                    }
+                except Exception as exc:
+                    print(f"\n  ⚠️  '{tab_name}': could not normalize for rollup-check ({exc}) -- skipping rollup check.")
+
+        if flagged_rows:
+            total_flagged += len(flagged_rows)
+            print(f"\n  ⚠️  '{tab_name}' (sheet {sheet_name!r}): {len(flagged_rows)} row(s) with an indent/"
+                  f"whitespace signal in Excel but NOT classified 'breakdown':")
+            for excel_row, indent_level, has_leading_ws, raw_value, classification in flagged_rows:
+                signal = f"indent={indent_level}" if indent_level > 0 else "leading-whitespace"
+                fresh_classification = fresh_row_types.get(raw_value.strip())
+                agreement = ""
+                if fresh_classification is not None:
+                    agreement = (
+                        "  [fresh single-threaded call AGREES -- not a threading issue]"
+                        if fresh_classification == classification else
+                        f"  [fresh single-threaded call says {fresh_classification!r} instead -- THREADING-PATH-SPECIFIC]"
+                    )
+                print(f"      Excel row {excel_row}: [{signal}] {raw_value!r} -> classified {classification!r} "
+                      f"(will be extracted as its OWN account, not merged into its parent){agreement}")
+
+        if not has_real_indent or normalized is None:
+            continue
+        columns = normalized.get("columns") or []
+        if not columns:
+            continue
+        latest_key = columns[-1]["key"]
+        value_by_row_idx: Dict[int, float] = {}
+        type_by_row_idx: Dict[int, str] = {}
+        for row in normalized["row_entries"]:
+            v = row["values"].get(latest_key)
+            if v is not None:
+                value_by_row_idx[row["row_idx"]] = v
+            type_by_row_idx[row["row_idx"]] = row.get("row_type")
+
+        label_by_row_idx = {row_idx: label for row_idx, _level, label in all_rows}
+        checked = 0
+        matches = 0
+        mismatches: List[Tuple[int, float, float, int, List[int]]] = []
+        no_value_parents = 0
+        for parent_row_idx, child_row_idxs in children_of.items():
+            parent_val = value_by_row_idx.get(parent_row_idx)
+            child_vals = [value_by_row_idx.get(c) for c in child_row_idxs]
+            if any(v is None for v in child_vals):
+                continue  # incomplete data for this group -- not checkable
+            if parent_val is None:
+                no_value_parents += 1
+                continue
+            child_sum = sum(child_vals)
+            checked += 1
+            if abs(parent_val - child_sum) <= max(1.0, abs(parent_val) * 0.005):
+                matches += 1
+            else:
+                mismatches.append((parent_row_idx, parent_val, child_sum, len(child_row_idxs), child_row_idxs))
+
+        if checked or no_value_parents:
+            print(f"\n  Rollup check for '{tab_name}' (latest period {latest_key!r}): "
+                  f"{checked} parent/children group(s) checkable "
+                  f"({matches} match, {len(mismatches)} mismatch), "
+                  f"{no_value_parents} parent row(s) have NO value of their own (pure category label).")
+            for parent_row_idx, parent_val, child_sum, n_children, child_row_idxs in mismatches[:5]:
+                parent_label = label_by_row_idx.get(parent_row_idx, "?")
+                print(f"      Excel row {parent_row_idx + 1} {parent_label!r}: parent={parent_val:,.2f} != "
+                      f"sum of {n_children} child/children={child_sum:,.2f}")
+                for child_row_idx in child_row_idxs:
+                    child_label = label_by_row_idx.get(child_row_idx, "?")
+                    child_val = value_by_row_idx.get(child_row_idx)
+                    print(f"          child Excel row {child_row_idx + 1} {child_label!r}: "
+                          f"value={child_val if child_val is None else f'{child_val:,.2f}'}")
+
+            # DEEP TRACE (fires once, for the first tab where this LOCAL,
+            # unfiltered rollup check found a real match yet the row is
+            # STILL flagged as un-reclassified above) -- calls
+            # _build_indent_signal_index directly (the exact same precomputed
+            # data _reclassify_indent_rollup_children reads in production)
+            # and prints it side-by-side with this function's OWN local
+            # all_rows for the identical sheet, so any divergence between
+            # the two -- which one is missing rows, wrong indent levels, or
+            # wrong labels -- is directly visible instead of guessed at.
+            if not deep_trace_done and matches > 0 and flagged_rows:
+                deep_trace_done = True
+                print(f"\n  --- DEEP TRACE for '{tab_name}' (first tab with a real match still unreclassified) ---")
+                try:
+                    prod_index_rows = _build_indent_signal_index(databook_path).get(sheet_name)
+                except Exception as exc:
+                    prod_index_rows = None
+                    print(f"      _build_indent_signal_index raised: {exc}")
+                print(f"      LOCAL  all_rows ({len(all_rows)} rows): {all_rows[:8]}")
+                if prod_index_rows is None:
+                    print(f"      PROD   _build_indent_signal_index(...).get({sheet_name!r}) -> None (sheet not in index at all)")
+                else:
+                    print(f"      PROD   indent_index rows ({len(prod_index_rows)} rows): {prod_index_rows[:8]}")
+                    if prod_index_rows != all_rows:
+                        print(f"      ⚠️  MISMATCH between LOCAL and PROD row lists for the same sheet -- this is the bug.")
+                    else:
+                        print(f"      ✅ LOCAL and PROD row lists are IDENTICAL -- if rows are still not "
+                              f"reclassified after this, the bug is downstream in "
+                              f"_reclassify_indent_rollup_children's consumption (value_by_row_idx / "
+                              f"projection_column_key / _infer_indent_hierarchy), not in the precomputed index itself.")
+                # Also show what row_entries actually has for the row_idxs
+                # involved -- row_type in particular shows whether
+                # reclassification to 'breakdown' actually happened on this
+                # fresh call, and description shows whether row_idx maps to
+                # the same text row_entries resolved (a text mismatch here
+                # would mean row_idx correspondence itself is off, e.g. a
+                # standardized/rebuilt sheet_df).
+                fresh_row_entries = normalized.get("row_entries") or []
+                fresh_desc_by_idx = {row["row_idx"]: row.get("description") for row in fresh_row_entries}
+                fresh_type_by_idx = {row["row_idx"]: row.get("row_type") for row in fresh_row_entries}
+                sample_row_idxs = sorted({r for r, _, _ in all_rows[:8]})
+                for r_idx in sample_row_idxs:
+                    raw_label = label_by_row_idx.get(r_idx, "?")
+                    resolved_desc = fresh_desc_by_idx.get(r_idx, "<row_idx NOT IN row_entries>")
+                    resolved_type = fresh_type_by_idx.get(r_idx, "?")
+                    text_match = "MATCH" if resolved_desc == raw_label else "MISMATCH"
+                    print(f"      row_idx={r_idx}: raw_label={raw_label!r}  vs  row_entries.description="
+                          f"{resolved_desc!r}  [{text_match}]  row_type={resolved_type!r}")
+
+            # RESIDUAL ORPHAN ANALYSIS -- fires for EVERY tab that still has
+            # flagged rows after both production reclassification passes
+            # (not gated to once), unlike the DEEP TRACE above which was
+            # single-purpose (confirm/deny the threading hypothesis on one
+            # tab). Groups the still-flagged rows by their shared (invalid)
+            # parent, prints the group's own sum, and lists every total/
+            # subtotal row already known in this tab with its value --
+            # makes it visible at a glance whether a residual case is (a) a
+            # near-miss just outside the 0.5% tolerance (possible rounding/
+            # different-period issue), (b) genuinely ambiguous between
+            # several total-like candidates, or (c) has no total/subtotal
+            # candidate in this tab at all (needs sourcing from elsewhere,
+            # or is a non-additive relationship like a VAT input/output net).
+            flagged_idx_set = {excel_row - 1 for excel_row, _, _, _, _ in flagged_rows}
+            parent_of_idx: Dict[int, int] = {
+                c: p for p, cs in children_of.items() for c in cs
+            }
+            siblings_by_parent: Dict[int, List[int]] = {}
+            for child_idx in flagged_idx_set:
+                parent_idx = parent_of_idx.get(child_idx)
+                if parent_idx is None:
+                    continue  # this flagged row isn't part of any indent hierarchy group at all
+                siblings_by_parent.setdefault(parent_idx, []).append(child_idx)
+            if siblings_by_parent:
+                total_subtotal_candidates = [
+                    (row_idx, label_by_row_idx.get(row_idx, type_by_row_idx.get(row_idx)), value_by_row_idx.get(row_idx))
+                    for row_idx, rtype in type_by_row_idx.items()
+                    if rtype in ("total", "subtotal") and value_by_row_idx.get(row_idx) is not None
+                ]
+                print(f"\n  --- RESIDUAL ORPHAN ANALYSIS for '{tab_name}' ---")
+                for parent_idx, sib_idxs in siblings_by_parent.items():
+                    sib_vals = [value_by_row_idx.get(i) for i in sib_idxs]
+                    sib_info = [(label_by_row_idx.get(i, "?"), v) for i, v in zip(sib_idxs, sib_vals)]
+                    if any(v is None for v in sib_vals):
+                        print(f"      orphaned group (parent row_idx={parent_idx} {label_by_row_idx.get(parent_idx, '?')!r}): "
+                              f"{sib_info} -- some sibling value(s) missing, can't sum")
+                        continue
+                    sib_sum = sum(sib_vals)
+                    print(f"      orphaned group (parent row_idx={parent_idx} {label_by_row_idx.get(parent_idx, '?')!r}): "
+                          f"siblings={sib_info}  sum={sib_sum:,.2f}")
+                    if abs(sib_sum) < 1.0:
+                        print(f"          sum is ~0 -- production's zero-sum guard blocks this before candidate "
+                              f"matching even starts (a $0 'match' against any $0 total is not meaningful evidence).")
+                        continue
+                    near = [
+                        (row_idx, label, val) for row_idx, label, val in total_subtotal_candidates
+                        if abs(val - sib_sum) <= max(1.0, abs(sib_sum) * 0.02)
+                    ]
+                    exact = [c for c in near if abs(c[2] - sib_sum) <= max(1.0, abs(sib_sum) * 0.005)]
+                    exact_distinct_values = {round(c[2], 2) for c in exact}
+                    if exact and len(exact_distinct_values) == 1:
+                        print(f"          {len(exact)} exact-tolerance candidate(s), all the SAME value -- "
+                              f"production now reclassifies this (fixed, see [[distinct-value dedup]]): {exact}")
+                    elif exact:
+                        print(f"          {len(exact)} exact-tolerance candidate(s) but with DIFFERENT values -- "
+                              f"genuinely ambiguous, production correctly leaves this alone: {exact}")
+                    elif near:
+                        print(f"          near-miss (within 2%, but outside the 0.5% production tolerance): {near}")
+                    else:
+                        print(f"          no total/subtotal candidate in this tab is even close -- either sourced "
+                              f"from elsewhere, a non-additive relationship (e.g. VAT input/output net), or genuinely "
+                              f"needs individual review. All total/subtotal rows in this tab: "
+                              f"{[(l, v) for _, l, v in total_subtotal_candidates]}")
+                        # SUBSET AMBIGUITY CHECK (diagnostic-only, never
+                        # reclassifies anything -- production stays
+                        # conservative here per explicit user confirmation).
+                        # The full group's sum didn't match anything above,
+                        # but a PROPER SUBSET of the group might -- and if
+                        # MULTIPLE overlapping subsets each match some
+                        # candidate, that's a real ambiguity (no structural
+                        # signal, e.g. indent, to say which subset is the
+                        # true rollup relationship), worth surfacing
+                        # explicitly rather than leaving it in the generic
+                        # "no candidate" bucket above, which undersells that
+                        # there in fact WAS a match, just not a safe one to
+                        # act on automatically. Bounded to small groups since
+                        # this is 2^n-1 subsets.
+                        if 2 <= len(sib_idxs) <= 8:
+                            subset_hits = []
+                            for size in range(1, len(sib_idxs)):
+                                for subset in combinations(sib_idxs, size):
+                                    subset_sum = sum(value_by_row_idx[i] for i in subset)
+                                    if abs(subset_sum) < 1.0:
+                                        continue
+                                    subset_matches = [
+                                        (row_idx, label, val) for row_idx, label, val in total_subtotal_candidates
+                                        if abs(val - subset_sum) <= max(1.0, abs(subset_sum) * 0.005)
+                                    ]
+                                    if subset_matches:
+                                        subset_labels = [label_by_row_idx.get(i, "?") for i in subset]
+                                        subset_hits.append((subset_labels, subset_sum, subset_matches))
+                            if len(subset_hits) >= 2:
+                                print(f"          ⚠️  SUBSET AMBIGUITY: {len(subset_hits)} different subset(s) of "
+                                      f"this group each independently match a total/subtotal candidate -- no "
+                                      f"structural signal (e.g. indent) to pick between them, correctly left for "
+                                      f"individual review rather than auto-guessing which one is real:")
+                                for subset_labels, subset_sum, subset_matches in subset_hits:
+                                    print(f"              {subset_labels} sum={subset_sum:,.2f} matches {subset_matches}")
+                            elif subset_hits:
+                                subset_labels, subset_sum, subset_matches = subset_hits[0]
+                                print(f"          note: a PROPER SUBSET {subset_labels} (sum={subset_sum:,.2f}) "
+                                      f"matches {subset_matches} on its own, even though the full group doesn't -- "
+                                      f"not auto-applied since production only tries the full sibling group, not "
+                                      f"subsets, but worth a manual look.")
+
+            if checked and matches == checked:
+                rollup_confirmed_tabs.append(tab_name)
+            elif mismatches:
+                rollup_mismatch_tabs.append(tab_name)
+            if no_value_parents and not checked:
+                no_parent_value_tabs.append(tab_name)
+
+    print(f"\n{tabs_checked} tab(s) checked, {tabs_with_signal} with at least one indent/whitespace "
+          f"signal in their description column.")
+    if total_flagged:
+        print(
+            f"⚠️  {total_flagged} row(s) flagged above -- these are the concrete candidates for "
+            f"'缩行' sub-items being silently extracted as standalone accounts instead of merged "
+            f"into their parent row. Cross-check each against the real Excel layout for that tab."
+        )
+    elif tabs_with_signal:
+        print("✅ Every row with an indent/whitespace signal was already classified 'breakdown'.")
+    else:
+        print("ℹ️  No Excel indent level or leading whitespace found in any tab's description column "
+              "-- if this databook DOES have visually-indented sub-items, they're likely represented "
+              "some other way (e.g. a merged/nested cell, a separate marker column) rather than Excel's "
+              "own indent attribute or literal leading spaces.")
+
+    if rollup_confirmed_tabs or rollup_mismatch_tabs or no_parent_value_tabs:
+        print(
+            f"\nRollup semantics summary (this is what decides how the eventual fix should work):\n"
+            f"  {len(rollup_confirmed_tabs)} tab(s) where parent value == sum(children) everywhere "
+            f"checkable -- ROLLUP confirmed: {rollup_confirmed_tabs}\n"
+            f"  {len(rollup_mismatch_tabs)} tab(s) with at least one mismatch -- needs individual "
+            f"review, see rows printed above: {rollup_mismatch_tabs}\n"
+            f"  {len(no_parent_value_tabs)} tab(s) where parent rows have NO value at all -- pure "
+            f"category labels, not a numeric rollup: {no_parent_value_tabs}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 4. Reconciliation summary with actionable tab-name listing
+# ---------------------------------------------------------------------------
+
+_NOTE_VALUE_RE = re.compile(r"-?[\d,]+(?:\.\d+)?")
+
+
+def _extract_note_values(note: str) -> List[float]:
+    """A supporting_note like 'Check | 2024-12-31: 3,000,000 | 2026-06-30:
+    -17,658,307' is client-authored free text shown to the AI as a remark,
+    separate from the structured table. Split on '|' and take only the part
+    after the LAST ':' in each segment before regexing for a number, so a
+    date fragment like '2024-12-31' is never misread as the value -12 or -31."""
+    values: List[float] = []
+    for segment in (note or "").split("|"):
+        segment = segment.strip()
+        if ":" in segment:
+            value_part = segment.rsplit(":", 1)[-1]
+        elif parse_date(segment):
+            continue  # a bare date fragment (no ':'), not a value -- skip so
+            # e.g. '2024-12-31' is never misread as the values 2024/-12/-31
+        else:
+            value_part = segment
+        for match in _NOTE_VALUE_RE.finditer(value_part):
+            raw = match.group(0)
+            if raw in ("-", ""):
+                continue
+            try:
+                values.append(float(raw.replace(",", "")))
+            except ValueError:
+                continue
+    return values
+
+
+def _notes_matching_diff(tab_account: str, dfs: Dict[str, pd.DataFrame], diff_val: float) -> List[str]:
+    """A ❌ Diff means the Financials summary and this breakdown tab's total
+    disagree -- but sometimes the breakdown tab ALREADY explains the gap via
+    its own supporting_notes (e.g. a client 'Check' remark row that equals
+    the diff exactly, meaning the client's own workbook already flagged this
+    as a known reconciling item, not a pipeline extraction bug). Same
+    tolerance as reconcile_financial_statements (workbook.py): abs <= 1.0 OR
+    relative <= 0.5%, so this only fires on a genuine match, not a coincidence."""
+    if diff_val is None or tab_account in (None, "-", "Not Found"):
+        return []
+    df = dfs.get(tab_account)
+    if df is None:
+        return []
+    notes = df.attrs.get("supporting_notes") or []
+    tolerance = max(1.0, abs(diff_val) * 0.005)
+    matches = []
+    for note in notes:
+        if any(abs(abs(v) - abs(diff_val)) <= tolerance for v in _extract_note_values(note)):
+            matches.append(note)
+    return matches
+
+
+def _trace_bs_is_detection_failure(
+    financials_path: str, sheet_name: str, bs_is_results: Dict[str, Any],
+) -> None:
+    """When extract_balance_sheet_and_income_statement() (fdd_utils/workbook.py)
+    comes back with balance_sheet=None or income_statement=None, re-runs it
+    with debug=True (stdout captured) and prints the trace -- this reuses the
+    REAL production keyword search and extraction path verbatim instead of
+    re-implementing a second copy of the BS/IS keyword lists here, which would
+    risk exactly the kind of drift already found between workbook.py's own
+    lists and the separate copy in keyword_registry.py (used by a different,
+    narrower diagnostic path, NOT by this function). Whichever statement
+    already succeeded is trimmed from the trace (its debug lines are verbose
+    and not the reason this fired) -- only the ❌-relevant portion is kept."""
+    missing = []
+    if bs_is_results.get("balance_sheet") is None:
+        missing.append("Balance Sheet")
+    if bs_is_results.get("income_statement") is None:
+        missing.append("Income Statement")
+    _hr(f"4b. SECTION-DETECTION FAILURE TRACE — {' and '.join(missing)} not found on {sheet_name!r}")
+    print(
+        "Re-running the real extractor (fdd_utils/workbook.py:"
+        "extract_balance_sheet_and_income_statement) with its own debug=True "
+        "trace to show exactly which keyword search failed and why. This is "
+        "the ACTUAL production code path, not a re-implementation -- if the "
+        "missing statement's section-header text in the Financials sheet "
+        "doesn't literally contain any of the phrases marked '[searching for]' "
+        "below, that's the root cause; if a header WAS found but extraction "
+        "still failed, the per-row/per-column detail after it explains why.\n"
+    )
+    buf = io.StringIO()
+    try:
+        with redirect_stdout(buf):
+            extract_balance_sheet_and_income_statement(
+                workbook_path=financials_path, sheet_name=sheet_name, debug=True,
+            )
+    except Exception as exc:
+        print(f"❌ debug re-run itself raised: {exc}")
+        return
+    # Printed in full, matching this file's own convention that findings/
+    # flags (as opposed to "everything is fine" detail) are never trimmed --
+    # this trace only fires on a genuine failure, never on the happy path.
+    print(buf.getvalue())
+
+
+
+def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None:
+    """Walk the ACTUAL chain a subtable travels, and say where it stops.
+
+    Written because "still no subtables" had already survived two rounds of
+    reasoning-from-code. Every step below calls the production function rather
+    than re-deriving its logic -- the gate, the lookup and the payload check
+    are the same objects the exporter uses, so this cannot agree with a
+    version of the pipeline that is not shipping. Deterministic, no AI.
+
+    The chain, in order, is:
+      1. pptx.presentation_tables.enabled (or FDD_SUBTABLES) -- the gate
+      2. presentation_tables.style -- "table" draws one, "sublist" folds it
+         into the commentary text instead and NO table shape is ever created
+      3. df.attrs["presentation_detail_table"] on the account's own frame
+      4. dfs[account_key] -- the payload looks the frame up by the account key
+         find_mapping_key resolved, which is not necessarily the tab name
+      5. _presentation_table_for_account -- what the packer actually calls
+    """
+    _hr("3c. SUBTABLE READINESS (why each account will or will not get one)")
+    try:
+        from fdd_utils.pptx import PowerPointGenerator
+        from fdd_utils.pptx.helpers import _presentation_table_for_account
+        from fdd_utils.workbook import find_mapping_key, load_mappings, get_effective_mappings
+    except Exception as exc:
+        print(f"  Could not import the production pieces: {type(exc).__name__}: {exc}")
+        return
+
+    # Read off the frames rather than taking it as an argument: this check runs
+    # on the deterministic path, where inspect_one has no `language` bound yet.
+    is_chi = any(
+        str((getattr(df, "attrs", None) or {}).get("report_language") or "").strip().lower()
+        in ("chi", "chinese")
+        for df in (dfs or {}).values()
+    ) or any(re.search(r"[\u4e00-\u9fff]", str(k)) for k in (dfs or {}))
+    template_path = str(Path(__file__).parent / "fdd_utils" / "template.pptx")
+    try:
+        gen = PowerPointGenerator(template_path, "chinese" if is_chi else "english")
+        enabled = gen._presentation_tables_enabled()
+        style = gen._presentation_table_style()
+    except Exception as exc:
+        print(f"  Could not build the generator (template missing?): {type(exc).__name__}: {exc}")
+        return
+
+    print(f"  [1] gate  pptx.presentation_tables.enabled -> {enabled}")
+    print(f"  [2] style presentation_tables.style        -> {style!r}"
+          + ("   (draws a native table)" if style == "table"
+             else "   ⚠️ 'sublist' folds the table into commentary TEXT -- no table shape is created"))
+    if not enabled:
+        print("\n  ❌ STOPS AT STEP 1: the gate is off, nothing downstream runs.")
+        return
+
+    mappings = get_effective_mappings(load_mappings(), None)
+    rows = []
+    for account_key, df in sorted((dfs or {}).items()):
+        attrs = getattr(df, "attrs", None) or {}
+        table = attrs.get("presentation_detail_table")
+        mapping_key = find_mapping_key(account_key, mappings)
+        # Step 4/5 exactly as the payload builder and packer do it.
+        looked_up = dfs.get(account_key) if account_key in (dfs or {}) else None
+        via_payload = _presentation_table_for_account({"financial_data": looked_up})
+        rows.append({
+            "account": account_key,
+            "mapping": mapping_key or "-",
+            "has_attrs_table": bool(table and table.get("rows")),
+            "source": (table or {}).get("synthesized_from") or ("sheet" if table else "-"),
+            # Section labels are structure, not components -- same rule the
+            # selector uses, so 3c's count matches what min_rows is applied to.
+            "n_rows": len([r for r in ((table or {}).get("rows") or [])
+                           if not (isinstance(r, dict) and r.get("is_header"))]),
+            "n_periods": len((table or {}).get("periods") or []),
+            "reaches_packer": bool(via_payload),
+            "reason": str(attrs.get("presentation_detail_table_reason") or ""),
+        })
+
+    ok = [r for r in rows if r["reaches_packer"]]
+    print(f"\n  {len(ok)} of {len(rows)} account(s) hand a table to the packer.\n")
+    print(f"    {'account':<14}{'mapping':<12}{'attrs?':<8}{'source':<28}{'rows':>5}{'per':>5}  packer")
+    for r in sorted(rows, key=lambda x: (not x["reaches_packer"], x["account"])):
+        print(f"    {r['account'][:13]:<14}{str(r['mapping'])[:11]:<12}"
+              f"{'yes' if r['has_attrs_table'] else 'NO':<8}{str(r['source'])[:27]:<28}"
+              f"{r['n_rows']:>5}{r['n_periods']:>5}  {'YES' if r['reaches_packer'] else 'no'}")
+
+    declined = [r for r in rows if not r["reaches_packer"] and r["reason"]]
+    if declined:
+        print("\n  Why the synthesised fallback declined, per account:")
+        for r in declined:
+            print(f"    {r['account'][:13]:<14}{r['reason']}")
+
+    if not ok:
+        print("\n  ❌ NO account reaches the packer. The step that stopped it is the first"
+              "\n     column above reading NO -- i.e. the frame carries no"
+              "\n     presentation_detail_table at all, so neither the sheet's own block nor"
+              "\n     synthesize_detail_table_from_breakdown produced one.")
+    elif style != "table":
+        print(f"\n  ⚠️ {len(ok)} table(s) reach the packer but style={style!r}, so they are rendered"
+              "\n     as indented TEXT inside the commentary, not as a table shape. That is why"
+              "\n     the deck shows no subtable even though everything upstream works.")
+    else:
+        print("\n  ✅ Tables reach the packer and the style draws them.")
+        # Having a table and being DRAWN one are now different things: the
+        # planner keeps min_rows/max_per_statement of them and returns the
+        # rest to ordinary commentary. Run the real selector rather than
+        # restating its rules -- a diagnostic that models a different
+        # algorithm than the one shipping is worse than no diagnostic (the
+        # same lesson _plan_slot_distribution's own docstring records).
+        from fdd_utils.pptx.helpers import _select_deck_subtables, _SUBTABLE_DECISION_KEY
+
+        settings = gen.pptx_settings
+        tables_cfg = (settings.get("presentation_tables") or {})
+        print(f"\n  [3] selection  min_rows={tables_cfg.get('min_rows', 3)}  "
+              f"max_per_deck={tables_cfg.get('max_per_deck', 5)}   (income statement first)")
+
+        # Run the deck-level selector itself, on both statements at once,
+        # exactly as export_pptx_from_structured_data_combined does -- the cap
+        # is deck-wide, so scoring either statement alone reports a count the
+        # deck never draws. mappings[key]["type"] is the same field
+        # build_pptx_payloads splits on.
+        by_statement: Dict[str, list] = {"BS": [], "IS": [], "?": []}
+        for r in ok:
+            entry = mappings.get(r["mapping"]) or {}
+            by_statement.setdefault(str(entry.get("type") or "?"), []).append(r)
+
+        stub_of = {}
+        for statement, group in by_statement.items():
+            for r in group:
+                stub = {"mapping_key": r["mapping"], "account_name": r["account"],
+                        "financial_data": dfs.get(r["account"])}
+                stub_of[id(stub)] = r
+                r["_stub"] = stub
+        rejected = _select_deck_subtables(
+            [(s, [r["_stub"] for r in by_statement.get(s) or []]) for s in ("IS", "BS", "?")],
+            settings,
+        )
+        reason_of = {id(item): reason for item, reason in rejected}
+
+        drawn_total = 0
+        for statement in ("IS", "BS", "?"):
+            group = by_statement.get(statement) or []
+            if not group:
+                continue
+            drawn = [r for r in group if r["_stub"].get(_SUBTABLE_DECISION_KEY)]
+            drawn_total += len(drawn)
+            label = {"BS": "balance sheet", "IS": "income statement"}.get(
+                statement, "unclassified (no type in mappings.yml -- NOT in the deck)")
+            print(f"\n    {label}: {len(drawn)} drawn of {len(group)} available")
+            for r in group:
+                if r["_stub"].get(_SUBTABLE_DECISION_KEY):
+                    print(f"      ✅ {r['account']}  ({r['n_rows']} components)")
+            for r in group:
+                if not r["_stub"].get(_SUBTABLE_DECISION_KEY):
+                    print(f"      ➖ {r['account']}: {reason_of.get(id(r['_stub']), '?')}")
+
+        print(f"\n  => {drawn_total} table(s) in this entity's deck, of {len(ok)} available.")
+        if drawn_total != len(ok):
+            print("     A rejected account is NOT losing content: it keeps its full commentary"
+                  "\n     and returns to normal packing, with a dangling '明细如下：' trimmed."
+                  "\n     Tune with pptx.presentation_tables.min_rows / max_per_deck;"
+                  "\n     min_rows=2 + a large max_per_deck is the old draw-everything"
+                  "\n     behaviour.")
+
+
+def check_statement_table_units(bs_is_results: Dict[str, Any]) -> None:
+    """What the embedded BS/IS grid will actually print in its unit cell, and
+    at what scale -- the two things reported wrong after the grid started
+    rendering ("人民币千元" became a description, values came out raw)."""
+    _hr("4b. STATEMENT TABLE HEADER + VALUE SCALE (the 人民币千元 cell)")
+    for key in ("balance_sheet", "income_statement"):
+        frame = (bs_is_results or {}).get(key)
+        if frame is None or getattr(frame, "empty", True):
+            print(f"  {key}: (none)")
+            continue
+        cols = list(frame.columns)
+        first_col = str(cols[0])
+        numeric = [c for c in cols[1:] if pd.api.types.is_numeric_dtype(frame[c])]
+        sample = None
+        if numeric:
+            vals = [abs(float(v)) for v in frame[numeric[-1]].tolist()
+                    if isinstance(v, (int, float)) and not pd.isna(v) and v != 0]
+            sample = max(vals) if vals else None
+        print(f"  {key}:")
+        print(f"    first column name : {first_col!r}"
+              + ("   ⚠️ this is what the top-left unit cell prints"
+                 if "人民币" not in first_col and "CNY" not in first_col.upper() else ""))
+        print(f"    columns           : {cols}")
+        if sample is not None:
+            scale = "raw yuan" if sample >= 1e6 else ("千元" if sample >= 1e3 else "small")
+            print(f"    largest |value|   : {sample:,.0f}   -> looks like {scale}")
+
+def check_reconciliation(
+    databook_path: str, sheet_name: str, dfs: Dict[str, pd.DataFrame], entity_name: str = "",
+    financials_from: Optional[str] = None, show_tab_list: bool = True,
+    tieout_out: Optional[List[Dict[str, Any]]] = None,
+) -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
+    # financials_from: some portfolios keep each sub-entity's OWN databook
+    # free of any Financials-pattern sheet entirely -- the real summary for
+    # that entity instead lives inside a sibling "主表" (roll-up) workbook,
+    # one sheet per entity (e.g. "南通通海Financials"). dfs (the breakdown
+    # tabs) still come from `databook_path` as normal; only the Financials
+    # summary itself is sourced from a different file when this is set.
+    financials_path = financials_from or databook_path
+    _hr(f"4. RECONCILIATION SUMMARY — sheet: {sheet_name}"
+        + (f"  (from {Path(financials_path).name})" if financials_from else ""))
+    try:
+        bs_is_results = extract_balance_sheet_and_income_statement(
+            workbook_path=financials_path, sheet_name=sheet_name, debug=False,
+        )
+    except Exception as exc:
+        print(f"❌ Could not extract Financials sheet '{sheet_name}' from {financials_path!r}: {exc}")
+        return None, None
+
+    if bs_is_results.get("balance_sheet") is None or bs_is_results.get("income_statement") is None:
+        _trace_bs_is_detection_failure(financials_path, sheet_name, bs_is_results)
+
+    mappings = get_effective_mappings(load_mappings(), None)
+    bs_recon, is_recon = reconcile_financial_statements(
+        bs_is_results=bs_is_results, dfs=dfs, mappings=mappings,
+        tolerance=1.0, materiality_threshold=0.005, debug=False,
+    )
+
+    all_tab_names = sorted(dfs.keys())
+    # dfs (and so all_tab_names) is identical across BS/IS within one call, AND
+    # across every Financials sheet in a multi-entity workbook (same file) --
+    # printing the same ~40-item list twice per call and again per sibling
+    # Financials sheet was the single biggest source of duplicated output on
+    # multi-entity portfolio files. Print it at most once per call now;
+    # show_tab_list=False lets the caller suppress it entirely on repeat
+    # Financials sheets within the same file.
+    tab_list_shown = not show_tab_list
+    for label, recon in (("Balance Sheet", bs_recon), ("Income Statement", is_recon)):
+        if recon is None or recon.empty:
+            print(f"\n{label}: no rows")
+            continue
+        print(f"\n{label}: {len(recon)} lines")
+        print(recon["Match"].value_counts().to_string())
+
+        # Per-line status for every line that HAS a schedule tab. The counts
+        # above cannot answer "why is 预收款项 not in the matched set" -- that
+        # question was asked five times against five identical summaries
+        # because the only way to see an individual line's status was to open
+        # the workbook. A '-' here means the line was never compared at all,
+        # which is a different problem from a comparison that disagreed.
+        _desc_col = next((c for c in recon.columns
+                          if c.lower() in {"description", "line", "account", "项目", "科目"}), None)
+        if _desc_col is None:
+            _desc_col = recon.columns[0]
+        _tabbed = recon[recon.get("Projection_Stage", "-").astype(str) != "-"] \
+            if "Projection_Stage" in recon.columns else recon
+        if not _tabbed.empty:
+            print(f"\n  Per-line status (only lines with a schedule tab; '-' = never compared):")
+            for _, _row in _tabbed.iterrows():
+                _bits = [f"    {str(_row[_desc_col])[:22]:22s} {str(_row.get('Match', '?')):12s}"]
+                for _c in ("Financials_Value", "Tab_Value", "Difference"):
+                    if _c in recon.columns:
+                        _bits.append(f"{_c.split('_')[0]}={_row[_c]}")
+                print("  ".join(_bits))
+
+        # Which stage/period column each breakdown tab's total was actually
+        # pulled from (_choose_projection in workbook.py) -- answers "did
+        # this map to the preferred stage (Indicative adjusted), or fall
+        # back to something else because that stage had no non-zero data
+        # for this particular tab?" without a manual --dump-tab round-trip.
+        if "Projection_Stage" in recon.columns:
+            stage_counts = recon.loc[recon["Projection_Stage"] != "-", "Projection_Stage"].value_counts()
+            if not stage_counts.empty:
+                print(f"\n  Projection stage used (which stage/period column each breakdown tab's "
+                      f"total came from; preferred stage is {PREFERRED_STAGE!r}):")
+                print("    " + stage_counts.to_string().replace("\n", "\n    "))
+            if "Integrity_Flag" in recon.columns:
+                fallback_rows = recon[recon["Integrity_Flag"].astype(str).str.startswith("Fallback")]
+                if not fallback_rows.empty:
+                    print(f"\n  ⚠️ {len(fallback_rows)} account(s) fell back away from {PREFERRED_STAGE!r} "
+                          f"(means that stage had no non-zero data anywhere in the tab):")
+                    for _, r in fallback_rows.iterrows():
+                        print(f"    - {r['Financials_Account']!r} (tab {r.get('Tab_Account', '?')!r}): "
+                              f"{r['Integrity_Flag']}")
+
+        problems = recon[recon["Match"].astype(str).str.contains("Not Found|Diff", na=False)]
+        if not problems.empty:
+            print(f"\n  Unmatched/diff lines for {label} (account -> mapping status):")
+            for _, r in problems.iterrows():
+                # "Diff" rows found a value on BOTH sides but they don't agree --
+                # show the actual numbers (Financials summary tab vs the
+                # breakdown tab's own total), not just the mapping status, since
+                # that's the concrete evidence needed to tell a genuine
+                # extraction bug apart from a real business-reason difference.
+                if "Diff" in str(r["Match"]) and r.get("Diff") not in (None, "-"):
+                    fin_val = r.get("Financials_Value")
+                    tab_val = r.get("Tab_Value")
+                    diff_val = r.get("Diff")
+                    tab_account = r.get("Tab_Account", "?")
+                    print(f"    - {r['Financials_Account']!r}: {r['Match']} -- "
+                          f"Financials={fin_val:,.0f}  Tab({tab_account})={tab_val:,.0f}  "
+                          f"diff={diff_val:,.0f} | {r['Mapping_Note']}")
+                    for note in _notes_matching_diff(tab_account, dfs, diff_val):
+                        print(f"        ↳ possibly already explained by this tab's own remark "
+                              f"(client-side reconciling item, not necessarily a pipeline bug): {note!r}")
+                else:
+                    print(f"    - {r['Financials_Account']!r}: {r['Mapping_Status']} | {r['Mapping_Note']}")
+            if not tab_list_shown:
+                print(f"\n  All tab names actually present in this workbook (for adding to mappings.yml):")
+                print(f"    {all_tab_names}")
+                tab_list_shown = True
+
+        # "⚠️ Match" is NOT a value mismatch -- reconcile_financial_statements
+        # (workbook.py) only assigns it when the two sides already agree
+        # within tolerance (that's what "Match" means); the warning is a
+        # SEPARATE sanity flag for "the latest period reads zero but an
+        # earlier period had real data here" (zero_with_adjacent), meant to
+        # catch a schedule tab silently missing its latest column (which
+        # would default to 0 and trivially "match" a genuinely-zero
+        # Financials figure) -- not necessarily a real problem when the
+        # account legitimately went to nil. Printed separately from the
+        # Diff/Not-Found block above so it's never confused with an actual
+        # numeric discrepancy.
+        zero_flags = recon[recon["Match"].astype(str) == "⚠️ Match"]
+        if not zero_flags.empty:
+            print(f"\n  '⚠️ Match' lines for {label} (values already agree -- flagged only because "
+                  f"the latest period is 0 while an earlier period had data; verify the schedule "
+                  f"tab isn't silently missing its latest column rather than genuinely being nil):")
+            for _, r in zero_flags.iterrows():
+                fin_val = r.get("Financials_Value")
+                tab_val = r.get("Tab_Value")
+                print(f"    - {r['Financials_Account']!r}: Financials={fin_val:,.0f}  "
+                      f"Tab({r.get('Tab_Account', '?')})={tab_val if isinstance(tab_val, str) else f'{tab_val:,.0f}'}  "
+                      f"-- both read 0, matches exactly")
+
+    edges = check_every_period_tieout(bs_is_results, dfs, mappings)
+    if tieout_out is not None:
+        tieout_out.extend(edges)
+    return bs_recon, is_recon
+
+
+def check_every_period_tieout(bs_is_results: Dict[str, Any], dfs: Dict[str, pd.DataFrame],
+                              mappings: Optional[dict] = None) -> List[Dict[str, Any]]:
+    """Section 4 above compares the latest column only. This compares all of them.
+
+    A tab that agrees with Financials today and not two years ago reconciles
+    clean, and then the commentary (written from the tab) contradicts the
+    statement table (drawn from Financials) on the same slide.
+    """
+    from fdd_utils.ai.facts import financials_tieout
+
+    _hr("4a. EVERY-PERIOD TIE-OUT — tab total vs Financials on every date column, not just the latest")
+    edges = financials_tieout(bs_is_results, dfs, mappings)
+    if not edges:
+        print("  (no account had a period present on both sides)")
+        return edges
+    broken = [e for e in edges if e.get("evidence", {}).get("differing_periods")]
+    print(f"  {len(edges)} account(s) compared, {len(edges) - len(broken)} agree on every period, "
+          f"{len(broken)} differ on at least one.")
+    for edge in broken:
+        evidence = edge["evidence"]
+        print(f"\n  ⚠️  {edge['source']}: agrees on {len(evidence['agreeing_periods'])} period(s), differs on:")
+        for period, pair in sorted(evidence["differing_periods"].items()):
+            print(f"      {period}: Tab={pair['tab']:,.0f}  Financials={pair['financials']:,.0f}")
+    if broken:
+        print("\n  The statement table is drawn from Financials. An AI run sets each of these account "
+              "totals to the Financials figure (differences of 500 or more, i.e. visible on a slide), "
+              "unless the tab agrees with Financials in no period at all.")
+    else:
+        print("  ✅ Every tab agrees with Financials on every period it carries.")
+    return edges
+
+
+def explain_tieout_differences(edges: List[Dict[str, Any]], digest: Optional[Dict[str, Any]],
+                               dfs: Dict[str, pd.DataFrame], per_target: int = 6) -> None:
+    """Where else in the workbook each disagreeing figure sits.
+
+    4a says a tab and Financials differ; it cannot say why. The workbook
+    usually can: the Financials figure is some other tab's total, or the gap
+    itself is a labelled line on an adjustment tab or the tab's own Check row.
+    Every cell of every sheet is already indexed, so this looks the three
+    numbers up -- the Financials value, the tab value and the gap -- and prints
+    the labels beside each hit. It reports positions; it does not conclude.
+    """
+    broken = [e for e in (edges or []) if (e.get("evidence") or {}).get("differing_periods")]
+    sheets = (digest or {}).get("sheets") or {}
+    if not broken or not sheets:
+        return
+    _hr("4a-why. WHERE EACH DISAGREEING FIGURE ALSO APPEARS — every tab searched, values in 元 or 千元")
+
+    def hits(target: float, skip: set) -> List[str]:
+        if abs(target) < 1000:      # too small to be distinctive; would match noise
+            return []
+        found = []
+        for name, entry in sheets.items():
+            if name in skip:
+                continue
+            cells = entry["cells"]
+            row_labels, col_labels = entry.get("row_labels", {}), entry.get("col_labels", {})
+            for r, c, v in zip(cells["r"], cells["c"], cells["v"]):
+                if not v:
+                    continue
+                if abs(abs(v) - abs(target)) <= max(0.5, abs(target) * 1e-6):
+                    scale = "元"
+                elif abs(abs(v) * 1000 - abs(target)) <= max(1.0, abs(target) * 1e-6):
+                    scale = "千元"
+                else:
+                    continue
+                found.append(f"{name!r} row {r + 1} col {c + 1} = {v:,.2f} ({scale})  "
+                             f"row label={row_labels.get(str(r))!r}  column label={col_labels.get(str(c))!r}")
+        return found
+
+    financial_sheets = {n for n, e in sheets.items() if e.get("status") == "financials"}
+    for edge in broken:
+        account = str(edge.get("source") or "")
+        own = (getattr(dfs.get(account), "attrs", {}) or {}).get("source_sheet_name") or account
+        for period, pair in sorted(edge["evidence"]["differing_periods"].items()):
+            tab_value, fin_value = float(pair["tab"]), float(pair["financials"])
+            gap = abs(abs(tab_value) - abs(fin_value))
+            print(f"\n  {account} {period}: Tab={tab_value:,.0f}  Financials={fin_value:,.0f}  gap={gap:,.0f}")
+            for title, target, skip in (
+                ("the Financials figure, outside the Financials sheet", fin_value, financial_sheets),
+                ("the tab figure, outside its own tab", tab_value, {own}),
+                ("the gap itself, anywhere", gap, set()),
+            ):
+                found = hits(target, skip)
+                print(f"    {title}: {len(found)} cell(s)")
+                for line in found[:per_target]:
+                    print(f"      {line}")
+                if len(found) > per_target:
+                    print(f"      ... and {len(found) - per_target} more")
+
+
+# ---------------------------------------------------------------------------
+# 5-7. AI-dependent checks
+# ---------------------------------------------------------------------------
+
+_NUMBER_RE = re.compile(
+    # Currency prefix is REQUIRED, not optional — the project's enforced
+    # number format (prompts.yml) always prefixes real amounts with
+    # CNY/人民币. Without this, a bare number match also catches date years
+    # ("31 January 2026" -> 2026), footnote refs ("Note 1"), and other
+    # non-monetary digits, which produced false "1000x too small" flags
+    # (e.g. 2026 * 1000 landing within tolerance of an unrelated real balance).
+    r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)\s*"
+    r"(\d[\d,]*(?:\.\d+)?)\s*"
+    r"(million|mn|万|萬|亿|億|K)?",
+    re.IGNORECASE,
+)
+
+_SCALE_MAP = {
+    None: 1, "": 1, "k": 1_000,
+    "million": 1_000_000, "mn": 1_000_000,
+    "万": 10_000, "萬": 10_000,
+    "亿": 100_000_000, "億": 100_000_000,
+}
+
+
+def _extract_numbers_with_scale(text: str) -> List[Tuple[float, int, int]]:
+    """Returns (value, match_start, match_end) so callers can pull the
+    surrounding sentence for a flagged number — the isolated number alone
+    ("40,378,000.00") isn't enough to tell whether it's a real hallucinated
+    scale bug or something benign; the actual written clause is."""
+    values: List[Tuple[float, int, int]] = []
+    for match in _NUMBER_RE.finditer(text or ""):
+        raw, suffix = match.group(1), (match.group(2) or "").lower()
+        if not raw or raw in (",", "."):
+            continue
+        try:
+            base = float(raw.replace(",", ""))
+        except ValueError:
+            continue
+        scale = _SCALE_MAP.get(suffix, 1)
+        values.append((base * scale, match.start(), match.end()))
+    return values
+
+
+_RATE_CONTEXT_RE = re.compile(
+    r"per\s+(?:square|sq\.?|sqm|sq\s*m)\s*(?:metre|meter|m\b)?"
+    r"|/\s*(?:sq\.?\s*m|sqm)|psm\b",
+    re.IGNORECASE,
+)
+
+
+def _is_rate_context(text: str, end: int, radius: int = 60) -> bool:
+    """A number followed (within the same sentence) by 'per square metre'
+    etc is a computed KPI (revenue / area / days), not a literal figure
+    copied from the sheet — it will never appear in the raw ground-truth
+    pool at any scale, so a coincidental scaled match is noise, not a real
+    hallucination. Searches forward (not anchored) because range clauses
+    ("from CNY0.91 to CNY0.80 per sqm per day") only put the rate phrase
+    next to the LAST number, not each one. Same false-positive class as the
+    broad subset-sum case investigated earlier (statistical coincidence
+    from wide search), which was deliberately left unfixed rather than
+    chased with more matching logic — this guard instead narrows what gets
+    searched in the first place."""
+    window = text[end:end + radius]
+    # A "." not followed by a digit ends the sentence; one that IS followed
+    # by a digit is a decimal point inside the next number (e.g. "CNY0.80"),
+    # not a sentence boundary.
+    sentence_end = re.search(r"\.(?!\d)|[。\n]", window)
+    if sentence_end:
+        window = window[:sentence_end.end()]
+    return bool(_RATE_CONTEXT_RE.search(window))
+
+
+def _context_snippet(text: str, start: int, end: int, radius: int = 50) -> str:
+    lo = max(0, start - radius)
+    hi = min(len(text), end + radius)
+    prefix = "…" if lo > 0 else ""
+    suffix = "…" if hi < len(text) else ""
+    return f"{prefix}{text[lo:hi].strip()}{suffix}"
+
+
+def _adjacent_window_sums(col_vals: List[float], max_window: int = 4) -> List[float]:
+    """Mirrors fdd_utils.ai.SourceIndex._adjacent_window_sums — commentary
+    legitimately groups a handful of neighbouring breakdown lines into one
+    figure that was never a labelled subtotal in the sheet. Bounded window,
+    not a full subset-sum search, to keep false-negative risk low."""
+    sums: List[float] = []
+    n = len(col_vals)
+    for window in range(2, max_window + 1):
+        for start in range(0, n - window + 1):
+            sums.append(sum(col_vals[start:start + window]))
+    return sums
+
+
+def _numeric_values_from_df(df: pd.DataFrame) -> List[float]:
+    values: List[float] = []
+    for col in df.columns:
+        if str(col).endswith("_formatted") or str(col).startswith("__"):
+            continue
+        col_vals: List[float] = []
+        if pd.api.types.is_numeric_dtype(df[col]):
+            col_vals = [float(v) for v in df[col].dropna().tolist() if v != 0]
+        else:
+            # prompt_analysis_df values are often pre-formatted strings
+            # (e.g. "1,234,567") rather than a numeric dtype column.
+            for v in df[col].dropna().tolist():
+                try:
+                    fv = float(str(v).replace(",", ""))
+                    if fv != 0:
+                        col_vals.append(fv)
+                except (TypeError, ValueError):
+                    continue
+        values.extend(col_vals)
+        values.extend(_adjacent_window_sums(col_vals))
+    return values
+
+
+def _matches_ground_truth(value: float, truth_values: List[float]) -> bool:
+    """Mirrors fdd_utils.ai.SourceIndex.matches() exactly, so this script's
+    independent check and the production Validator agree on what counts as
+    grounded — otherwise this script keeps re-flagging patterns (万-rounding,
+    adjacent-line subtotals) that were already fixed in production, as stale
+    false positives of its own."""
+    t = abs(value)
+    for v in truth_values:
+        a = abs(v)
+        if a == 0:
+            if round(t) == 0:
+                return True
+            continue
+        if abs(t - a) <= max(500.0, 0.05 * a):
+            return True
+    return False
+
+
+def _ground_truth_values(dfs: Dict[str, pd.DataFrame]) -> List[float]:
+    """Pulls every number the AI could plausibly have grounded its writing
+    in — NOT just dfs[key] itself. dfs[key] is `projection_df`, a
+    SINGLE-latest-period snapshot (e.g. only "2026-03-31"); multi-year
+    trend commentary ("increased from CNY384M as at 2023-12-31 to CNY709M
+    as at 2024-12-31") is generated from df.attrs["prompt_analysis_df"]
+    (see fdd_utils/ai.py _build_financial_prompt_payload / workbook.py
+    _build_prompt_analysis_df), a separate multi-period table the AI's
+    prompt actually includes under "analysis_periods". Without this, every
+    correctly-written historical-period number looks unsupported because
+    it's simply absent from the search pool, and the scale-match fallback
+    then coincidentally latches onto an unrelated same-tab line item —
+    producing a false '1000x too large/small' warning for text that was
+    actually correct. Confirmed against 3 real warnings that all turned
+    out to be exactly this false-positive pattern, not real scale bugs.
+    """
+    truth = []
+    for df in dfs.values():
+        if df is None or df.empty:
+            continue
+        truth.extend(_numeric_values_from_df(df))
+        analysis_df = df.attrs.get("prompt_analysis_df")
+        if analysis_df is not None and not analysis_df.empty:
+            truth.extend(_numeric_values_from_df(analysis_df))
+    return truth
+
+
+# Numbered form "1）...434.2万元；2）..." and the equally common run-on form
+# "主要包括房产税1,676.2万元、土地使用税368.5万元及印花税2.9万元". The second
+# was invisible to the first pattern, which is how a 10x scale error reached a
+# real deck unflagged.
+from fdd_utils.ai.validator import check_composition_adds_up, _composition_reviews  # single definition; see validator.py
+
+
+def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str, pd.DataFrame]) -> List[str]:
+    """Returns a list of warning strings for numbers that only match ground
+    truth at a non-1x scale factor (the generalized 1000x-bug detector)."""
+    truth_values = _ground_truth_values(dfs)
+    if not truth_values:
+        return []
+    warnings = []
+    for value, start, end in _extract_numbers_with_scale(generated_text):
+        if value == 0:
+            continue
+        if _is_rate_context(generated_text, end):
+            continue
+        if _matches_ground_truth(value, truth_values):
+            continue
+        for factor, label in ((1000, "1000x too small"), (0.001, "1000x too large"),
+                               (10000, "10000x too small"), (0.0001, "10000x too large")):
+            scaled = value * factor
+            if _matches_ground_truth(scaled, truth_values):
+                snippet = _context_snippet(generated_text, start, end)
+                warnings.append(
+                    f"  🔴 [{mapping_key}] number {value:,.2f} in generated text only matches "
+                    f"ground truth when scaled — looks {label} (matches {scaled:,.2f})\n"
+                    f"      context: \"{snippet}\""
+                )
+                break
+    return warnings
+
+
+def ai_input_frames(
+    path: str, entity_name: str, selected_sheet: Optional[str],
+    financials_from: Optional[str] = None,
+    fallback_dfs: Optional[Dict[str, pd.DataFrame]] = None,
+) -> Tuple[Dict[str, pd.DataFrame], str, Optional[Dict[str, Any]]]:
+    """(dfs, language, resolution) that --run-ai hands the pipeline AND the export.
+
+    process_workbook_data's dfs: the detail_analysis variant, every Indicative
+    adjusted period on the main frame -- the dict the Streamlit app hands
+    run_ai_pipeline_with_progress and then exports from. This path used to
+    pass section 1's extract_data_from_excel frames instead, which carry ONE
+    value column. Measured on four workbooks with the production renderer
+    (probe_prompt_sections.py --hash-all --feed): 0 of 96 Generator prompts
+    matched the app's, _build_peer_context returned None, and the
+    material-movement guidance reached 0 accounts in every book against 8-10
+    on the app's frames. Every CLI deck had been written from the thinner
+    prompt, and every CLI run measured a pipeline the app does not run.
+
+    The export takes the same dict because the pipeline's subtable settlement
+    edits these frames' attrs; exporting from section 1's dict would draw the
+    tables the prompts were told about from frames that never heard of it.
+    """
+    try:
+        from fdd_utils.workbook import process_workbook_data
+        # --financials-from applies here too. Left off, this call went
+        # looking for "<entity>Financials" inside the ENTITY workbook,
+        # which has no such sheet -- one bare "Error extracting financial
+        # data: Worksheet named ... not found" on stderr between sections
+        # 4b and 5, from the one call in this file that was not told where
+        # the roll-up lives. Every other caller already passes it.
+        state = process_workbook_data(temp_path=path, entity_name=entity_name,
+                                       selected_sheet=selected_sheet, debug=False,
+                                       financials_from=financials_from,
+                                       financials_sheet=selected_sheet if financials_from else None)
+    except Exception as exc:
+        print(f"\n⚠️  process_workbook_data failed ({type(exc).__name__}: {exc}). The AI run "
+              f"falls back to section 1's single-period frames, so its prompts will NOT match "
+              f"what the Streamlit app would send for this workbook.")
+        return fallback_dfs or {}, "Eng", None
+    dfs = state.get("dfs") or {}
+    _t = state.get("timings") or {}
+    if _t:
+        print("\n⏱  process_workbook_data " + f"{_t.get('total', 0):.0f}s: " + " · ".join(
+            f"{k} {v:.0f}s" for k, v in _t.items() if k != "total" and v >= 0.5))
+    _authority = state.get("financials_authority") or {}
+    if _authority:
+        print(f"\nℹ️  Deck follows Financials: {len(_authority)} account total(s) set to the Financials "
+              f"figure where the tab disagreed (the tab's detail rows are unchanged)"
+              + (":" if VERBOSE else "; --verbose lists them"))
+        for _account, _periods in (sorted(_authority.items()) if VERBOSE else ()):
+            for _period, _pair in sorted(_periods.items()):
+                print(f"    {_account} {_period}: tab {_pair['tab']:,.0f} -> Financials {_pair['financials']:,.0f}")
+    _bridged = {k: f.attrs.get("adjustment_bridge") for k, f in dfs.items()
+                if isinstance(f, pd.DataFrame) and f.attrs.get("adjustment_bridge")}
+    print(f"\nℹ️  Adjustment bridge (audit + indicative entries handed to the model): "
+          f"{len(_bridged)} of {len(dfs)} account(s)")
+    for _account, _bridge in (sorted(_bridged.items()) if VERBOSE else ()):
+        for _line in _bridge.get("lines") or []:
+            print(f"    {_account}: {_line}")
+    if not dfs:
+        print("\n⚠️  process_workbook_data returned no frames; the AI run falls back to "
+              "section 1's single-period frames (prompts will not match the app's).")
+        dfs = fallback_dfs or {}
+    return dfs, state.get("language", "Eng"), state.get("resolution")
+
+
+def run_ai_checks(
+    databook_path: str, sheet_name: Optional[str], dfs: Dict[str, pd.DataFrame],
+    entity_name: str, model_type: str, model_name: Optional[str], language: str,
+    bs_recon: Optional[pd.DataFrame], is_recon: Optional[pd.DataFrame],
+    limit: Optional[int] = None, workers: Optional[int] = None,
+    accounts: Optional[List[str]] = None,
+    resolution: Optional[Dict[str, Any]] = None,
+    resume_from: Optional[str] = None,
+    period_tieout: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
+    from fdd_utils.ai import run_ai_pipeline_with_progress, SUBAGENT_SEQUENCE
+
+    # Mirror production exactly: only accounts that passed reconciliation with
+    # an included Match status go to AI (fdd_utils/ui.py:derive_reconciliation_matched_keys).
+    # BS excludes ❌ Diff (needs human review first); IS includes it (IS recon
+    # is inherently noisier). Running every dfs tab through the LLM — including
+    # ones the real pipeline would never send — wastes tokens/time and makes
+    # the qwen-vs-GPT-5.5 timing comparison meaningless.
+    #
+    # BUT: when there's no reconciliation data at all (e.g. no literal
+    # "Financials" sheet to reconcile against), production does NOT skip AI --
+    # fdd_utils/ui.py:746-751 explicitly falls back to ALL extracted schedule
+    # accounts. derive_reconciliation_matched_keys alone can't express that
+    # (it just returns [] when both recon frames are None/empty), so replicate
+    # the fallback here too, or every no-Financials-sheet file would silently
+    # report "no accounts passed reconciliation" even though production would
+    # happily generate commentary for all of them.
+    has_reconciliation_data = bool(
+        (bs_recon is not None and not bs_recon.empty) or (is_recon is not None and not is_recon.empty)
+    )
+    if has_reconciliation_data:
+        mapping_keys = derive_reconciliation_matched_keys((bs_recon, is_recon), dfs.keys(), None, dfs=dfs)
+        if not mapping_keys:
+            print(
+                "❌ No accounts passed reconciliation with an included Match status "
+                "(✅ Match / ⚠️ Match / ✅ Immaterial, or ❌ Diff for IS) — nothing "
+                "would be sent to AI in production either. Skipping AI-dependent checks."
+            )
+            return {"skipped": True, "reason": "no mapped accounts"}
+    else:
+        mapping_keys = list(dfs.keys())
+        if not mapping_keys:
+            print("❌ No extracted schedule accounts at all — nothing to send to AI.")
+            return {"skipped": True, "reason": "no extracted accounts"}
+        print(f"ℹ️  No reconciliation data; proceeding with all {len(mapping_keys)} extracted "
+              f"schedule account(s), mirroring production's fallback (fdd_utils/ui.py:746-751).")
+    total_mapped = len(mapping_keys)
+    if accounts:
+        wanted = set(accounts)
+        found = [k for k in mapping_keys if k in wanted]
+        missing = wanted - set(found)
+        if missing:
+            print(f"⚠️  --accounts requested {sorted(missing)} but they're not in this file's "
+                  f"mapped/eligible accounts. Available: {mapping_keys}")
+        if not found:
+            print("❌ None of --accounts matched an eligible account in this file. Skipping.")
+            return {"skipped": True, "reason": "no matching --accounts"}
+        mapping_keys = found
+        print(f"--accounts: targeting only {mapping_keys} (cheap re-test, skips --limit slicing).")
+    elif limit and limit > 0 and len(mapping_keys) > limit:
+        print(f"--limit {limit}: sampling {limit} of {total_mapped} mapped accounts "
+              f"(fast smoke-test mode, not a full run).")
+        mapping_keys = mapping_keys[:limit]
+    # Mirror run_agent_stage's ACTUAL resolution chain so this print is
+    # trustworthy — it previously ignored config.yml entirely and always
+    # printed "built-in default" even when <provider>.max_workers was set,
+    # which was actively misleading (looked like the config value wasn't
+    # being picked up when it may well have been).
+    if workers:
+        effective_workers, workers_source = workers, "--workers override"
+    else:
+        from fdd_utils.ai import load_yaml_config, get_default_config_path
+        try:
+            _cfg = load_yaml_config(get_default_config_path()) or {}
+        except Exception:
+            _cfg = {}
+        # Two keys exist for one setting: the Streamlit path reads
+        # processing.max_workers and this one read <provider>.max_workers, so
+        # the same config.yml gave the UI concurrency and the CLI none. Honour
+        # both, provider first.
+        _provider_workers = (_cfg.get(model_type) or {}).get("max_workers")
+        _processing_workers = (_cfg.get("processing") or {}).get("max_workers")
+        if _provider_workers:
+            effective_workers = int(_provider_workers)
+            workers_source = f"{model_type}.max_workers in config.yml"
+        elif _processing_workers:
+            effective_workers = int(_processing_workers)
+            workers_source = "processing.max_workers in config.yml"
+        else:
+            # 4 for every provider. It was `4 if local else 2`, which is the
+            # exact INVERSE of the pipeline's own _resolve_max_workers ("local"
+            # -> 1, everything else -> 4) -- two files disagreeing about one
+            # setting, in opposite directions. The CLI's number is the one with
+            # a real measurement behind it: a 21-account local run finished 47
+            # steps in 204s at 4 workers. The pipeline's own default still
+            # stands for callers that pass nothing (the Streamlit path), so the
+            # UI and the CLI can still run a local model at different
+            # concurrencies -- worth settling, but not by quietly flipping a
+            # documented default from here.
+            effective_workers = 4
+            workers_source = "built-in default — no max_workers set in config.yml"
+    print(f"Running pipeline for {len(mapping_keys)} MAPPED accounts (of {len(dfs)} total tabs), "
+          f"model_type={model_type}, model_name={model_name}, workers={effective_workers} ({workers_source})...")
+
+    # SUBAGENT_SEQUENCE is the ACTUAL active pipeline (Generator, Auditor,
+    # Validator — Refiner is dormant, see ai.py:SUBAGENT_ALIASES comment).
+    # Hardcoding 4 here made the bar always stall at 75% (60/80) since only
+    # 3 stages ever fire a progress callback.
+    stage_count = len(SUBAGENT_SEQUENCE)
+    total_steps = stage_count * len(mapping_keys)
+    pbar = tqdm(total=total_steps, **_entity_bar_kwargs("AI pipeline"))
+    seen_step = {"n": 0}
+    progress_lock = threading.Lock()
+
+    # Per-stage wall-clock breakdown — lets you SEE whether a per-agent
+    # reasoning_effort override (e.g. Auditor set to "low") actually reduced
+    # that stage's time, not just eyeball the total. A stage is "done" the
+    # moment its last account reports completed == total_eligible; the gap
+    # since the previous stage's completion is that stage's duration.
+    stage_timing: Dict[str, float] = {}
+    stage_clock = {"last_boundary": time.time(), "seen_labels": set()}
+
+    # Stages are no longer all the same size: the Validator runs SELECTIVELY,
+    # only on accounts that assert a causal claim (ai.py's
+    # commentary_asserts_inference), so a fixed stage_count * len(mapping_keys)
+    # total left the bar stranded -- a real run finished at 53/69 (77%) with
+    # nothing wrong. Each callback reports its own stage's true size, so
+    # correct the total as soon as a stage reveals it, and count steps from
+    # the per-stage tallies instead of ai.py's uniform-stage arithmetic.
+    stage_done: Dict[int, int] = {}
+    stage_size: Dict[int, int] = {}
+
+    retries = {"started": 0, "finished": 0}
+
+    def _tqdm_progress(agent_num, agent_label, completed, total_eligible, overall_step, mapping_key):
+        with progress_lock:
+            pbar.set_postfix_str(f"{agent_label}: {mapping_key}"[:60])
+            if total_eligible == -1:
+                # A feedback-loop retry: Generator + Auditor + Validator again.
+                # The total grows when it starts and the count when it ends, so
+                # the bar never claims 100% while retries are still running.
+                retries["started" if not completed else "finished"] += 1
+                pbar.total = sum(stage_size.get(i, len(mapping_keys)) for i in range(1, stage_count + 1)) \
+                    + stage_count * retries["started"]
+                done = sum(stage_done.values()) + stage_count * retries["finished"]
+                if done > seen_step["n"]:
+                    pbar.update(done - seen_step["n"])
+                    seen_step["n"] = done
+                pbar.refresh()
+                return
+            if total_eligible:
+                stage_size[agent_num] = total_eligible
+            stage_done[agent_num] = max(stage_done.get(agent_num, 0), completed)
+            true_total = sum(
+                stage_size.get(i, len(mapping_keys)) for i in range(1, stage_count + 1)
+            ) + stage_count * retries["started"]
+            if true_total != pbar.total:
+                pbar.total = true_total
+            done = sum(stage_done.values()) + stage_count * retries["finished"]
+            delta = done - seen_step["n"]
+            if delta > 0:
+                pbar.update(delta)
+                seen_step["n"] = done
+            if agent_label not in stage_clock["seen_labels"] and completed == total_eligible and total_eligible > 0:
+                now = time.time()
+                stage_timing[agent_label] = now - stage_clock["last_boundary"]
+                stage_clock["last_boundary"] = now
+                stage_clock["seen_labels"].add(agent_label)
+
+    # A single account's API call can take 20-60s+ with nothing to report in
+    # between (no discrete progress event fires mid-call), which makes the
+    # bar look frozen even though it's working. Refresh the display every
+    # second regardless — this ticks tqdm's elapsed-time counter so it's
+    # visibly alive, without needing an actual progress-count change.
+    stop_refresh = threading.Event()
+
+    def _tick_refresh():
+        while not stop_refresh.wait(1.0):
+            with progress_lock:
+                pbar.refresh()
+
+    refresh_thread = threading.Thread(target=_tick_refresh, daemon=True)
+    refresh_thread.start()
+
+    # The pipeline already logs "[FeedbackLoop] <key>: completed with N
+    # retry(ies)" at INFO and nothing was listening, so the one number that
+    # explains a 10x slow entity was being written and thrown away. Capture it.
+    _fb_lines: List[str] = []
+
+    class _FeedbackLoopCapture(logging.Handler):
+        def emit(self, record):
+            try:
+                msg = record.getMessage()
+            except Exception:
+                return
+            if "[FeedbackLoop]" in msg:
+                _fb_lines.append(msg.replace("[FeedbackLoop] ", "").strip())
+
+    _fb_handler = _FeedbackLoopCapture()
+    _fb_handler.setLevel(logging.INFO)
+    _fb_root = logging.getLogger()
+    _fb_prev_level = _fb_root.level
+    if _fb_root.level > logging.INFO:
+        _fb_root.setLevel(logging.INFO)
+    _fb_root.addHandler(_fb_handler)
+
+    start = time.time()
+    stage_clock["last_boundary"] = start
+    try:
+        results = run_ai_pipeline_with_progress(
+            # effective_workers, NOT the raw --workers argument. Passing the
+            # argument meant None whenever the flag was omitted, and
+            # _resolve_max_workers reads None for a local model as 1 -- so the
+            # CLI printed "workers=4" and then ran the whole pipeline
+            # serially, while the Streamlit path passed its configured value
+            # and ran several accounts at once. That alone is most of why the
+            # same databook took minutes longer here than in the UI.
+            mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, model_name=model_name,
+            language=language, use_multithreading=True, max_workers=effective_workers,
+            progress_callback=_tqdm_progress, resume_from=resume_from,
+            workbook_digest=(resolution or {}).get("workbook_digest"),
+            graph_links=period_tieout,
+        )
+    finally:
+        stop_refresh.set()
+        refresh_thread.join(timeout=2.0)
+        pbar.close()
+        _fb_root.removeHandler(_fb_handler)
+        _fb_root.setLevel(_fb_prev_level)
+    elapsed = time.time() - start
+    print(f"\n5. TIMING: full pipeline for {len(mapping_keys)} mapped accounts took {elapsed:.1f}s "
+          f"({elapsed / max(len(mapping_keys), 1):.1f}s/account) on {model_type}"
+          f"{'/' + model_name if model_name else ''}")
+    if stage_timing:
+        print("   Per-stage breakdown (wall-clock, all accounts in that stage together):")
+        for stage_label, stage_seconds in stage_timing.items():
+            per_account = stage_seconds / max(len(mapping_keys), 1)
+            print(f"     {stage_label:12s}: {stage_seconds:7.1f}s total, {per_account:6.1f}s/account")
+        # The breakdown above records each stage label ONCE -- the first time it
+        # reports completed == total_eligible (see stage_clock["seen_labels"]).
+        # The feedback loop then re-runs Generator/Auditor/Validator for every
+        # account it retries, and NONE of that lands in a named stage. On one
+        # real portfolio entity the three stages summed to 162s of a 2,601s run:
+        # 94% of the wall-clock was invisible while the per-account rates all
+        # looked normal. A breakdown that silently omits most of the time is
+        # worse than no breakdown, so name the remainder.
+        _named = sum(stage_timing.values())
+        _rest = elapsed - _named
+        _pct = (_rest / elapsed * 100.0) if elapsed > 0 else 0.0
+        print(f"     {'unattributed':12s}: {_rest:7.1f}s total, "
+              f"{_rest / max(len(mapping_keys), 1):6.1f}s/account   "
+              f"({_pct:.0f}% of the run -- feedback-loop retries + orchestration)")
+        if _pct >= 50.0:
+            print(f"     ⚠️  MOST of this run was NOT in the three named stages. "
+                  f"See the retry summary below.")
+    # Count off the results dict, not off _fb_lines. The capture handler above
+    # is attached to the ROOT logger, but fdd_utils/ai/logging.py sets
+    # propagate = False on the run logger, so no [FeedbackLoop] record ever
+    # reaches it -- the first real Portfolio run printed "no account reported a
+    # retry" on an entity whose own insight summary listed five. feedback_retries
+    # is what the pipeline itself recorded, and is the same field the insight
+    # summary reads, so the two lines can no longer disagree.
+    _retried = {
+        key: (content or {}).get("feedback_retries")
+        for key, content in real_accounts(results).items()
+        if (content or {}).get("feedback_retries")
+    }
+    if _retried:
+        _shown = ", ".join(f"{k}×{v}" for k, v in sorted(_retried.items())[:8])
+        print(f"   Feedback loop: {len(_retried)} account(s) retried -- {_shown}"
+              + (f" ... and {len(_retried) - 8} more" if len(_retried) > 8 else ""))
+    else:
+        print("   Feedback loop: no account reported a retry.")
+    if _fb_lines:
+        print(f"   ({len(_fb_lines)} [FeedbackLoop] log line(s) also captured)")
+
+    _hr("5b. VALIDATOR (subagent_4) ACTUAL VERDICT — the real AI's own judgment, not this "
+        "script's regex heuristic below")
+    print(
+        "This is what subagent_4 itself flagged during the real pipeline run — separate\n"
+        "from checks 6-7 below, which are an independent Python-only cross-check this\n"
+        "script performs on top. If a number was 'supported': True here, the Validator\n"
+        "itself judged it grounded; compare that against whether checks 6-7 also flag it\n"
+        "to tell apart a real Validator misjudgment from a false positive in this script.\n"
+    )
+    for key, content in real_accounts(results).items():
+        reviews = ((content or {}).get("agent_4_validation") or {}).get("clause_reviews") or []
+        if not reviews:
+            print(f"  {key}: no clause_reviews recorded (Validator may not have run / returned unparsed output).")
+            continue
+        unsupported = [r for r in reviews if not r.get("supported", True)]
+        if not unsupported:
+            print(f"  ✅ {key}: Validator reviewed {len(reviews)} clause(s), flagged 0 as unsupported.")
+            continue
+        print(f"  🔶 {key}: Validator flagged {len(unsupported)}/{len(reviews)} clause(s) as unsupported:")
+        for r in unsupported:
+            clause = str(r.get("clause", ""))[:150]
+            print(f"      category={r.get('category', '?')}  reason={r.get('reason', '?')}")
+            print(f"      clause: \"{clause}\"")
+
+    # With --accounts the point of the run is usually to read the text, not to
+    # sweep it: it is the 20-second loop for judging a prompt or an extraction
+    # change. Printing it here saves digging the same string back out of
+    # fdd_utils/output afterwards. Suppressed on a full run, where it would bury
+    # every check below under thirty bullets.
+    if accounts:
+        _hr("5c. GENERATED COMMENTARY (printed because --accounts narrowed the run)")
+        for key in (accounts or []):
+            content = (results or {}).get(key)
+            if content is None:
+                for _k, _v in (results or {}).items():
+                    if str(_k).strip() == str(key).strip():
+                        content = _v
+                        break
+            text = get_pipeline_result_text(content) if content else ""
+            print(f"\n  ── {key}")
+            if not text:
+                print("     (empty — the pipeline produced no final text for this account)")
+                continue
+            for line in str(text).splitlines() or [""]:
+                print(f"     {line}")
+
+    # -- 5d ---------------------------------------------------------------
+    # Claim contracts (M5) then the insight summary (N3). Both are internal
+    # and neither touches the text: the contract verdicts land on their own
+    # results key (never clause_reviews, which would perturb the retry gate
+    # and colour the deck) and the insight summary is not put on `results` at
+    # all, so no path exists from here into build_pptx_structured_payloads.
+    #
+    # NOTE: the in-pipeline hook (after set_final_fallbacks, gated on
+    # processing.claim_contracts.enabled) is NOT wired yet -- pipeline.py was
+    # being edited concurrently when this landed. This call is the same hook
+    # applied from outside, over the returned results, so the failure rates
+    # can be read before anything acts on them.
+    claim_tally: Dict[str, Any] = {}
+    from fdd_utils.ai.contracts import (
+        attach_claim_contracts, claim_contracts_enabled, summarise_claim_contracts,
+    )
+    _hr("5d. INSIGHT SUMMARY (internal — never enters the deck)")
+    if claim_contracts_enabled():
+        try:
+            _checked = attach_claim_contracts(results, dfs, language)
+            claim_tally = summarise_claim_contracts(_checked)
+        except Exception as _exc:
+            print(f"  (claim contracts skipped: {type(_exc).__name__}: {_exc})")
+        print("CLAIM CONTRACTS (measurement only — nothing retries or patches on these):")
+        if not claim_tally:
+            print("  No account's prompt injected any of the four instructions.")
+        for _det, _row in sorted(claim_tally.items()):
+            _rate = 100.0 * _row["passed"] / max(_row["fired"], 1)
+            print(f"  {_det:32s} fired={_row['fired']:3d}  pass={_row['passed']:3d}  "
+                  f"fail={_row['failed']:3d}  ({_rate:.0f}% carried out)")
+            if _row["failing_accounts"]:
+                print(f"      not carried out by: {', '.join(_row['failing_accounts'][:8])}"
+                      + (" ..." if len(_row["failing_accounts"]) > 8 else ""))
+        print()
+    else:
+        print("(claim contracts off — set processing.claim_contracts.enabled: true in "
+              "fdd_utils/config.yml to measure them)\n")
+
+    try:
+        _insight = build_insight_summary(
+            ai_results=results,
+            dfs=dfs,
+            mappings=get_effective_mappings(load_mappings(), resolution),
+            reconciliation=(bs_recon, is_recon),
+            resolution=resolution,
+            language=language,
+            period_tieout=period_tieout,
+        )
+    except Exception as _exc:
+        _insight = {}
+        print(f"  (insight summary failed: {type(_exc).__name__}: {_exc})")
+    if _insight:
+        print(_insight["summary"])
+        print("\nVISIBLE ISSUES (deterministic — each carries the computation it came from):")
+        if not _insight["visible_issues"]:
+            print("  (none)")
+        for _issue in _insight["visible_issues"]:
+            print(f"  [{_issue['severity']:8s}] {_issue['issue']}")
+            print(f"             basis={_issue['basis']}  "
+                  f"evidence={_issue['evidence_ids'][:4]}"
+                  + (" ..." if len(_issue["evidence_ids"]) > 4 else ""))
+        print("\nQUESTIONS FOR THE CLIENT:")
+        if not _insight["client_questions"]:
+            print("  (none)")
+        for _q in _insight["client_questions"]:
+            print(f"  - {_q}")
+        _ext = _insight["external_research"]
+        print(f"\nEXTERNAL RESEARCH NEEDED: {_ext['needed']} — {_ext['reason']}")
+        print(f"WHAT TO DO FIRST: {_insight['commentary_instruction']}")
+
+    _hr("6-7. NUMERIC GROUNDING + UNIT-LABEL SWEEP (this script's own independent check)")
+    all_warnings: List[str] = []
+    checked_count = 0
+    empty_accounts: List[str] = []
+    _accounts = real_accounts(results)
+    for key, content in _accounts.items():
+        # "final" is the pipeline's actual output field (fdd_utils/ai.py
+        # get_pipeline_result_text) — NOT "final_content", which only exists
+        # inside the raw agent_4_validation sub-dict, not at this top level.
+        text = get_pipeline_result_text(content)
+        if not text:
+            empty_accounts.append(key)
+            continue
+        checked_count += 1
+        all_warnings.extend(check_numeric_grounding(key, text, {key: dfs.get(key)} if key in dfs else dfs))
+        # With the sentence, so a flag can be judged from the pasted output
+        # alone -- compact mode hides 5b, where the clause otherwise appears.
+        for _review in _composition_reviews(text):
+            all_warnings.append(f"[{key}] {_review.get('reason')}\n    「{str(_review.get('clause') or '')[:240]}」")
+    print(f"Checked {checked_count} of {len(_accounts)} account(s) with non-empty output.")
+    if empty_accounts:
+        print(
+            f"⚠️  {len(empty_accounts)} account(s) came back with EMPTY final output — this is a\n"
+            f"   real missing-commentary problem, not a test artifact (these would render as\n"
+            f"   blank/missing bullets in the actual PPTX). Likely cause for a reasoning model:\n"
+            f"   the account's max_tokens budget was consumed entirely by hidden reasoning\n"
+            f"   tokens with nothing left for the visible answer (see agents.*.max_tokens and\n"
+            f"   workbench.reasoning_effort in config.yml).\n"
+            f"   Empty accounts: {empty_accounts}"
+        )
+    if all_warnings:
+        print(f"Found {len(all_warnings)} suspicious number(s):")
+        for w in all_warnings:
+            print(w)
+    else:
+        print("✅ No numbers found that only match ground truth at a non-1x scale factor.")
+
+    # Full legal names in the commentary. Checked HERE as well as on the
+    # exported deck, because it is a property of the generated text, not of
+    # the layout -- reporting it at this stage says whether a prompt change
+    # took effect without needing an export at all. The reference deck writes
+    # the short form throughout and reserves the legal name for the first
+    # mention of a specific contract counterparty; a repeated full name costs
+    # most of a line each time.
+    # Report what will SHIP, not what the model first wrote. The raw `final`
+    # text is pre-normalisation; shorten_company_names runs on the way into
+    # the deck. Checking the raw text said "8 still written out" on a run
+    # whose exported deck contained none -- a false alarm about my own fix.
+    from inspect_pptx import _full_legal_names
+    from fdd_utils.pptx import shorten_company_names
+    raw_hits, shipped_hits = {}, {}
+    for key in mapping_keys:
+        text = str((results.get(key) or {}).get("final") or "")
+        if _full_legal_names(text):
+            raw_hits[key] = _full_legal_names(text)
+        survived = _full_legal_names(shorten_company_names(text))
+        if survived:
+            shipped_hits[key] = survived
+    print()
+    if shipped_hits:
+        total = sum(len(v) for v in shipped_hits.values())
+        print(f"📛 {total} full legal name(s) SURVIVE into the deck, in {len(shipped_hits)} account(s):")
+        for key, names in shipped_hits.items():
+            print(f"    {key}: " + "; ".join(repr(n) for n in names[:4]))
+    else:
+        print("✅ No full legal names survive into the deck.")
+    if raw_hits:
+        stripped = sum(len(v) for v in raw_hits.values()) - sum(len(v) for v in shipped_hits.values())
+        print(f"   ({stripped} written by the model, removed automatically by "
+              f"shorten_company_names — the prompt does not have to win this argument.)")
+
+    # 6c. Two accounts side by side, and what the arithmetic found that the
+    # text never says (fdd_utils/ai/consistency.py). Report-only: nothing
+    # retries or patches on these yet.
+    _hr("6c. CROSS-ACCOUNT CONSISTENCY (report-only)")
+    try:
+        from fdd_utils.ai.consistency import cross_account_findings
+        _run_record = results.get("__run__") if isinstance(results, dict) else None
+        _graph_facts = (_run_record or {}).get("facts") if isinstance(_run_record, dict) else None
+        cross_findings = cross_account_findings(results, dfs, _graph_facts)
+    except Exception as _exc:
+        cross_findings = []
+        print(f"  (cross-account pass failed: {type(_exc).__name__}: {_exc})")
+    _uncovered = [f for f in cross_findings if f["code"] == "OBSERVATION_UNCOVERED"]
+    _crossref = [f for f in cross_findings if f["code"] == "CROSS_REF_AMOUNT"]
+    print(f"⚖️  cross-account: {len(_uncovered)} analyst observation(s) no commentary mentions "
+          f"({sum(1 for f in _uncovered if f['severity'] == 'high')} high), "
+          f"{len(_crossref)} amount(s) written against another account that are not its figures")
+    for _f in cross_findings:
+        print(f"⚖️  [{_f['severity']:6s}] {'、'.join(_f['accounts'])}: {_f['detail']}")
+
+    return {
+        "skipped": False,
+        "total_mapped": total_mapped,
+        "ran": len(mapping_keys),
+        "elapsed": elapsed,
+        "empty_accounts": empty_accounts,
+        "grounding_warnings": len(all_warnings),
+        "stage_timing": stage_timing,
+        "results": results,
+        # 5d. Internal only. Deliberately kept OUT of `results` so there is no
+        # path from here into the deck -- build_pptx_structured_payloads is
+        # handed `results`, never this dict.
+        "claim_contracts": claim_tally,
+        "insight_summary": _insight,
+        "cross_account": cross_findings,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 8-9. PPTX export + log analysis + layout inspection
+# ---------------------------------------------------------------------------
+
+class _ListLogHandler(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.INFO)
+        self.records: List[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+_MEASUREMENT_RE = re.compile(r"Text measurement \[(ENG|CHI)\]: (client-metrics|system-font)(?: \(([^)]+)\))?")
+_PPTX_STAGE_RE = re.compile(r"\[PPTX\] ([\w_ ]+?): ([\d.]+)s")
+
+
+def export_and_inspect_pptx(
+    databook_path: str, sheet_name: Optional[str], dfs: Dict[str, pd.DataFrame], ai_results: Dict[str, Any],
+    language: str, model_type: str, out_path: str, model_name: Optional[str] = None,
+    financials_from: Optional[str] = None,
+    offline_summaries: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    """Runs the FULL remaining pipeline (build payloads -> export .pptx),
+    captures every [PPTX] stdout line and fdd_utils.pptx logger record
+    emitted during that export, parses them for the signals that matter
+    (measurement source per language, per-stage timing, any WARNING/ERROR),
+    then runs inspect_pptx.py's own geometry checks against the resulting
+    file — all in one pass, no separate manual export+inspect steps."""
+    _hr("8. PPTX EXPORT (build payloads -> export .pptx, capturing logs)")
+    from fdd_utils.pptx import build_pptx_structured_payloads, export_pptx_from_structured_data_combined
+    from fdd_utils.pptx.helpers import _rendered_bullet_label
+    from fdd_utils.workbook import find_mapping_key
+    from fdd_utils.workbook import synthesize_balance_sheet_and_income_statement
+    import inspect_pptx as _inspect_pptx
+
+    mappings = get_effective_mappings(load_mappings(), None)
+    if sheet_name:
+        # The Financials sheet may live in a sibling roll-up ("主表"), not in
+        # this entity's own workbook -- that is the whole point of
+        # --financials-from. Section 4's reconciliation already honoured it;
+        # this call did not, so it went looking for e.g. "南通通海Financials"
+        # inside 南通通海.xlsx, which has no such sheet. The lookup raised,
+        # bs_is_results came back empty, and every slide in all seven decks
+        # was exported with NO balance-sheet or income-statement table --
+        # visible only as "Skipping BS table — bs_df empty=True" and
+        # table=False on every slide.
+        bs_is_results = extract_balance_sheet_and_income_statement(
+            workbook_path=financials_from or databook_path, sheet_name=sheet_name, debug=False,
+        )
+    else:
+        # Mirrors process_workbook_data's fallback (fdd_utils/workbook.py) --
+        # no literal Financials sheet, so build the BS/IS summary purely
+        # from the mapped schedule tabs instead of skipping the embed.
+        bs_is_results = synthesize_balance_sheet_and_income_statement(dfs, mappings)
+        print("ℹ️  No Financials sheet — using a synthesized BS/IS built from the mapped schedule tabs.")
+    payloads = build_pptx_structured_payloads(ai_results, mappings, bs_is_results=bs_is_results, dfs=dfs)
+    print(f"BS items: {len(payloads['BS'])}, IS items: {len(payloads['IS'])}")
+
+    # Which accounts the AI wrote commentary for but that never reached a
+    # slide. This runs BEFORE the export, so pptx.py's own drop warning is
+    # outside the log handler section 8b attaches -- a real 投资收益 vanished
+    # silently across three runs, visible only as "IS items: 5". Reported
+    # here with the evidence the drop was judged on, since re-running the AI
+    # to find out costs 10 minutes.
+    _shipped = {
+        str(item.get("mapping_key") or "")
+        for statement_items in payloads.values() for item in statement_items
+    }
+    _dropped = []
+    for _account_key in ai_results or {}:
+        if str(_account_key).startswith("__"):
+            # Run-level sentinel, not an account. The pipeline files its health
+            # tally under __run_health__ in the same dict (the demo path uses
+            # __BS_summary__ the same way), and these have no mappings.yml entry
+            # by design -- without this guard every run reports one phantom
+            # dropped account.
+            continue
+        _mk = find_mapping_key(_account_key, mappings)
+        if not _mk:
+            # No entry in mappings.yml at all. build_pptx_structured_payloads
+            # skips these outright, so the account's commentary is generated,
+            # paid for, and thrown away. The first version of this report
+            # filtered on the SAME lookup and so was blind to exactly the
+            # accounts it existed to surface -- 投资收益 appears nowhere in
+            # mappings.yml and was reported as "every account reached the
+            # deck" three runs running.
+            _dropped.append((f"{_account_key} (NOT IN mappings.yml — add it there)",
+                             None, None, None))
+            continue
+        if _mk in _shipped:
+            continue
+        if (mappings.get(_mk, {}) or {}).get("type") not in {"BS", "IS"}:
+            continue
+        _df = dfs.get(_account_key) if dfs else None
+        _attrs = getattr(_df, "attrs", {}) or {}
+        _dropped.append((_mk, _attrs.get("any_period_nonzero_by_description"),
+                         _attrs.get("prompt_analysis_stage"),
+                         list(getattr(_df, "columns", [])) or None))
+    _dropped_before_export = list(_dropped)
+    if _dropped:
+        print(f"\n⚠️  {len(_dropped)} account(s) had commentary generated but were DROPPED "
+              f"before the deck (paid-for AI output that never ships):")
+        for _mk, _any, _stage, _cols in _dropped:
+            print(f"    {_mk}: any_period_nonzero={_any}")
+            print(f"        analysis stage={_stage}  projection columns={_cols}")
+    else:
+        print("✅ Every account with commentary reached the deck.")
+
+    template_path = str(Path(__file__).parent / "fdd_utils" / "template.pptx")
+    is_chinese = (language == "Chi")
+
+    # Write the executive summaries BEFORE export. The exporter makes no LLM
+    # call of its own (an in-export call was reported to hang 10+ min on a
+    # flaky API), so without this the band falls back to splicing each
+    # account's opening sentence -- which is why the summary could read as a
+    # verbatim copy of the page's first bullet. The batch UI path has always
+    # done this; the CLI never did, so a --run-ai --export-pptx deck has
+    # never carried a real AI summary.
+    from fdd_utils.ui import build_section_summaries
+    _summary_started_at = time.perf_counter()
+    _summary_grounding = {}
+    if offline_summaries is not None:
+        # --from-run: the summaries the run already wrote, never a new model call.
+        section_summaries = dict(offline_summaries)
+        print(f"\nExecutive summaries reused from the run: {sorted(section_summaries) or 'NONE'}"
+              + ("" if {"BS", "IS"} <= set(section_summaries)
+                 else "  (missing ones use the exporter's deterministic page summary)"))
+    else:
+        section_summaries = build_section_summaries(
+            ai_results=ai_results,
+            mappings=mappings,
+            is_chinese_db=is_chinese,
+            model_type=model_type,
+            model_name=model_name,
+            label=Path(databook_path).stem,
+            grounding_out=_summary_grounding,
+            bs_is_results=bs_is_results,
+        )
+        print(f"\nExecutive summaries generated: {sorted(section_summaries) or 'NONE (band will use the spliced fallback)'}"
+              f"  [{time.perf_counter() - _summary_started_at:.1f}s]")
+    for _stmt, _grounding in sorted(_summary_grounding.items()):
+        _dropped = len(_grounding.get("dropped_sentences") or [])
+        if _grounding.get("ungrounded"):
+            print(f"  ⚠️  {_stmt} summary NOT grounded ({_grounding['ungrounded']}) -- exported unchecked")
+            continue
+        print(
+            f"  {_stmt} summary grounding: "
+            f"{_grounding.get('checked_amounts', 0)} amount(s) checked against "
+            f"{_grounding.get('pool_facts', 0)} facts; "
+            f"{_dropped} unsupported sentence(s) removed"
+        )
+        for _gone in (_grounding.get("dropped_sentences") or []):
+            print(f"      removed: {str(_gone.get('sentence'))[:160]}")
+            print(f"        why:   {str(_gone.get('reason'))[:200]}")
+    # Report-only (consistency.py): a summary clause whose direction the
+    # account's own balances contradict. Grounding above checks amounts only.
+    try:
+        from fdd_utils.ai.consistency import summary_direction_findings
+        for _f in summary_direction_findings(section_summaries, dfs or {}):
+            print(f"⚖️  [{_f['severity']:6s}] {'、'.join(_f['accounts'])}: {_f['detail']}")
+    except Exception as _exc:
+        print(f"  (summary direction check skipped: {type(_exc).__name__}: {_exc})")
+
+    # Every fdd_utils.pptx.* module sets its OWN logger to WARNING at import,
+    # and a child's level wins over the parent's -- so raising only the parent
+    # captured nothing, which is why "Text measurement [...]" never appeared and
+    # why a silent executive-summary fallback stayed silent. Raise the children
+    # too, and put them back afterwards.
+    pptx_logger = logging.getLogger("fdd_utils.pptx")
+    handler = _ListLogHandler()
+    prev_level = pptx_logger.level
+    _child_levels = {}
+    for _name, _lg in list(logging.Logger.manager.loggerDict.items()):
+        if _name.startswith("fdd_utils.pptx.") and isinstance(_lg, logging.Logger):
+            _child_levels[_name] = _lg.level
+            _lg.setLevel(logging.INFO)
+    pptx_logger.addHandler(handler)
+    pptx_logger.setLevel(logging.INFO)
+    stdout_buf = io.StringIO()
+    try:
+        with redirect_stdout(stdout_buf):
+            export_pptx_from_structured_data_combined(
+                template_path=template_path,
+                bs_data=payloads["BS"], is_data=payloads["IS"],
+                output_path=out_path,
+                financials_from=financials_from,
+                project_name=Path(databook_path).stem,
+                language="Chinese" if is_chinese else "english",
+                temp_path=databook_path, selected_sheet=sheet_name,
+                is_chinese_databook=is_chinese, bs_is_results=bs_is_results,
+                model_type=model_type,
+                pre_generated_summaries=section_summaries,
+                mappings=mappings,
+            )
+    finally:
+        pptx_logger.removeHandler(handler)
+        pptx_logger.setLevel(prev_level)
+        for _name, _lvl in _child_levels.items():
+            logging.getLogger(_name).setLevel(_lvl)
+    captured_stdout = stdout_buf.getvalue()
+    print(captured_stdout, end="")
+
+    _hr("8b. EXPORT LOG ANALYSIS")
+    measurement_sources: Dict[str, str] = {}
+    warnings_seen: List[str] = []
+    for rec in handler.records:
+        msg = rec.getMessage()
+        m = _MEASUREMENT_RE.search(msg)
+        if m:
+            measurement_sources[m.group(1)] = m.group(2) + (f" ({m.group(3)})" if m.group(3) else "")
+        if rec.levelno >= logging.WARNING:
+            warnings_seen.append(f"[{rec.levelname}] {msg}")
+
+    stage_times: Dict[str, float] = {}
+    for m in _PPTX_STAGE_RE.finditer(captured_stdout):
+        stage_times[m.group(1).strip()] = float(m.group(2))
+
+    if measurement_sources:
+        for lang, source in measurement_sources.items():
+            marker = "✅" if source.startswith("client-metrics") else "⚠️"
+            print(f"  {marker} {lang} measurement source: {source}")
+        if any(not s.startswith("client-metrics") for s in measurement_sources.values()):
+            print("  ⚠️  At least one language measured with a system-font fallback, not the "
+                  "repo-shipped/client metrics.json — check pptx.commentary_packing."
+                  "font_metrics_path_eng/chi and use_pillow_text_fitting in config.yml.")
+    else:
+        print("  ℹ️  No 'Text measurement [...]' log line captured. That line is emitted once "
+              "per language on first measurement, so this usually just means logging didn't "
+              "propagate — section 9 below reports the measurement source it actually observed "
+              "in the deck; trust that over this line.")
+        print("      (This used to blame use_pillow_text_fitting: false. That setting no longer "
+              "has a reader — the accurate path is taken whenever a shape is available — so it "
+              "was reporting a cause that could not happen.)")
+
+    if stage_times:
+        print("  Export stage timing:")
+        for stage, secs in stage_times.items():
+            print(f"    {stage}: {secs:.2f}s")
+
+    if warnings_seen:
+        print(f"  {len(warnings_seen)} WARNING/ERROR log line(s) during export:")
+        for w in warnings_seen:
+            print(f"    {w}")
+    else:
+        print("  ✅ No WARNING/ERROR log lines during export.")
+
+    # The .pptx is KEPT on disk, not written to a temp file -- print where, so
+    # it can actually be opened and eyeballed. Every automated check below is a
+    # geometry/metrics check; none of them substitute for looking at the deck.
+    print(f"\n  📄 PPTX SAVED: {Path(out_path).resolve()}")
+
+    _hr("9. PPTX LAYOUT INSPECTION (L/R collision, table overlap, overflow, fill ratio)")
+    pptx_config = _inspect_pptx._load_config(None)
+    layout = _inspect_pptx.inspect_pptx(out_path, pptx_config)
+
+    population = analyze_population_fill(
+        payloads=payloads, template_path=template_path, language=language, model_type=model_type,
+    )
+
+    return {
+        "out_path": out_path,
+        "measurement_sources": measurement_sources,
+        "export_warnings": warnings_seen,
+        "stage_times": stage_times,
+        "layout": layout,
+        "population": population,
+        "dropped_accounts": [str(d[0]) for d in _dropped_before_export],
+        "payload_labels": {
+            statement: [_rendered_bullet_label(item, is_chinese) for item in items]
+            for statement, items in payloads.items()
+        },
+    }
+
+
+def _write_run_identity(path: str, ai_summary: Dict[str, Any], **identity: Any) -> None:
+    """run_identity.json next to the run's results.yml, so --from-run can prove
+    later that this commentary was written from this workbook."""
+    results = (ai_summary or {}).get("results") or {}
+    run_folder = ((results.get("__run__") or {}).get("run_folder")) if isinstance(results, dict) else None
+    if not run_folder:
+        return
+    try:
+        from fdd_utils import run_identity
+        accounts = [k for k in results if not str(k).startswith("__")]
+        written = run_identity.write_identity(
+            str(run_folder), run_identity.build_identity(workbook=path, entity=identity.pop("entity_name"),
+                                                         accounts=accounts, **identity))
+        if written:
+            print(f"🪪 run identity saved: {written}  (re-export later with --from-run "
+                  f"{Path(str(run_folder)).name.replace('run_', '')})")
+    except Exception as exc:
+        print(f"  (run identity not saved: {type(exc).__name__}: {exc})")
+
+
+#: Layout findings that fail an offline re-export, by the text inspect_pptx
+#: writes for them -- the three CLAUDE.md names plus a collapsed L/R page.
+_REEXPORT_BLOCKING = (
+    ("overflow", "OVERFLOW RISK"),
+    ("placeholder_leak", "PLACEHOLDER LEAKED"),
+    ("table_overlap", "table overlaps"),
+    ("lr_collision", "L/R collision"),
+)
+
+
+def _classify_layout_warning(detail: str) -> str:
+    for kind, needle in _REEXPORT_BLOCKING:
+        if needle.lower() in detail.lower():
+            return kind
+    for kind, needle in (("under_filled", "under-filled"), ("autofit_shrink", "AUTOFIT SHRINK"),
+                         ("full_legal_name", "FULL LEGAL NAME"), ("summary", "summary"), ("table", "table")):
+        if needle.lower() in detail.lower():
+            return kind
+    return "other"
+
+
+def reexport_from_run(
+    path: str, run: str, ai_dfs: Dict[str, pd.DataFrame], language: str, selected_sheet: Optional[str],
+    entity_name: str, *, financials_from: Optional[str], financials_sheet: Optional[str], out_path: str,
+    model_type: str, model_name: Optional[str], summary_fallback: bool = False,
+    allow_unverified: bool = False,
+) -> Dict[str, Any]:
+    """Lay out a previous run's commentary again with the current code, no model calls.
+
+    For layout, packing and table work: the text stays fixed between attempts,
+    so a change in the deck is the change in the code. Checked first, and each
+    failure named in the verdict:
+
+      * identity -- run_identity.json's workbook/Financials hashes, entity,
+        sheet and language against this invocation (runs that predate it, or
+        were started from the app, have none: noted, and the per-account
+        check below carries the proof);
+      * data -- each account's frame fingerprint, taken after the same
+        subtable settlement the pipeline does, against its last checkpoint
+        line. A workbook edited since the run fails here, account by account;
+      * summaries -- section_summaries.json, or --summary-fallback for the
+        exporter's deterministic page summary;
+      * model calls -- AIClient.get_response is blocked for the whole export;
+        any attempt is recorded and fails the run;
+      * the deck -- no overflow, placeholder leak, table-over-text or
+        collapsed L/R page; every account with commentary on a slide; at
+        least one content slide.
+
+    Verdict PASS / FAIL / UNVERIFIED (--allow-unverified got past an identity
+    or data mismatch). Written to <deck>.reexport.json next to the deck.
+    """
+    _hr(f"5R. OFFLINE RE-EXPORT FROM RUN {run} (no model calls)")
+    from fdd_utils import run_identity
+    from fdd_utils.ai.evidence import frame_fingerprint
+    from fdd_utils.ai.pipeline import settle_subtable_selection
+
+    report: Dict[str, Any] = {"run": run, "verdict": "FAIL", "problems": [], "notes": [],
+                              "deck": str(Path(out_path).resolve())}
+    report_path = Path(out_path).with_suffix(".reexport.json")
+
+    def _finish() -> Dict[str, Any]:
+        mismatch = report.pop("_identity_mismatch", False)
+        if not report["problems"]:
+            report["verdict"] = "UNVERIFIED" if mismatch else "PASS"
+        try:
+            report_path.write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str),
+                                   encoding="utf-8")
+        except Exception as exc:
+            print(f"  (report not written: {exc})")
+        print(f"\nRE-EXPORT VERDICT: {report['verdict']}  ({len(report['problems'])} problem(s), "
+              f"{len(report.get('provider_call_attempts') or [])} model call(s) attempted)")
+        for problem in report["problems"]:
+            print(f"  ❌ {problem}")
+        for note in report["notes"]:
+            print(f"  ℹ️  {note}")
+        print(f"  report: {report_path.resolve()}")
+        return report
+
+    folder = run_identity.resolve_run_folder(run)
+    if not folder:
+        report["problems"].append(f"no run folder with a results.yml for {run!r} under fdd_utils/logs")
+        return _finish()
+    report["run_folder"] = folder
+    loaded = run_identity.load_run(folder)
+    results = loaded["results"]
+    accounts = [k for k, v in results.items() if not str(k).startswith("__") and isinstance(v, dict)]
+    run_accounts = list((((results.get("__run__") or {}).get("state") or {}).get("accounts") or {})) or accounts
+    settle_subtable_selection([k for k in run_accounts if k in ai_dfs], ai_dfs)
+
+    current = run_identity.build_identity(
+        workbook=path, entity=entity_name, sheet=selected_sheet, financials_from=financials_from,
+        financials_sheet=financials_sheet, language=language, model_type=model_type,
+        model_name=model_name, accounts=accounts)
+    saved = loaded["identity"]
+    report["identity"] = {"run": saved, "now": current}
+    mismatches: List[str] = []
+    if saved:
+        mismatches += [f"identity differs -- {m}" for m in run_identity.compare_identity(saved, current)]
+    else:
+        report["notes"].append("the run has no run_identity.json (started from the app, or before it "
+                               "existed): only the per-account data fingerprints prove its source")
+    fingerprints = loaded["fingerprints"]
+    missing = [k for k in accounts if k not in ai_dfs]
+    changed = [k for k in accounts if k in ai_dfs and fingerprints.get(k)
+               and fingerprints[k] != frame_fingerprint(ai_dfs[k])]
+    unprinted = [k for k in accounts if k in ai_dfs and not fingerprints.get(k)]
+    mismatches += [f"account not in this workbook's frames: {k}" for k in missing]
+    mismatches += [f"account data differs from the run's (fingerprint): {k}" for k in changed]
+    if unprinted and not saved:
+        mismatches.append(f"{len(unprinted)} account(s) carry no data fingerprint and the run no identity "
+                          f"file, so nothing ties them to this workbook: {', '.join(unprinted[:8])}")
+    report["accounts"] = {"in_run": len(accounts), "fingerprint_matched": len(accounts) - len(missing)
+                          - len(changed) - len(unprinted), "changed": changed, "missing": missing,
+                          "no_fingerprint": unprinted}
+    print(f"  run folder: {folder}")
+    print(f"  accounts: {len(accounts)} in the run, {report['accounts']['fingerprint_matched']} with matching "
+          f"data, {len(changed)} changed, {len(missing)} missing, {len(unprinted)} without a fingerprint")
+    if mismatches and not allow_unverified:
+        report["problems"] += mismatches
+        report["problems"].append("not re-exported: the commentary may not describe this workbook "
+                                  "(--allow-unverified to lay it out anyway)")
+        return _finish()
+    if mismatches:
+        report["notes"] += mismatches
+        report["_identity_mismatch"] = True
+
+    summaries = loaded["summaries"]
+    if summaries:
+        report["summaries"] = {stmt: "saved" for stmt in summaries}
+    elif summary_fallback:
+        summaries = {}
+        report["summaries"] = "deterministic page summary (--summary-fallback)"
+        report["notes"].append("no saved executive summary: the band uses the exporter's deterministic "
+                               "page summary, so it differs from the original deck")
+    else:
+        report["problems"].append("the run saved no executive summary (section_summaries.json); "
+                                  "pass --summary-fallback to use the deterministic page summary")
+        return _finish()
+
+    pptx_summary: Optional[Dict[str, Any]] = None
+    with run_identity.offline_provider_block() as attempts:
+        try:
+            with _compact("8-10 PPTX export + layout",
+                          keep=("DROPPED", "⚠️", "OVERFLOW RISK", "OVERLAPS REAL TEXT",
+                                "LEAKED", "warning(s) found")):
+                pptx_summary = export_and_inspect_pptx(
+                    path, selected_sheet, ai_dfs, results, language, model_type, out_path,
+                    model_name=model_name, financials_from=financials_from, offline_summaries=summaries,
+                )
+        except Exception as exc:
+            report["problems"].append(f"export failed: {type(exc).__name__}: {exc}")
+    report["provider_call_attempts"] = list(attempts)
+    if attempts:
+        report["problems"].append(f"{len(attempts)} model call(s) attempted during the re-export "
+                                  f"(blocked; first: {attempts[0]})")
+    report["environment"] = {"run": {k: (saved or {}).get(k) for k in ("code_revision", "config_sha256",
+                                                                         "template_sha256")},
+                             "now": run_identity.environment_fingerprint()}
+    if not pptx_summary:
+        return _finish()
+    report["pptx"] = {"out_path": pptx_summary.get("out_path")}
+    layout = pptx_summary.get("layout") or {}
+    by_kind: Dict[str, List[str]] = {}
+    for detail in layout.get("warning_details") or []:
+        by_kind.setdefault(_classify_layout_warning(str(detail)), []).append(str(detail))
+    report["layout"] = {"total_slides": layout.get("total_slides"), "content_slides": layout.get("content_slides"),
+                        "warnings_by_kind": by_kind}
+    for kind, _needle in _REEXPORT_BLOCKING:
+        for detail in by_kind.get(kind, []):
+            report["problems"].append(f"layout {kind}: {detail}")
+    if not layout.get("content_slides"):
+        report["problems"].append("the deck has no content slide this project's template names")
+    for dropped in pptx_summary.get("dropped_accounts") or []:
+        report["problems"].append(f"commentary never reached the deck: {dropped}")
+    try:
+        from pptx import Presentation
+        _deck = Presentation(out_path)
+        # Which tables were drawn, by their title band and data-row count, so a
+        # pasted verdict says which account a table warning is about and how
+        # long each table came out.
+        tables = [(index, shape.table.cell(0, 0).text.strip(), len(shape.table.rows) - 2)
+                  for index, slide in enumerate(_deck.slides, 1) for shape in slide.shapes
+                  if getattr(shape, "has_table", False)]
+        report["layout"]["tables"] = [{"slide": i, "title": t, "data_rows": n} for i, t, n in tables]
+        print("  tables drawn: " + " · ".join(f"s{i} {t or '(untitled)'} {n}行" for i, t, n in tables))
+        deck_text = "\n".join(shape.text_frame.text for slide in _deck.slides
+                              for shape in slide.shapes if getattr(shape, "has_text_frame", False))
+        absent = [label for labels in (pptx_summary.get("payload_labels") or {}).values()
+                  for label in labels if f"■ {label}" not in deck_text]
+        report["accounts"]["absent_from_deck"] = absent
+        for label in absent:
+            report["problems"].append(f"account has no bullet in the deck: {label}")
+    except Exception as exc:
+        report["notes"].append(f"deck coverage not checked: {type(exc).__name__}: {exc}")
+    return _finish()
+
+
+def analyze_population_fill(
+    payloads: Dict[str, List[Dict[str, Any]]], template_path: str, language: str, model_type: str,
+) -> Dict[str, Any]:
+    """Deep population/fill (text-box "utilisation") diagnostic, on top of
+    what section 9's layout check already reports.
+
+    For each statement (BS/IS), computes the THEORETICAL BEST fill ratio —
+    total content-lines needed divided by total capacity across exactly the
+    slots the packer actually used — so a genuinely low ceiling here means
+    the content itself doesn't reach the target regardless of packing
+    quality (not a packing bug). Then, for every slot boundary, checks
+    whether the first account of the NEXT slot would have fit into the
+    PREVIOUS slot's remaining space; if it would, this does NOT stop at
+    that naive local check (which produces false positives — see below) —
+    it replays the DP's own lexicographic penalty formula for both the
+    actual assignment and the alternative (moving that account back), and
+    only reports a genuine gap if the alternative's total penalty is
+    actually LOWER. A naive "would it fit locally" check is necessary but
+    not sufficient: moving an account into an earlier slot can make a
+    LATER slot's fill worse by more than it helps the earlier one, in
+    which case the packer's original choice is already optimal even though
+    it looks like a gap at a glance.
+    """
+    from fdd_utils.pptx import PowerPointGenerator
+
+    gen = PowerPointGenerator(template_path, "chinese" if language == "Chi" else "english", model_type=model_type)
+    gen.load_template()
+    is_chinese = (language == "Chi")
+    max_slides = int(gen.pptx_settings.get("max_commentary_slides_per_statement", 4) or 4)
+
+    _hr("10. POPULATION / FILL DIAGNOSTIC (theoretical ceiling + rigorous boundary check)")
+
+    # start_slide must match apply_structured_data_to_slides' real call sites
+    # (BS=1, IS=5) — using the wrong one would resolve slot shapes against the
+    # OTHER statement's slides. Continuation slides (every slide after the
+    # first of a statement) also need their commentary box expanded to absorb
+    # the coSummaryShape area FIRST, exactly as apply_structured_data_to_slides
+    # does before it calls _distribute_content_across_slots — skipping this
+    # understates capacity on every slide but the first and makes the fill
+    # ratios / gap check below not match what the real export actually did.
+    start_slides = {"BS": 1, "IS": 1 + max_slides}
+    report: Dict[str, Any] = {}
+    for statement_type in ("BS", "IS"):
+        items = payloads.get(statement_type) or []
+        if not items:
+            continue
+        start_slide = start_slides[statement_type]
+        first_slide_idx = start_slide - 1
+        for offset in range(1, max_slides):
+            cont_idx = first_slide_idx + offset
+            if cont_idx >= len(gen.presentation.slides):
+                break
+            gen._expand_commentary_to_cover_summary(gen.presentation.slides[cont_idx])
+
+        target_fill = float(gen._packing_settings(statement_type).get("target_fill_min_ratio", 0.95) or 0.95)
+        print(f"\n  [{statement_type}] target_fill_min_ratio = {target_fill:.0%} "
+              f"(every slot except the last-used one is scored against this)")
+        # Prepare the items EXACTLY as apply_structured_data_to_slides does
+        # before it packs. Skipping this measured different text from the one
+        # that actually ships -- normalisation and shorten_company_names both
+        # run in there -- so section 10 and section 9 reported different fill
+        # for the same box (95% vs 101% on a real slide 1). A diagnostic that
+        # disagrees with the render it is describing is worse than none.
+        # _plan_slot_distribution, not _distribute_content_across_slots: the
+        # export pulls presentation-table accounts out of the packing pool and
+        # appends them to their own slots afterwards, so packing every account
+        # models a layout that never ships. On a real deck this reported an IS
+        # page as 100% full with 4 accounts where the deck held one account at
+        # 33%, then declared "no genuine packing gaps" about it.
+        items = gen._prepare_structured_data_for_slides(items)
+        dist = gen._plan_slot_distribution(
+            items, max_slides=max_slides, start_slide=start_slide,
+            statement_type=statement_type, is_chinese_databook=is_chinese,
+        )
+        if not dist:
+            print("    (no slots used)")
+            continue
+
+        sample_shape = None
+        for slide in gen.presentation.slides:
+            for alt_name in ("textMainBullets", "textMainBullets_L", "textMainBullets_R"):
+                shape = gen.find_shape_by_name(slide.shapes, alt_name)
+                if shape:
+                    sample_shape = shape
+                    break
+            if sample_shape:
+                break
+
+        def _shape_for(slide_idx: int, slot_name: str):
+            actual_slide_idx = start_slide - 1 + slide_idx
+            slide = gen.presentation.slides[actual_slide_idx]
+            return gen._resolve_commentary_slot_shape(slide, slot_name) or sample_shape
+
+        slot_rows = []
+        total_used = 0.0
+        total_cap = 0.0
+        for slide_idx, slot_name, accts in dist:
+            if not accts:
+                continue
+            shape = _shape_for(slide_idx, slot_name)
+            is_chi_slot = any(bool(a.get("is_chinese")) for a in accts)
+            cap = gen._calculate_max_lines_for_textbox(shape, is_chinese=is_chi_slot, slot_name=slot_name, statement_type=statement_type)
+            used = gen._compute_slot_used_lines(accts, slot_name, slot_shape=shape, statement_type=statement_type)
+            slot_rows.append({
+                "slide_idx": slide_idx, "actual_slide_num": start_slide + slide_idx, "slot_name": slot_name,
+                "shape": shape, "accounts": accts, "cap": cap, "used": used, "is_chinese": is_chi_slot,
+            })
+            total_used += used
+            total_cap += cap
+
+        ceiling = (total_used / total_cap) if total_cap else 0.0
+        print(f"    {len(slot_rows)} slot(s) used, {total_used:.1f}/{total_cap:.0f} total lines "
+              f"-> theoretical best fill if perfectly redistributed: {ceiling:.0%}")
+
+        genuine_gaps = []
+        for idx, row in enumerate(slot_rows):
+            names = [a.get("mapping_key", "?") for a in row["accounts"]]
+            fill = row["used"] / row["cap"] if row["cap"] else 0.0
+            print(f"      slide {row['actual_slide_num']} ({row['slot_name']}): {row['used']:.1f}/{row['cap']} "
+                  f"= {fill:.0%}  accts={names}")
+            if idx + 1 >= len(slot_rows):
+                continue
+            nxt = slot_rows[idx + 1]
+            if not nxt["accounts"]:
+                continue
+            first_next = nxt["accounts"][0]
+            remaining = row["cap"] - row["used"]
+            # Recompute the FULL list's used-lines (not a bare single-account
+            # _calculate_content_lines call) so a category-header increment
+            # on first_next is correctly included -- the same accounting
+            # _rebalance_underfilled_boundaries (the active fix in pptx.py)
+            # uses. A naive single-account cost silently under-counts by the
+            # ~1-line header cost whenever first_next starts a new category,
+            # which produced false "genuine gap" positives on tight margins.
+            alt_cur_used = gen._compute_slot_used_lines(
+                row["accounts"] + [first_next], row["slot_name"],
+                slot_shape=row["shape"], statement_type=statement_type,
+            )
+            cost_here = alt_cur_used - row["used"]
+            if alt_cur_used > row["cap"]:
+                continue  # doesn't even fit locally -- not a candidate, gap is real/unavoidable
+
+            # Locally it WOULD fit -- but that alone is a false-positive-prone
+            # check. Replay the DP's own lexicographic penalty for both the
+            # current assignment and the alternative (move first_next back
+            # into this slot, remove its cost from the next slot) to see
+            # which is genuinely better.
+            is_last_cur = (idx == len(slot_rows) - 1)
+            is_last_nxt = (idx + 1 == len(slot_rows) - 1)
+            cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (row["used"] / row["cap"]))
+            nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (nxt["used"] / nxt["cap"]))
+            current_total = cur_penalty + nxt_penalty
+
+            alt_nxt_used = gen._compute_slot_used_lines(
+                nxt["accounts"][1:], nxt["slot_name"],
+                slot_shape=nxt["shape"], statement_type=statement_type,
+            )
+            alt_cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (alt_cur_used / row["cap"]))
+            alt_nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (alt_nxt_used / nxt["cap"]))
+            alt_total = alt_cur_penalty + alt_nxt_penalty
+
+            if alt_total < current_total - 1e-9:
+                genuine_gaps.append((row, nxt, first_next, cost_here, remaining, current_total, alt_total))
+                print(f"        *** GENUINE GAP: '{first_next.get('mapping_key')}' (costs {cost_here:.2f}, "
+                      f"remaining {remaining:.2f}) -- moving it back lowers total penalty "
+                      f"{current_total:.3f} -> {alt_total:.3f} ***")
+
+        report[statement_type] = {
+            "slots": len(slot_rows), "total_used": total_used, "total_cap": total_cap,
+            "ceiling": ceiling, "genuine_gaps": len(genuine_gaps),
+        }
+
+    if not any(v.get("genuine_gaps") for v in report.values()):
+        print("\n  ✅ No genuine packing gaps found — every boundary is either a hard fit "
+              "limit or already at the DP's own optimum.")
+    return report
+
+
+# ---------------------------------------------------------------------------
+
+def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
+    """Exact 'Financials' match wins. Otherwise look for a multi-entity
+    pattern -- either 'Financials - NB' / 'Financials - HN' (space/hyphen-
+    separated, common when one workbook covers several properties) OR
+    '<entity>Financials' (CJK-name glued directly onto the suffix with no
+    separator, e.g. '上海松江Financials' -- a different, equally real client
+    template convention). Both patterns are matched and returned together
+    so `inspect_one`'s existing "multi-entity workbook, found N Financials
+    sheets -- running reconciliation against each" path covers both.
+
+    Matching ONLY the prefix form silently missed every suffix-style sheet.
+    Confirmed on a real portfolio workbook that has BOTH a portfolio-wide
+    aggregate ('Financials-portfolio III+自持', prefix-style, matched) AND
+    per-entity suffix-style sheets ('上海松江Financials', '昆明经开Financials',
+    NOT matched by the old prefix-only regex): with only the aggregate
+    found, EVERY individual entity's own workbook reconciled its own
+    breakdown tabs against the WHOLE portfolio's combined total instead of
+    its own entity's summary -- producing large, entirely spurious "Diff"
+    flags with nothing wrong in the underlying data (the two entities'
+    Tab values summed exactly to the aggregate's Financials value).
+
+    Falling back to sheet_names[0] (e.g. a 'Briefing'/'Cover' tab) silently
+    reconciles against the wrong sheet and reports an empty/misleading
+    result, so that fallback is deliberately NOT used here.
+    """
+    exact = [s for s in xl.sheet_names if s.strip().lower() == "financials"]
+    if exact:
+        return exact
+    prefixed = [s for s in xl.sheet_names if re.match(r"^financials\s*-", s.strip(), re.IGNORECASE)]
+    suffixed = [
+        s for s in xl.sheet_names
+        if re.search(r"financials\s*$", s.strip(), re.IGNORECASE) and s.strip().lower() != "financials"
+    ]
+    seen: set = set()
+    combined: List[str] = []
+    for s in prefixed + suffixed:
+        if s not in seen:
+            seen.add(s)
+            combined.append(s)
+    return combined
+
+
+def inspect_one(*args, **kwargs) -> Dict[str, Any]:
+    """_inspect_one, with sections 1-4 and the AI run sharing ONE extraction of
+    the workbook (fdd_utils.workbook.reuse_extraction) instead of paying for it
+    twice."""
+    from fdd_utils import usage_ledger
+    from fdd_utils.workbook import reuse_extraction
+    path = args[0] if args else kwargs.get("path", "")
+    entity = (args[2] if len(args) > 2 else kwargs.get("entity_name")) or None
+    # One session per invocation and file. A constant "cli" merged every CLI run
+    # of a workbook into one, so usage_summary.py counted a second run's calls
+    # as retries of the first.
+    session = f"cli-{time.strftime('%Y%m%d_%H%M%S')}"
+    with reuse_extraction(), usage_ledger.scope(session=session, file=Path(str(path)).name, entity=entity):
+        usage_ledger.record_event("cli_run", run_ai=bool(args[3] if len(args) > 3 else kwargs.get("run_ai")))
+        return _inspect_one(*args, **kwargs)
+
+
+def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
+                 model_type: str, model_name: Optional[str], limit: Optional[int] = None,
+                 workers: Optional[int] = None, dump_tab_name: Optional[str] = None,
+                 accounts: Optional[List[str]] = None, export_pptx: bool = False,
+                 pptx_out_dir: Optional[str] = None, financials_from: Optional[str] = None,
+                 financials_sheet: Optional[str] = None, resume_from: Optional[str] = None,
+                 from_run: Optional[str] = None, summary_fallback: bool = False,
+                 allow_unverified: bool = False) -> Dict[str, Any]:
+    _hr(f"INSPECTING: {path}")
+    _file_started = time.perf_counter()
+    _CAPTURE.times = []
+
+    # Resolved and checked before anything expensive runs: with --run-ai the
+    # export sits ~12 minutes and a pile of tokens downstream of here, and a
+    # deck left open in PowerPoint would only surface at the save.
+    pptx_out_path = None
+    if export_pptx:
+        _out_dir = Path(pptx_out_dir) if pptx_out_dir else Path(path).parent / "pptx_previews"
+        pptx_out_path = str(_out_dir / f"{Path(path).stem}.preview.pptx")
+        assert_pptx_output_writable(pptx_out_path)
+
+    # Up front, for the same reason as the output-path check above: the export
+    # already reports which ruler it measured with, but only at section 8b,
+    # which is minutes and a pile of tokens downstream. A missing metrics file
+    # does not break anything -- every splitter falls back to an average
+    # character width that UNDER-counts, so columns come out slightly emptier,
+    # never overfull -- but it silently costs layout quality, and finding that
+    # out after paying for the run is the wrong order.
+    with _compact("0 font metrics"):
+        check_font_metrics_available()
+
+    summary: Dict[str, Any] = {"file": Path(path).name, "status": "ok"}
+    extraction_resolution: Dict[str, Any] = {}
+    with _compact("1 tab read", keep=("Detected language",)):
+        dfs = check_tab_read_summary(path, entity_name=entity_name,
+                                     resolution_out=extraction_resolution)
+    summary["tabs_parsed"] = len(dfs)
+    _xt = extraction_resolution.get("timings") or {}
+    if _xt:
+        print("⏱  extraction " + " · ".join(f"{k} {v:.0f}s" for k, v in _xt.items() if v >= 0.5))
+
+    if dump_tab_name:
+        dump_tab(path, dfs, dump_tab_name, entity_name=entity_name)
+        dump_unreached_cells(extraction_resolution.get("workbook_digest"), dfs, dump_tab_name)
+        summary["status"] = "dump-tab only"
+        return summary
+
+    with _compact("2-3c structure checks"):
+        check_unit_markers(path, dfs)
+        summary["scaling_mismatch_tabs"] = check_all_tabs_scaling(path, dfs, entity_name=entity_name)
+        check_row_structures(dfs)
+        # 3b re-reads every tab with full openpyxl styles and re-normalises the
+        # indented ones; everything it prints is a diagnostic compact mode
+        # hides. Not worth its minutes on a run nobody reads it from.
+        if VERBOSE:
+            check_indent_signals(path, dfs, entity_name=entity_name)
+        check_subtable_readiness(path, dfs)
+
+    xl = pd.ExcelFile(path)
+    summary["total_sheets"] = len(xl.sheet_names)
+    if financials_from:
+        # This entity's own file has no Financials-pattern sheet at all --
+        # the real summary lives in a sibling roll-up ("主表") workbook, one
+        # sheet per entity. Skip the normal in-file auto-detection entirely;
+        # the user names the exact sheet, no guessing which one is "theirs".
+        sheet_names = [financials_sheet]
+    elif sheet:
+        sheet_names = [sheet]
+    else:
+        sheet_names = _resolve_financials_sheets(xl)
+        if not sheet_names:
+            # Previously this bailed out of inspect_one() entirely, meaning
+            # --run-ai/--export-pptx could never even be tried on a file with
+            # no literal "Financials" sheet -- even though production
+            # (fdd_utils/ui.py:746-751) explicitly falls back to using ALL
+            # extracted schedule accounts when there's no reconciliation data,
+            # rather than refusing to generate anything. Mirror that here:
+            # skip reconciliation only, and keep going if AI/PPTX was requested.
+            print(
+                f"\nℹ️  No sheet named exactly 'Financials' or matching 'Financials - <entity>' "
+                f"found in {path} — reconciliation will be skipped."
+                + (" AI/PPTX will still run against ALL extracted schedule accounts, mirroring "
+                   "production's 'no reconciliation data' fallback."
+                   if (run_ai or export_pptx) else
+                   " Pass --sheet explicitly to reconcile against a differently-named summary "
+                   "tab, or pass --run-ai to still exercise the AI pipeline without reconciliation.")
+                + f"\n   Sheet names in this workbook: {xl.sheet_names}"
+            )
+            if not (run_ai or export_pptx):
+                summary["status"] = "no Financials sheet"
+                return summary
+        elif len(sheet_names) > 1:
+            print(
+                f"\nℹ️  Multi-entity workbook: found {len(sheet_names)} Financials sheets "
+                f"{sheet_names} — running reconciliation against each."
+            )
+
+    bs_recon_parts: List[pd.DataFrame] = []
+    is_recon_parts: List[pd.DataFrame] = []
+    period_tieout: List[Dict[str, Any]] = []
+    _recon_quiet = _compact("4 reconciliation + tie-out", keep=("❌ Diff",))
+    with _recon_quiet:
+        for i, sheet_name in enumerate(sheet_names):
+            # all_tab_names (dfs.keys()) is the same for every Financials sheet in
+            # this file -- only show the full tab-name list once, on the first one.
+            bs_recon, is_recon = check_reconciliation(
+                path, sheet_name, dfs, entity_name=entity_name, financials_from=financials_from,
+                show_tab_list=(i == 0), tieout_out=period_tieout,
+            )
+            if bs_recon is not None and not bs_recon.empty:
+                bs_recon_parts.append(bs_recon)
+            if is_recon is not None and not is_recon.empty:
+                is_recon_parts.append(is_recon)
+
+        # What the embedded grid will print in its unit cell, and at what scale.
+        # Read from the SAME source the exporter uses, so it cannot disagree.
+        try:
+            _sheet_for_units = sheet_names[0] if sheet_names else None
+            if _sheet_for_units:
+                check_statement_table_units(
+                    extract_balance_sheet_and_income_statement(
+                        workbook_path=financials_from or path,
+                        sheet_name=_sheet_for_units, debug=False,
+                    )
+                )
+        except Exception as _exc:
+            print(f"\n  (statement-table unit check skipped: {type(_exc).__name__}: {_exc})")
+
+        try:
+            # Scans every cell of every sheet three times per differing period
+            # (a 科目余额表 alone is ~270k cells), and prints only lines
+            # compact mode hides.
+            if VERBOSE:
+                explain_tieout_differences(period_tieout, extraction_resolution.get("workbook_digest"), dfs)
+        except Exception as _exc:
+            print(f"\n  (tie-out explanation skipped: {type(_exc).__name__}: {_exc})")
+
+    combined_bs_recon = pd.concat(bs_recon_parts, ignore_index=True) if bs_recon_parts else None
+    combined_is_recon = pd.concat(is_recon_parts, ignore_index=True) if is_recon_parts else None
+    if combined_bs_recon is not None:
+        summary["bs_match"] = combined_bs_recon["Match"].value_counts().to_dict()
+    if combined_is_recon is not None:
+        summary["is_match"] = combined_is_recon["Match"].value_counts().to_dict()
+
+    if not run_ai:
+        # The extraction-side half of the insight summary, free and offline.
+        # Everything it reads -- reconciliation breaks, resolution scores near
+        # the floor, unresolved sheets, unmapped accounts, untied breakdown
+        # tables -- exists before any LLM call, and having to pay for a
+        # 12-minute run to see it would make it useless as a pre-flight check.
+        # The AI-sourced half (clause defects, retries, claim contracts) is
+        # simply absent here; build_insight_summary omits, never fakes.
+        _hr("5d. INSIGHT SUMMARY — EXTRACTION HALF (internal; no AI ran, "
+            "so nothing text-side is included)")
+        try:
+            _pre = build_insight_summary(
+                ai_results={}, dfs=dfs,
+                mappings=get_effective_mappings(load_mappings(), extraction_resolution or None),
+                reconciliation=(combined_bs_recon, combined_is_recon),
+                resolution=extraction_resolution or None,
+                period_tieout=period_tieout,
+            )
+            print(_pre["summary"])
+            for _issue in _pre["visible_issues"]:
+                print(f"  [{_issue['severity']:8s}] {_issue['issue']}")
+                print(f"             basis={_issue['basis']}")
+            if not _pre["visible_issues"]:
+                print("  (no deterministic finding on the extraction side)")
+            if _pre["client_questions"]:
+                print("\nQUESTIONS FOR THE CLIENT:")
+                for _q in _pre["client_questions"]:
+                    print(f"  - {_q}")
+            summary["insight_summary"] = _pre
+        except Exception as _exc:
+            print(f"  (insight summary failed: {type(_exc).__name__}: {_exc})")
+
+    if run_ai or from_run:
+        # sheet_names is legitimately [] here when no Financials-like sheet was
+        # found (see above) -- process_workbook_data's selected_sheet and
+        # run_ai_checks's sheet_name (which it never actually uses -- see
+        # run_ai_checks's signature) both tolerate None just fine.
+        selected_sheet_for_ai = sheet_names[0] if sheet_names else None
+        # Section 5d's insight summary reads resolution scores and
+        # unresolved_sheets; the same call also yields the language and the
+        # frames the pipeline reads -- see ai_input_frames for why those are
+        # not section 1's `dfs`.
+        _frames_started = time.perf_counter()
+        ai_dfs, language, resolution_for_insight = ai_input_frames(
+            path, entity_name, selected_sheet_for_ai,
+            financials_from=financials_from, fallback_dfs=dfs,
+        )
+        _section_times().append(("process_workbook_data", time.perf_counter() - _frames_started))
+        if from_run:
+            Path(pptx_out_path).parent.mkdir(parents=True, exist_ok=True)
+            summary["reexport"] = reexport_from_run(
+                path, from_run, ai_dfs, language, selected_sheet_for_ai, entity_name,
+                financials_from=financials_from, financials_sheet=financials_sheet,
+                out_path=pptx_out_path, model_type=model_type, model_name=model_name,
+                summary_fallback=summary_fallback, allow_unverified=allow_unverified,
+            )
+            if isinstance(summary["reexport"].get("pptx"), dict):
+                summary["pptx"] = summary["reexport"]["pptx"]
+            _total = time.perf_counter() - _file_started
+            summary["timings"] = list(_section_times())
+            print(f"TIME {_total:.0f}s: " + " · ".join(f"{label} {secs:.0f}s" for label, secs in _section_times()))
+            return summary
+        # --accounts narrows the run to read the commentary itself (5c), so
+        # nothing is hidden then.
+        _ai_quiet = nullcontext() if accounts else _compact(
+            "5-7 AI checks",
+            keep=("TIMING", "Feedback loop:", "category=hallucination", "suspicious number", "⚖️"),
+            keep_next=("clause:", "[", "「"))
+        with _ai_quiet:
+            ai_summary = run_ai_checks(
+                path, selected_sheet_for_ai, ai_dfs, entity_name, model_type, model_name, language,
+                combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
+                accounts=accounts, resolution=resolution_for_insight, resume_from=resume_from,
+                period_tieout=period_tieout,
+            )
+        summary["ai"] = ai_summary
+        _record_scorecard(path, model_type, model_name, ai_summary)
+        _write_run_identity(path, ai_summary, entity_name=entity_name, sheet=selected_sheet_for_ai,
+                            financials_from=financials_from, financials_sheet=financials_sheet,
+                            language=language, model_type=model_type, model_name=model_name)
+
+        if export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
+            out_path = pptx_out_path            # resolved and lock-checked up front
+            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+            try:
+                with _compact("8-10 PPTX export + layout",
+                              keep=("DROPPED", "⚠️", "⚖️", "OVERFLOW RISK", "OVERLAPS REAL TEXT",
+                                    "LEAKED", "GENUINE GAP", "warning(s) found")):
+                    pptx_summary = export_and_inspect_pptx(
+                        path, selected_sheet_for_ai, ai_dfs, ai_summary["results"], language,
+                        model_type, out_path, model_name=model_name,
+                        financials_from=financials_from,
+                    )
+                summary["pptx"] = pptx_summary
+                # Repeated dead-last: section 9/10 print a lot after the export,
+                # and the path is useless if it's buried thousands of lines up.
+                print(f"\n📄 Open this to eyeball-check the deck:\n   {Path(out_path).resolve()}\n")
+            except Exception as exc:
+                print(f"\n❌ PPTX export/inspect FAILED: {type(exc).__name__}: {exc}")
+                import traceback
+                traceback.print_exc()
+                summary["pptx"] = {"status": f"FAILED: {exc}"}
+    _total = time.perf_counter() - _file_started
+    summary["timings"] = list(_section_times())
+    print(f"TIME {_total:.0f}s: " + " · ".join(f"{label} {secs:.0f}s" for label, secs in _section_times()))
+    return summary
+
+
+SCORECARD_PATH = Path("fdd_utils/logs/scorecard.jsonl")
+
+
+def scorecard_row(path: str, model_type: str, model_name: Optional[str],
+                  ai_summary: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """One line per databook per AI run: how much of the deck can go out as written.
+
+    The target is "most files at 90+", not one file at 100, so every run is
+    scored the same way and kept. An account is CLEAN when the model wrote it
+    (no fallback bullet, no error text, not empty) and the verifier found no
+    hallucination in it; "reasoning" flags do not count against it -- they are
+    marked inferences, highlighted in the deck for the reader, which is what
+    the deliverable wants. score = clean / accounts run.
+    """
+    if not ai_summary or ai_summary.get("skipped"):
+        return None
+    results = ai_summary.get("results") or {}
+    health = results.get("__run_health__") or {}
+    degraded = set(health.get("accounts_on_fallback_bullet") or []) | set(health.get("accounts_on_error_text") or []) \
+        | set(ai_summary.get("empty_accounts") or [])
+    accounts = [k for k in results if not str(k).startswith("__")]
+    hallucinated, reasoning, retried = [], 0, 0
+    for key in accounts:
+        entry = results.get(key) or {}
+        reviews = ((entry.get("agent_4_validation") or {}).get("clause_reviews")) or []
+        bad = [r for r in reviews if isinstance(r, dict) and r.get("supported") is False]
+        if any(r.get("category") == "hallucination" for r in bad):
+            hallucinated.append(key)
+        reasoning += sum(1 for r in bad if r.get("category") != "hallucination")
+        retried += int(entry.get("feedback_retries") or 0)
+    clean = [k for k in accounts if k not in degraded and k not in hallucinated]
+    import datetime
+    import subprocess
+    try:
+        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
+                                timeout=5, cwd=str(Path(__file__).resolve().parent)).stdout.strip()
+    except Exception:
+        commit = ""
+    if not commit:
+        # git not callable from Python on the run machine (the first Portfolio I
+        # scorecard came back with an empty commit on all seven rows): read it
+        # off .git directly.
+        try:
+            git_dir = Path(__file__).resolve().parent / ".git"
+            head = (git_dir / "HEAD").read_text().strip()
+            ref = head.split(" ", 1)[1] if head.startswith("ref:") else ""
+            sha = (git_dir / ref).read_text().strip() if ref and (git_dir / ref).exists() else (
+                next((line.split()[0] for line in (git_dir / "packed-refs").read_text().splitlines()
+                      if ref and line.endswith(ref)), "") if ref else head)
+            commit = sha[:7]
+        except Exception:
+            commit = ""
+    return {
+        "time": datetime.datetime.now().isoformat(timespec="seconds"),
+        "commit": commit,
+        "file": Path(path).name,
+        "model": model_name or model_type,
+        "accounts": len(accounts),
+        "clean": len(clean),
+        "score": round(100.0 * len(clean) / len(accounts), 1) if accounts else 0.0,
+        "hallucination_accounts": sorted(hallucinated),
+        "degraded_accounts": sorted(degraded),
+        "reasoning_flags": reasoning,
+        "composition_warnings": ai_summary.get("grounding_warnings", 0),
+        "retries": retried,
+        "calls_failed": health.get("calls_failed", 0),
+        "elapsed_s": round(float(ai_summary.get("elapsed") or 0), 1),
+        # Report-only quality signals (6c), not part of the score: what the
+        # arithmetic found that no commentary says, and amounts written
+        # against the wrong account.
+        "uncovered_high": sum(1 for f in (ai_summary.get("cross_account") or [])
+                              if f.get("code") == "OBSERVATION_UNCOVERED" and f.get("severity") == "high"),
+        "uncovered": sum(1 for f in (ai_summary.get("cross_account") or [])
+                         if f.get("code") == "OBSERVATION_UNCOVERED"),
+        "cross_ref": sum(1 for f in (ai_summary.get("cross_account") or [])
+                         if f.get("code") == "CROSS_REF_AMOUNT"),
+    }
+
+
+def _record_scorecard(path: str, model_type: str, model_name: Optional[str], ai_summary: Dict[str, Any]) -> None:
+    row = scorecard_row(path, model_type, model_name, ai_summary)
+    if not row:
+        return
+    try:
+        SCORECARD_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with SCORECARD_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        print(f"(scorecard not written: {exc})")
+    print(f"\nSCORE {row['score']:.0f}/100 — {row['clean']}/{row['accounts']} account(s) clean; "
+          f"hallucination in {len(row['hallucination_accounts'])}, degraded {len(row['degraded_accounts'])}, "
+          f"{row['reasoning_flags']} highlighted inference(s). Appended to {SCORECARD_PATH}.")
+    for _label, _names in (("hallucination", row["hallucination_accounts"]), ("degraded", row["degraded_accounts"])):
+        if _names:
+            print(f"  {_label}: {', '.join(_names)}")
+
+
+def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
+    _hr("FINAL SUMMARY — all files")
+    rows = []
+    for s in summaries:
+        if s.get("status") != "ok":
+            rows.append({
+                "file": s.get("file", "?"), "tabs": "-", "BS": "-", "IS": "-",
+                "AI": s.get("status", "error"),
+            })
+            continue
+        bs_match = s.get("bs_match") or {}
+        is_match = s.get("is_match") or {}
+        bs_str = ", ".join(f"{k}={v}" for k, v in bs_match.items()) or "-"
+        is_str = ", ".join(f"{k}={v}" for k, v in is_match.items()) or "-"
+        ai_str = "-"
+        if run_ai:
+            ai = s.get("ai") or {}
+            if ai.get("skipped"):
+                ai_str = f"skipped ({ai.get('reason', '?')})"
+            elif ai:
+                empty_n = len(ai.get("empty_accounts") or [])
+                ai_str = (
+                    f"{ai.get('ran', 0)}/{ai.get('total_mapped', 0)} ran, "
+                    f"{ai.get('elapsed', 0):.0f}s, "
+                    f"{empty_n} empty, {ai.get('grounding_warnings', 0)} 🔴"
+                )
+        stage_timing = ((s.get("ai") or {}).get("stage_timing")) or {}
+        stage_str = (
+            ", ".join(f"{label}={secs / max((s.get('ai') or {}).get('ran', 1), 1):.1f}s/acct"
+                      for label, secs in stage_timing.items())
+            if stage_timing else "-"
+        )
+        scaling_n = s.get("scaling_mismatch_tabs", 0)
+        row = {
+            "file": s.get("file", "?"),
+            "tabs": f"{s.get('tabs_parsed', '?')}/{s.get('total_sheets', '?')}",
+            "scaling": f"{scaling_n} tab(s) ⚠️" if scaling_n else "-",
+            "BS": bs_str, "IS": is_str, "AI": ai_str, "stage s/acct": stage_str,
+        }
+        if "pptx" in s:
+            pptx = s["pptx"]
+            if "status" in pptx:
+                row["pptx"] = pptx["status"]
+            else:
+                layout = pptx.get("layout") or {}
+                sources = pptx.get("measurement_sources") or {}
+                src_str = ",".join(f"{k}={v}" for k, v in sources.items()) or "?"
+                row["pptx"] = (
+                    f"{layout.get('content_slides', '?')} slides, "
+                    f"{layout.get('total_warnings', 0)} layout ⚠️"
+                    + (f", src={src_str}" if VERBOSE else "")
+                )
+                population = pptx.get("population") or {}
+                if population:
+                    row["population"] = ", ".join(
+                        f"{stmt}={info.get('ceiling', 0):.0%} ceiling"
+                        + (f" ({info['genuine_gaps']} gap!)" if info.get("genuine_gaps") else "")
+                        for stmt, info in population.items()
+                    )
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    if not VERBOSE:
+        df = df.drop(columns=[c for c in ("tabs", "scaling", "BS", "IS", "stage s/acct") if c in df.columns])
+    print(df.to_string(index=False))
+    if run_ai:
+        total_empty = sum(len((s.get("ai") or {}).get("empty_accounts") or []) for s in summaries)
+        total_warnings = sum((s.get("ai") or {}).get("grounding_warnings", 0) for s in summaries)
+        print(f"\nAcross all files: {total_empty} empty account(s) total, {total_warnings} grounding warning(s) total.")
+        if total_empty == 0 and total_warnings == 0:
+            print("✅ Nothing flagged across the whole batch.")
+        pptx_summaries = [s.get("pptx") for s in summaries if "pptx" in s and "status" not in (s.get("pptx") or {})]
+        if pptx_summaries:
+            total_layout_warnings = sum((p.get("layout") or {}).get("total_warnings", 0) for p in pptx_summaries)
+            total_genuine_gaps = sum(
+                info.get("genuine_gaps", 0)
+                for p in pptx_summaries
+                for info in (p.get("population") or {}).values()
+            )
+            print(f"Across all PPTX exports: {total_layout_warnings} layout warning(s), "
+                  f"{total_genuine_gaps} genuine packing gap(s) total.")
+
+
+# Real naming convention confirmed against a live databooks/ folder (Project
+# Mint, 2026-07-22): "Project Mint.Portfolio I.南通通海.xlsx" (entity file),
+# "Project Mint.Portfolio I.databook. 主表.xlsx" (roll-up -- note the space
+# before 主表), and Portfolio III's entity files use a slightly different
+# form with "databook" ahead of the entity name and NO period before it
+# ("Project Mint.Portfolio III.databook 上海松江.xlsx") -- both forms are
+# handled below. Files with no "Portfolio {I,II,III}" token at all (a
+# standalone file, or something unrelated like this session's bridge/
+# waterfall source workbook) are left alone entirely, same as before.
+_PORTFOLIO_RE = re.compile(r"Portfolio\s+(I{1,3})\b", re.IGNORECASE)
+
+
+def parse_portfolio_filename(name: str) -> Optional[Dict[str, Any]]:
+    """Returns {'portfolio': 'I'/'II'/'III', 'is_rollup': bool,
+    'entity_name': str or None} for a file matching the Portfolio naming
+    convention, else None (not part of any portfolio group)."""
+    stem = name[:-5] if name.lower().endswith(".xlsx") else name
+    m = _PORTFOLIO_RE.search(stem)
+    if not m:
+        return None
+    portfolio = m.group(1).upper()
+    remainder = stem[m.end():].lstrip(".").strip()
+    if "主表" in remainder:
+        return {"portfolio": portfolio, "is_rollup": True, "entity_name": None}
+    entity = re.sub(r"^databook\.?\s*", "", remainder, flags=re.IGNORECASE).strip(" .")
+    return {"portfolio": portfolio, "is_rollup": False, "entity_name": entity or None}
+
+
+def group_portfolio_files(files: List[Path]) -> Dict[str, Dict[str, Any]]:
+    """{'I': {'rollup': Path or None, 'entities': {entity_name: Path}}, ...}"""
+    groups: Dict[str, Dict[str, Any]] = {}
+    for f in files:
+        parsed = parse_portfolio_filename(f.name)
+        if not parsed:
+            continue
+        group = groups.setdefault(parsed["portfolio"], {"rollup": None, "entities": {}})
+        if parsed["is_rollup"]:
+            group["rollup"] = f
+        elif parsed["entity_name"]:
+            group["entities"][parsed["entity_name"]] = f
+    return groups
+
+
+def resolve_auto_rollup_targets(files: List[Path]) -> Dict[Path, Tuple[Path, str]]:
+    """{entity_file_path: (rollup_path, matched_sheet_name)} for every entity
+    file whose portfolio group has a roll-up file AND a confident sheet
+    match (suggest_rollup_sheet_for_entity, the same fuzzy matcher the batch
+    UI's roll-up dropdown already relies on) -- entities with no confident
+    match are simply absent from the returned dict, never guessed."""
+    from openpyxl import load_workbook as _load_workbook_names
+
+    groups = group_portfolio_files(files)
+    targets: Dict[Path, Tuple[Path, str]] = {}
+    for portfolio, group in sorted(groups.items()):
+        rollup = group["rollup"]
+        entities = group["entities"]
+        if not rollup or not entities:
+            continue
+        try:
+            rollup_sheets = _load_workbook_names(rollup, read_only=True).sheetnames
+        except Exception as exc:
+            print(f"  ⚠️ Portfolio {portfolio}: could not read roll-up {rollup.name!r} sheet names: {exc}")
+            continue
+        for entity_name, entity_path in sorted(entities.items()):
+            matched = suggest_rollup_sheet_for_entity(entity_name, rollup_sheets)
+            if matched:
+                targets[entity_path] = (rollup, matched)
+    return targets
+
+
+#: Which progress-bar row the entity running on THIS thread owns, and what to
+#: call it. Several databooks now run at once and each starts its own
+#: "AI pipeline" bar; without a row of its own every one of them redraws over
+#: the others and the display becomes a single flickering line. Set by the
+#: entity pool, read by the bar itself -- a thread-local rather than a
+#: parameter because the bar is created deep inside inspect_one.
+_ENTITY_CTX = threading.local()
+
+
+def _entity_bar_kwargs(desc: str, *, unit: str = "step") -> Dict[str, Any]:
+    position = getattr(_ENTITY_CTX, "position", None)
+    if position is None:
+        return {"desc": desc, "unit": unit}
+    label = str(getattr(_ENTITY_CTX, "label", "") or "")
+    if len(label) > 22:
+        label = label[:21] + "…"
+    return {"desc": f"{label:<22} {desc}", "unit": unit,
+            "position": position, "leave": False}
+
+
+class _PerEntityStdout:
+    """Keeps each entity's output whole when several run at once.
+
+    `inspect_one` prints a thousand lines and the reader depends on them being
+    one contiguous block per entity. Running entities concurrently through a
+    thread pool interleaves them into something unreadable, and the usual fix --
+    contextlib.redirect_stdout -- swaps a GLOBAL, so with threads it is not a
+    fix at all: whichever thread redirects last owns every other thread's
+    output too.
+
+    So the swap happens once, and the proxy routes by thread: a worker that has
+    registered a buffer writes into it, anything else (the main thread, a
+    library) goes straight through to the real stream. Each entity's block is
+    then printed whole, in file order, as it becomes available.
+    """
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._buffers: Dict[int, io.StringIO] = {}
+
+    def register(self) -> None:
+        self._buffers[threading.get_ident()] = io.StringIO()
+
+    def take(self) -> str:
+        buf = self._buffers.pop(threading.get_ident(), None)
+        return buf.getvalue() if buf is not None else ""
+
+    def write(self, data):
+        buf = self._buffers.get(threading.get_ident())
+        return (buf or self._stream).write(data)
+
+    def flush(self):
+        try:
+            self._stream.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("path", help="databook .xlsx file, or a folder to scan every .xlsx in it")
+    ap.add_argument("--sheet", default=None, help="Financials sheet name (default: auto-detect 'Financials')")
+    ap.add_argument("--entity", default="", help="entity name filter, if the workbook has multiple entities")
+    ap.add_argument("--financials-from", default=None, metavar="FILE",
+                    help="some portfolios keep each sub-entity's own databook free of any "
+                         "Financials-pattern sheet -- the real summary for that entity instead "
+                         "lives inside a sibling roll-up ('主表') workbook, one sheet per entity "
+                         "(e.g. '南通通海Financials'). Point this at that roll-up file to source "
+                         "the Financials summary from there while breakdown tabs (dfs) still come "
+                         "from `path` as normal. Requires --financials-sheet. Only valid when "
+                         "`path` is a single file.")
+    ap.add_argument("--entity-workers", type=int, default=1, metavar="N",
+                    help="run N DATABOOKS at once when `path` is a folder (default 1, one after "
+                         "another). Note this is NOT the account concurrency -- accounts inside "
+                         "one databook already run --workers at a time, and that is the setting "
+                         "worth reaching for first. This is a SECOND level on top of it, so the "
+                         "model sees up to N x --workers calls at once; opt in only when the "
+                         "endpoint has the headroom. Each databook keeps its own progress bar "
+                         "row and its report is printed whole in FILE order.")
+    ap.add_argument("--resume", default=None, metavar="RUN_ID",
+                    help="with --run-ai: seed every stage a previous run completed from its "
+                         "checkpoint.jsonl (fdd_utils/logs/run_<RUN_ID>/), so only the stages it "
+                         "did not reach are paid for again. A run that died at the eighteenth "
+                         "account used to restart from zero. One databook at a time.")
+    ap.add_argument("--from-run", default=None, metavar="RUN_ID",
+                    help="OFFLINE re-export, zero model calls: lay out the commentary and executive "
+                         "summaries a previous run already produced (fdd_utils/logs/run_<RUN_ID>/) with "
+                         "the CURRENT payload/packing/PPTX code, then inspect the deck. The run's workbook "
+                         "identity and per-account data fingerprints are checked first; any model call is "
+                         "blocked and fails the check. Implies --export-pptx; not with --run-ai. Exits 1 "
+                         "unless the verdict is PASS. Writes <deck>.reexport.json.")
+    ap.add_argument("--summary-fallback", action="store_true",
+                    help="with --from-run: when the run saved no executive summary (runs before "
+                         "section_summaries.json existed), use the exporter's deterministic page "
+                         "summary instead of failing. The summary band then differs from the original deck.")
+    ap.add_argument("--allow-unverified", action="store_true",
+                    help="with --from-run: re-export even when the run's identity or an account's data "
+                         "fingerprint does not match this workbook. The verdict says UNVERIFIED.")
+    ap.add_argument("--financials-sheet", default=None, metavar="SHEET_NAME",
+                    help="sheet name within --financials-from to use as the Financials summary "
+                         "(e.g. '南通通海Financials'). No auto-matching by entity name -- named "
+                         "explicitly so there's no risk of silently picking the wrong entity's "
+                         "sheet out of a roll-up file that has one per entity.")
+    ap.add_argument("--dump-tab", default=None, metavar="TAB_NAME",
+                    help="deterministic, no-AI: print raw Excel cell values vs the final "
+                         "scaled dfs values for ONE tab (e.g. --dump-tab 固定资产), to trace "
+                         "whether a numeric grounding warning is a real 1000x extraction bug "
+                         "for that tab rather than re-running the AI pipeline to check. "
+                         "Only valid when path is a single file.")
+    ap.add_argument("--run-ai", action="store_true", help="also run checks 5-7 (real AI calls, costs time/tokens)")
+    ap.add_argument("--model", default="local", help="model_type for --run-ai: local | workbench | dashscope | deepseek | openai")
+    ap.add_argument("--model-name", default=None, help="specific model id within the provider (e.g. GPT-5.5's id)")
+    ap.add_argument("--limit", type=int, default=None,
+                    help="with --run-ai, cap how many mapped accounts per file go to AI "
+                         "(fast smoke-test across many files; omit for a full run)")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="with --run-ai, concurrent worker threads per pipeline stage. "
+                         "Built-in default is 4 for local, 2 for everything else (rate-limit "
+                         "caution) — override here to test a higher value, e.g. --workers 4 "
+                         "on workbench if you've already validated the gateway handles it.")
+    ap.add_argument("--accounts", default=None,
+                    help="with --run-ai, comma-separated mapping-key names to run instead of "
+                         "the first N (--limit) or all accounts — e.g. --accounts "
+                         "固定资产,长期待摊费用 to cheaply re-test specific accounts that a prior "
+                         "run flagged, instead of paying for a full/limit-N run again. "
+                         "Overrides --limit.")
+    ap.add_argument("--export-pptx", action="store_true",
+                    help="requires --run-ai: also build PPTX payloads from the AI results just "
+                         "produced, export a real .pptx, capture its export log, and run the "
+                         "L/R-collision + table-overlap + overflow + fill-ratio layout checks "
+                         "against it, then a population/fill deep diagnostic (per-statement "
+                         "theoretical fill ceiling + rigorous DP-penalty boundary check for "
+                         "genuine packing gaps vs already-optimal assignments) — the whole "
+                         "generation+population+report pipeline in one run.")
+    ap.add_argument("--pptx-out", default=None, metavar="DIR",
+                    help="with --export-pptx, directory to write <databook>.preview.pptx into "
+                         "(default: a pptx_previews/ folder next to the input file).")
+    ap.add_argument("--verbose", "-v", action="store_true",
+                    help="print the full per-tab detail (row-by-row structure listing, every "
+                         "unit-marker line, explanatory paragraphs) that compact mode (the "
+                         "default) collapses into one-line summaries. Findings/flags always "
+                         "print in full either way -- this only controls the 'everything is "
+                         "fine' noise, which is what makes a multi-file batch run unpasteable.")
+    ap.add_argument("--subtables", choices=("auto", "on", "off"), default="auto",
+                    help="per-account breakdown tables beside the commentary. 'auto' uses "
+                         "config.yml (pptx.presentation_tables.enabled); on/off override it "
+                         "for this run. config.yml is gitignored and per-machine, so a machine "
+                         "whose file still says false cannot be fixed from the repo -- this is "
+                         "the escape hatch.")
+    ap.add_argument("--portfolio", default=None, metavar="ID",
+                    help="when `path` is a folder, only process files belonging to this "
+                         "portfolio, e.g. --portfolio I (comma-separate for several: 'I,II'). "
+                         "The roll-up ('主表') Financials source is still auto-matched per "
+                         "entity, so this reproduces the UI flow of ticking one portfolio's "
+                         "entity files and handing it that portfolio's 主表.")
+    ap.add_argument("--no-auto-rollup", action="store_true",
+                    help="folder mode only: disable auto-detecting each entity file's roll-up "
+                         "('主表') Financials source from the Portfolio I/II/III naming "
+                         "convention (see the folder-mode usage example above). Falls back to "
+                         "each file's own default behaviour, same as before this flag existed.")
+    args = ap.parse_args()
+
+    global VERBOSE
+    VERBOSE = args.verbose
+    print(f"⏱  startup (Python imports) {time.perf_counter() - _PROCESS_STARTED:.0f}s")
+
+    if args.subtables != "auto":
+        os.environ["FDD_SUBTABLES"] = "1" if args.subtables == "on" else "0"
+    # Printed BEFORE the run, not discovered after it. This flag being off is
+    # invisible in the output -- the deck simply has no subtables, which reads
+    # as a rendering bug rather than a setting, and cost a full seven-entity
+    # pass to notice.
+    try:
+        from fdd_utils.pptx.payloads import _load_pptx_settings as _pptx_cfg
+        _sub = os.environ.get("FDD_SUBTABLES")
+        if _sub is not None and str(_sub).strip() != "":
+            _on = str(_sub).strip().lower() not in ("0", "false", "no", "off")
+            _src = f"--subtables {args.subtables}"
+        else:
+            _on = bool((_pptx_cfg().get("presentation_tables") or {}).get("enabled", True))
+            _src = "config.yml" if (_pptx_cfg().get("presentation_tables") or {}) else "built-in default"
+        print(f"Per-account subtables: {'ON' if _on else 'OFF'}  (from {_src})"
+              + ("" if _on else "  -- pass --subtables on to force them for this run"))
+    except Exception as _exc:
+        print(f"Per-account subtables: could not resolve setting ({_exc})")
+
+    if args.from_run and args.run_ai:
+        print("❌ --from-run re-exports a previous run's commentary with no model calls; drop --run-ai.")
+        return 1
+    if args.from_run:
+        args.export_pptx = True
+    if args.export_pptx and not args.run_ai and not args.from_run:
+        print("❌ --export-pptx needs commentary: --run-ai to generate it, or --from-run <RUN_ID> to "
+              "re-export a previous run's offline.")
+        return 1
+
+    if bool(args.financials_from) != bool(args.financials_sheet):
+        print("❌ --financials-from and --financials-sheet must be given together "
+              "(no auto-matching -- name the exact sheet in the roll-up file).")
+        return 1
+
+    target = Path(args.path)
+    if not target.exists():
+        # A quoted path with the following flag glued to it -- "databooks/"--portfolio
+        # -- is one shell token, so `path` silently becomes "databooks/--portfolio"
+        # and the flag's VALUE is left over as a stray positional. argparse then
+        # reports only "unrecognized arguments: I", naming neither the real
+        # mistake nor the flag it belongs to. The quote hides the missing space,
+        # which cost a real user two rounds of debugging.
+        hint = ""
+        if "--" in str(args.path):
+            head, _, tail = str(args.path).partition("--")
+            hint = (f"\n   It looks like a space is missing before a flag: try "
+                    f'"{head}" --{tail}')
+        print(f"❌ Path not found: {args.path}{hint}")
+        return 1
+    if args.dump_tab and target.is_dir():
+        print("❌ --dump-tab only works against a single file, not a folder. "
+              "Pass the exact .xlsx path.")
+        return 1
+    if args.financials_from and target.is_dir():
+        print("❌ --financials-from only works against a single file, not a folder. "
+              "Pass the exact .xlsx path.")
+        return 1
+    auto_rollup_targets: Dict[Path, Tuple[Path, str]] = {}
+    if target.is_dir():
+        files = sorted(target.glob("*.xlsx"))
+        files = [f for f in files if not f.name.startswith("~$")]
+        if not files:
+            print(f"No .xlsx files found in {target}")
+            return 1
+        if args.portfolio:
+            # The folder holds every portfolio at once, but a real run is
+            # almost always ONE portfolio's entities against ONE roll-up --
+            # which is exactly what the UI does when you tick Portfolio I's
+            # files and give it that portfolio's 主表. Without this the only
+            # way to scope a folder run was to move files out of it.
+            wanted = {p.strip().upper() for p in args.portfolio.split(",") if p.strip()}
+            kept = []
+            for f in files:
+                parsed = parse_portfolio_filename(f.name)
+                if parsed and str(parsed["portfolio"]).upper() in wanted:
+                    kept.append(f)
+            if not kept:
+                print(f"❌ No files in {target} belong to portfolio {sorted(wanted)}. "
+                      f"Names must look like '<project>.Portfolio I.<entity>.xlsx'.")
+                return 1
+            skipped = len(files) - len(kept)
+            files = kept
+            print(f"Portfolio filter {sorted(wanted)}: kept {len(files)} file(s), skipped {skipped}.")
+        print(f"Found {len(files)} databook(s) in {target}: {[f.name for f in files]}")
+        if args.run_ai and not args.limit:
+            print(
+                f"⚠️  --run-ai with no --limit on {len(files)} files will run EVERY mapped "
+                f"account in EVERY file — based on a private reference workbook (20 accounts, ~15-20 min\n"
+                f"   on workbench), a full batch across all files could take a long time. "
+                f"Consider --limit 5 for a first pass across everything, then a full,\n"
+                f"   unlimited run on just the file(s) that need a closer look."
+            )
+        if not args.no_auto_rollup:
+            print("\nAuto-detecting Portfolio I/II/III roll-up ('主表') Financials sources...")
+            auto_rollup_targets = resolve_auto_rollup_targets(files)
+            groups = group_portfolio_files(files)
+            for portfolio, group in sorted(groups.items()):
+                rollup = group["rollup"]
+                entities = group["entities"]
+                if not rollup:
+                    print(f"  Portfolio {portfolio}: {len(entities)} entity file(s), "
+                          f"no roll-up ('主表') file found -- using each file's own default.")
+                    continue
+                matched = sum(1 for p in entities.values() if p in auto_rollup_targets)
+                print(f"  Portfolio {portfolio}: roll-up={rollup.name!r}, "
+                      f"{matched}/{len(entities)} entity file(s) matched a sheet")
+                for entity_name, entity_path in sorted(entities.items()):
+                    hit = auto_rollup_targets.get(entity_path)
+                    if hit:
+                        print(f"    {entity_path.name!r} -> sheet {hit[1]!r}")
+                    else:
+                        print(f"    {entity_path.name!r} -> ⚠️ no confident sheet match, "
+                              f"using its own default")
+            if args.portfolio:
+                # The UI uses the 主表 as a Financials SOURCE, never as a subject
+                # in its own right, so reproducing that flow means not also
+                # running it as an entity. Doing so is not merely redundant:
+                # a roll-up's own IS tabs are the known-open "Unable to detect
+                # stage/date rows" case, so processing it buries the entities'
+                # real output under a dozen extraction errors that say nothing
+                # about the entities. Only when the roll-up is actually being
+                # used -- with --no-auto-rollup it stays a normal file.
+                rollups = {
+                    group["rollup"] for group in group_portfolio_files(files).values()
+                    if group["rollup"]
+                }
+                if rollups:
+                    files = [f for f in files if f not in rollups]
+                    print(f"  Roll-up {sorted(r.name for r in rollups)} used as the Financials "
+                          f"source only, not processed as an entity (as the UI does); "
+                          f"{len(files)} entity file(s) to run.")
+    else:
+        files = [target]
+
+    accounts_filter = [a.strip() for a in args.accounts.split(",") if a.strip()] if args.accounts else None
+
+    def _run_one(f) -> Dict[str, Any]:
+        auto_hit = auto_rollup_targets.get(f)
+        return inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
+                           args.model_name, limit=args.limit, workers=args.workers,
+                           dump_tab_name=args.dump_tab, accounts=accounts_filter,
+                           export_pptx=args.export_pptx, pptx_out_dir=args.pptx_out,
+                           financials_from=args.financials_from or (str(auto_hit[0]) if auto_hit else None),
+                           financials_sheet=args.financials_sheet or (auto_hit[1] if auto_hit else None),
+                           resume_from=args.resume, from_run=args.from_run,
+                           summary_fallback=args.summary_fallback, allow_unverified=args.allow_unverified)
+
+    def _failed(f, exc) -> Dict[str, Any]:
+        print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
+        return {"file": f.name, "status": f"FAILED: {exc}"}
+
+    entity_workers = max(1, int(args.entity_workers or 1))
+    summaries: List[Dict[str, Any]] = []
+    # One bar for the folder, always on row 0, so "how far through the seven
+    # databooks am I" is answerable without reading a thousand lines of report.
+    # Bars go to stderr and the reports to stdout, so they never fight for the
+    # same line; the finished reports are handed to tqdm.write, which clears
+    # the bars, writes, and redraws them underneath.
+    outer = tqdm(total=len(files), desc="Databooks", unit="file",
+                 position=0, leave=True) if len(files) > 1 else None
+    if entity_workers == 1 or len(files) < 2:
+        for f in files:
+            if outer is not None:
+                _ENTITY_CTX.position, _ENTITY_CTX.label = 1, f.stem
+                outer.set_postfix_str(f.stem[:28])
+            try:
+                summaries.append(_run_one(f))
+            except Exception as exc:
+                summaries.append(_failed(f, exc))
+            if outer is not None:
+                outer.update(1)
+        if outer is not None:
+            outer.close()
+    else:
+        total = entity_workers * max(1, int(args.workers or 1)) if args.run_ai else entity_workers
+        print(f"\nRunning {len(files)} databook(s) {entity_workers} at a time"
+              + (f" x {args.workers} account worker(s) = up to {total} concurrent AI call(s)"
+                 if args.run_ai else "")
+              + ". Each entity's output is printed whole, in file order, as it finishes.")
+        if args.run_ai and total > 8:
+            print(f"  ⚠️  {total} concurrent calls is a lot for one model endpoint. If the run comes "
+                  f"out SLOWER than sequential, the server is queueing -- lower --entity-workers.")
+        proxy = _PerEntityStdout(sys.stdout)
+        sys.stdout = proxy
+
+        # One bar row per worker, handed out on first use and kept for the life
+        # of the thread -- the pool reuses its threads, so a row belongs to a
+        # worker rather than to an entity, and rows never exceed entity_workers.
+        rows: Dict[int, int] = {}
+        rows_lock = threading.Lock()
+
+        def _buffered(f):
+            proxy.register()
+            ident = threading.get_ident()
+            with rows_lock:
+                _ENTITY_CTX.position = rows.setdefault(ident, len(rows) + 1)
+            _ENTITY_CTX.label = f.stem
+            try:
+                return _run_one(f), proxy.take()
+            except Exception as exc:
+                entry = _failed(f, exc)
+                return entry, proxy.take()
+
+        try:
+            with ThreadPoolExecutor(max_workers=entity_workers) as pool:
+                # Submitted in file order and read back in file order, so a fast
+                # entity finishing first does not reorder the log; only the
+                # WALL CLOCK overlaps, never the report. The bar, in contrast,
+                # advances on REAL completion via a callback -- it is there to
+                # say how much is left, and waiting for the in-order read would
+                # make it lie whenever an early file is the slow one.
+                futures = []
+                for f in files:
+                    future = pool.submit(_buffered, f)
+                    if outer is not None:
+                        future.add_done_callback(lambda _f: outer.update(1))
+                    futures.append(future)
+                for f, future in zip(files, futures):
+                    try:
+                        entry, text = future.result()
+                    except Exception as exc:
+                        entry, text = _failed(f, exc), ""
+                    if text:
+                        tqdm.write(text, file=proxy._stream, end="")
+                    else:
+                        proxy._stream.flush()
+                    summaries.append(entry)
+        finally:
+            sys.stdout = proxy._stream
+            if outer is not None:
+                outer.close()
+                print("\n" * min(entity_workers, 6))
+
+    if len(files) > 1:
+        _print_final_summary(summaries, args.run_ai)
+
+    # One deck for the whole portfolio. The deliverable is a single combined
+    # file -- the UI has built one since 51dc49e (fdd_app.py calls
+    # combine_presentations over the batch's cached bytes) -- but the CLI only
+    # ever left seven separate .preview.pptx files behind, so "run the batch"
+    # did not actually produce the thing being delivered.
+    exported: List[Tuple[str, str]] = []   # (portfolio label, deck path), in run order
+    rollup_skipped: List[Tuple[str, str]] = []   # (portfolio label, deck filename)
+    for entry in summaries:
+        if not (isinstance(entry, dict) and isinstance(entry.get("pptx"), dict)):
+            continue
+        out_path = entry["pptx"].get("out_path")
+        if not out_path or not Path(str(out_path)).exists():
+            continue
+        parsed = parse_portfolio_filename(str(entry.get("file") or ""))
+        # The 主表 roll-up is a SOURCE, not an entity: resolve_auto_rollup_targets
+        # reads Financials out of it for the entities that have no sheet of their
+        # own. Processing it as if it were an entity produced eight slides whose
+        # commentary slots are empty -- ~130 characters a page against 600-1500 on
+        # a real entity page -- and merging put them at the FRONT of Portfolio I
+        # and II. Opening the deliverable therefore landed on eight pages showing
+        # a table and no readable text, which reads exactly like the merge having
+        # dropped the commentary. It had not; there was none to drop.
+        # Its own .preview file is still written and kept, so nothing is hidden.
+        if parsed and parsed.get("is_rollup"):
+            rollup_skipped.append((str(parsed["portfolio"]), Path(str(out_path)).name))
+            continue
+        exported.append((str(parsed["portfolio"]) if parsed else "", str(out_path)))
+
+    if len(exported) > 1:
+        _hr("11. COMBINED DECK(S) — every entity's slides, in order")
+        from fdd_utils.pptx import combine_presentations
+
+        # ONE FILE PER PORTFOLIO, not one file for the whole run. A portfolio is
+        # the unit that actually gets delivered -- the reference deck's own
+        # running head is "Project Mint.Portfolio I.<entity> (2/4)" -- so
+        # merging I, II and III into a single deck produces something nobody
+        # sends. Grouping here means `--portfolio I,II,III` is one command and
+        # still three deliverables. A run that is not portfolio-scoped, or that
+        # covers exactly one portfolio, keeps the previous single-file
+        # behaviour.
+        groups: Dict[str, List[str]] = {}
+        for label, path in exported:
+            groups.setdefault(label, []).append(path)
+
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        for label in sorted(groups):
+            paths = groups[label]
+            if len(paths) < 2 and len(groups) > 1:
+                print(f"\n  Portfolio {label or '(ungrouped)'}: only one deck, nothing to merge "
+                      f"({Path(paths[0]).name})")
+                continue
+            name = f"Portfolio_{label}" if label else (
+                f"Portfolio_{args.portfolio.replace(',', '-')}" if args.portfolio else "Combined")
+            combined_path = Path(paths[0]).parent / f"{name}_{stamp}.pptx"
+            try:
+                combine_presentations(paths, str(combined_path))
+                print(f"\n  Merged {len(paths)} entity deck(s) in run order"
+                      + (f" for Portfolio {label}" if label else "") + ":")
+                for one in paths:
+                    print(f"    - {Path(one).name}")
+                print(f"  📄 COMBINED DECK SAVED: {combined_path.resolve()}")
+            except Exception as exc:
+                print(f"  ❌ Could not combine Portfolio {label or '(ungrouped)'}: "
+                      f"{type(exc).__name__}: {exc}")
+                print("     The per-entity previews above are unaffected.")
+        for label, name in rollup_skipped:
+            print(f"\n  Portfolio {label}: left the 主表 roll-up OUT of the combined deck "
+                  f"({name}).\n     It is the source the entities read Financials from, not an "
+                  f"entity, and its\n     own slides carry no commentary. The preview file is "
+                  f"still on disk.")
+        print("\n     (the per-entity previews are kept as well)")
+    if args.from_run:
+        verdicts = [str((entry.get("reexport") or {}).get("verdict") or "FAIL")
+                    for entry in summaries if isinstance(entry, dict)]
+        return 0 if verdicts and all(v == "PASS" for v in verdicts) else 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

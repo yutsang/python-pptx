@@ -1,0 +1,504 @@
+"""One account's working memory: the facts it was graded against, and what it was shown.
+
+Three verification defects on one real run had the same shape -- the checker
+saw less than the model. A remainder the prompt computed; a period column that
+lived only in the analysis frame; a movement the model subtracted from a table
+it was handed. Each was patched by copying one more derived value from the
+prompt side to the verifier side. The structural answer is to stop having two
+sides: build the pool ONCE per account, grade every stage against that same
+object, and write it to disk so a figure can be traced after the process ends.
+
+`AccountEvidence` is that object. It is not a new derivation -- `SourceIndex`
+already builds facts with provenance from the frame the Generator is shown --
+it is the same facts, held once, given a record of what was rendered, and
+persisted. Nothing here crosses a run boundary.
+
+What it carries:
+
+    facts   the SourceIndex fact records (value, kind, sheet, row, column),
+            the pool every stage's verify_commentary grounds against
+    dates   the allowed date facts, same provenance
+    shown   what the Generator was rendered: prompt hash and size, which
+            guidance sections were present, how many components the budget
+            kept and dropped
+
+Verified graph edges may add narrowly scoped ``kind="linked"`` facts. These
+are the far-side values behind cross-account guidance, supporting-schedule
+tie-outs and Financials tie-outs; every record names the edge and remote node.
+They can ground a quoted amount but, unlike own cells, cannot drive scale-error
+repair.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
+
+from .validator import SourceIndex
+from .logging import coerce_plain
+
+EVIDENCE_DIR = "evidence"
+
+# Guidance section markers, matched on the rendered prompt so `shown` records
+# what actually reached the model rather than what a builder intended.
+_SECTION_MARKERS = (
+    ("remainder", ("【余额差额已算好】", "[REMAINDER ALREADY COMPUTED]")),
+    ("not_shown", ("【已省略的较小构成项】", "[SMALLER COMPONENTS NOT SHOWN]")),
+    ("hierarchy", ("【本科目已核对的层级关系】", "[VERIFIED HIERARCHY")),
+    ("component_nature", ("【构成项性质", "[COMPONENT NATURE")),
+    ("material_movement", ("【重大变动提示】", "[MATERIAL MOVEMENT]")),
+    ("data_insight", ("【数据洞察", "[DATA INSIGHT")),
+    # The data blocks appear as markdown headings in one data_format and as
+    # JSON keys in the other (config.example.yml ships json), so both spellings
+    # are listed; a section is "shown" if either form reached the prompt.
+    ("trend_summary", ("趋势摘要", "Trend summary", '"trend_summary"')),
+    ("significant_movements", ("重大变动（", "Significant movements", '"significant_movements"')),
+    ("table_remarks", ("表格关联备注", "Table context observations", '"table_context_observations"')),
+    ("supporting_context", ("补充备注", "Supporting notes", '"supporting_context"')),
+    ("cross_account", ("【跨科目", "[CROSS-ACCOUNT")),
+    ("account_brief", ("本科目已核实分析简报", "Verified account brief")),
+)
+
+
+#: attrs a RUN writes onto the frames while rendering (prompts.py stashes the
+#: budget and the computed remainder there). Not workbook content, so not part
+#: of a fingerprint: a frame that has been rendered once must still match the
+#: same frame fresh from the workbook.
+_RUN_WRITTEN_ATTRS = frozenset({
+    "prompt_budget", "prompt_budget_exclude", "prompt_residual", "prompt_budget_residual",
+})
+
+
+def _canonical(value: Any, depth: int = 0) -> Any:
+    """A JSON-able, process-independent picture of a frame and its attrs.
+    Never a repr of an unknown object: one carrying an address would change
+    in every process and make every resume look like a different workbook."""
+    if depth > 8:
+        return "..."
+    if value is None or isinstance(value, bool) or isinstance(value, str):
+        return value
+    if hasattr(value, "itertuples") and hasattr(value, "columns"):  # a DataFrame, duck-typed
+        attrs = getattr(value, "attrs", None) or {}
+        return {
+            "columns": [str(c) for c in value.columns],
+            "rows": [[_canonical(v, depth + 1) for v in row] for row in value.itertuples(index=False)],
+            "attrs": _canonical({k: v for k, v in attrs.items() if str(k) not in _RUN_WRITTEN_ATTRS}, depth + 1),
+        }
+    if isinstance(value, dict):
+        return {str(k): _canonical(v, depth + 1) for k, v in value.items() if str(k) not in _RUN_WRITTEN_ATTRS}
+    if isinstance(value, (set, frozenset)):
+        return sorted((_canonical(v, depth + 1) for v in value), key=repr)
+    if isinstance(value, (list, tuple)):
+        return [_canonical(v, depth + 1) for v in value]
+    iso = getattr(value, "isoformat", None)
+    if callable(iso):
+        try:
+            return iso()
+        except Exception:
+            pass
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):
+        try:
+            return _canonical(tolist(), depth + 1)
+        except Exception:
+            pass
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return type(value).__name__
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return round(number, 6)
+
+
+def frame_fingerprint(df: Any) -> Optional[str]:
+    """Which data an account was written from: a hash of its frame's values,
+    labels and workbook-derived attrs (the nested analysis frame, notes,
+    remarks, detail tables), taken before anything renders.
+
+    A checkpoint line and an evidence file carry it, so a resume can tell an
+    account whose workbook changed from one that merely died mid-run. Without
+    it, a resume onto an edited workbook re-used every old draft and every old
+    pool and said nothing.
+    """
+    if df is None:
+        return None
+    try:
+        blob = json.dumps(_canonical(df), ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return None
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+@dataclass
+class AccountEvidence:
+    mapping_key: str
+    language: str = ""
+    statement_type: str = ""
+    facts: List[Dict[str, Any]] = field(default_factory=list)
+    dates: List[Dict[str, Any]] = field(default_factory=list)
+    shown: Dict[str, Any] = field(default_factory=dict)
+    #: frame_fingerprint of the frame this pool was built from
+    fingerprint: Optional[str] = None
+
+    # -- the pool ------------------------------------------------------------
+
+    def source_index(self) -> SourceIndex:
+        """The grounding pool, rebuilt from these records and nothing else."""
+        index = SourceIndex(list(self.facts))
+        index.date_facts = list(self.dates)
+        return index
+
+    @property
+    def pool_size(self) -> int:
+        return len(self.facts)
+
+    # -- persistence ---------------------------------------------------------
+
+    def to_dict(self) -> Dict[str, Any]:
+        return coerce_plain({
+            "mapping_key": self.mapping_key,
+            "language": self.language,
+            "statement_type": self.statement_type,
+            "shown": dict(self.shown),
+            "fingerprint": self.fingerprint,
+            "pool_size": self.pool_size,
+            "facts": list(self.facts),
+            "dates": list(self.dates),
+        })
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AccountEvidence":
+        return cls(
+            mapping_key=str(data.get("mapping_key") or ""),
+            language=str(data.get("language") or ""),
+            statement_type=str(data.get("statement_type") or ""),
+            facts=list(data.get("facts") or []),
+            dates=list(data.get("dates") or []),
+            shown=dict(data.get("shown") or {}),
+            fingerprint=data.get("fingerprint"),
+        )
+
+
+@dataclass
+class AccountBrief:
+    mapping_key: str
+    linked_breakdowns: List[Dict[str, Any]] = field(default_factory=list)
+    observations: List[Dict[str, Any]] = field(default_factory=list)
+    references: List[Dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        return coerce_plain({
+            "mapping_key": self.mapping_key,
+            "linked_breakdowns": self.linked_breakdowns,
+            "observations": self.observations,
+            "references": self.references,
+        })
+
+    @property
+    def empty(self) -> bool:
+        return not (self.linked_breakdowns or self.observations or self.references)
+
+
+# -- building ----------------------------------------------------------------
+
+def describe_shown(mapping_key: str, df: Any, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+    """What the Generator was rendered, as a record. Cheap; no frame walk."""
+    from .client import AIClient
+    text = (user_prompt or "")
+    sections = [name for name, markers in _SECTION_MARKERS if any(m in text for m in markers)]
+    attrs = getattr(df, "attrs", None) or {}
+    analysis = attrs.get("prompt_analysis_df")
+    components = list(getattr(analysis, "attrs", {}).get("component_descriptions") or []) if analysis is not None else []
+    budget = attrs.get("prompt_budget") if isinstance(attrs.get("prompt_budget"), dict) else None
+    dropped = list((budget or {}).get("components_dropped") or [])
+    return {
+        "prompt_sha256": hashlib.sha256(((system_prompt or "") + "\n" + text).encode("utf-8")).hexdigest(),
+        "prompt_chars": len(system_prompt or "") + len(text),
+        "prompt_tokens_est": AIClient._estimate_text_tokens(system_prompt) + AIClient._estimate_text_tokens(text),
+        "sections": sections,
+        "components_total": len(dict.fromkeys(components)),
+        "components_dropped": len(dropped),
+        "budget": ({k: budget.get(k) for k in ("limit", "headroom", "estimate", "fits")} if budget else None),
+    }
+
+
+def compile_account_evidence(
+    mapping_key: str,
+    df: Any,
+    *,
+    language: str = "",
+    statement_type: str = "",
+    sibling_dfs: Optional[List[Any]] = None,
+    shown: Optional[Dict[str, Any]] = None,
+    graph_facts: Optional[Dict[str, Any]] = None,
+    account_brief: Optional[Dict[str, Any]] = None,
+) -> AccountEvidence:
+    """Build the pool once, from the frame as it stands NOW plus verified links.
+
+    Call this after the Generator prompt has been rendered for the account:
+    rendering is what stashes the computed remainder and the budget residual on
+    the analysis frame, and those must be in the pool. Calling it earlier
+    builds the pool the three defects were built on.
+    """
+    index = SourceIndex.from_df(df, sibling_dfs=sibling_dfs)
+    index.facts.extend(linked_fact_records(str(mapping_key), graph_facts))
+    index.facts.extend(brief_fact_records(account_brief))
+    index.values = [fact["value"] for fact in index.facts if fact.get("value") is not None]
+    return AccountEvidence(
+        mapping_key=str(mapping_key),
+        language=str(language or ""),
+        statement_type=str(statement_type or ""),
+        facts=list(index.facts),
+        dates=list(index.date_facts),
+        shown=dict(shown or {}),
+    )
+
+
+def linked_fact_records(
+    mapping_key: str,
+    graph_facts: Optional[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Numeric facts across passed edges that this account is allowed to cite.
+
+    Direction is deliberate. Ratio guidance is rendered only for the source
+    account, so only that source receives the target account's values. A
+    supporting schedule points into its mapped account, and a Financials row
+    points back to the account tab. Semantic-only edges carry no numbers.
+    """
+    if not isinstance(graph_facts, dict):
+        return []
+    account = str(mapping_key)
+    records: List[Dict[str, Any]] = []
+    seen = set()
+    ratio_kinds = {
+        "receivable_days", "payable_days", "inventory_days",
+        "advance_days", "prepayment_days", "expense_to_revenue",
+    }
+
+    def add(edge: Dict[str, Any], values: Any, remote_ref: Any) -> None:
+        if not isinstance(values, dict):
+            return
+        edge_id = str(edge.get("edge_id") or "")
+        for period, raw in sorted(values.items()):
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if value != value:
+                continue
+            identity = (edge_id, str(period), value)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            remote = dict(remote_ref) if isinstance(remote_ref, dict) else {}
+            sheet = remote.get("sheet") or remote.get("account") or remote.get("kind")
+            records.append({
+                "value": value,
+                "kind": "linked",
+                "sheet": str(sheet) if sheet is not None else None,
+                "row_desc": f"verified via {edge.get('kind')}",
+                "col_label": str(period),
+                "multiplier": 1.0,
+                "row_idx": None,
+                "edge_id": edge_id,
+                "source_ref": remote,
+            })
+
+    for edge in graph_facts.get("links") or []:
+        if not isinstance(edge, dict) or not edge.get("passed"):
+            continue
+        source = str(edge.get("source") or "").split("::", 1)[0]
+        target = str(edge.get("target") or "").split("::", 1)[0]
+        kind = str(edge.get("kind") or "")
+        evidence = edge.get("evidence") or {}
+        if kind in ratio_kinds and source == account:
+            add(edge, evidence.get("target_values"), edge.get("target_ref"))
+        elif kind == "supporting_schedule_tieout" and target == account:
+            add(edge, evidence.get("values"), edge.get("source_ref"))
+        elif kind == "tab_to_financials" and source == account:
+            add(edge, evidence.get("financials_values"), edge.get("target_ref"))
+    return records
+
+
+def brief_fact_records(account_brief: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Figures the verified brief actually prints, with edge/rule provenance."""
+    if not isinstance(account_brief, dict):
+        return []
+    records = []
+    for breakdown in account_brief.get("linked_breakdowns") or []:
+        edge_id = str(breakdown.get("edge_id") or "")
+        sheet = str(breakdown.get("sheet") or "")
+        period = str(breakdown.get("period") or "")
+        for component in breakdown.get("components") or []:
+            records.append({
+                "value": float(component.get("value") or 0.0),
+                "kind": "linked",
+                "sheet": sheet,
+                "row_desc": str(component.get("label") or ""),
+                "col_label": period,
+                "multiplier": 1.0,
+                "row_idx": component.get("row"),
+                "edge_id": edge_id,
+                "source_ref": {"kind": "workbook_block", "sheet": sheet},
+            })
+        remainder = float(breakdown.get("remainder") or 0.0)
+        if abs(remainder) > 1e-9:
+            records.append({
+                "value": remainder,
+                "kind": "linked",
+                "sheet": sheet,
+                "row_desc": "remaining verified components",
+                "col_label": period,
+                "multiplier": 1.0,
+                "row_idx": None,
+                "edge_id": edge_id,
+                "source_ref": {"kind": "workbook_block", "sheet": sheet},
+            })
+    for observation in account_brief.get("observations") or []:
+        code = str(observation.get("code") or "")
+        basis = str(observation.get("basis") or "")
+        for value in observation.get("numbers") or []:
+            records.append({
+                "value": float(value),
+                "kind": "brief_derived",
+                "sheet": None,
+                "row_desc": f"{code}: {basis}",
+                "col_label": None,
+                "multiplier": 1.0,
+                "row_idx": None,
+                "rule_code": code,
+                "source_ref": {"kind": "analysis_rule", "node": code},
+            })
+    return records
+
+
+def compile_account_briefs(
+    dfs: Optional[Dict[str, Any]],
+    graph_facts: Optional[Dict[str, Any]],
+    workbook_digest: Optional[Dict[str, Any]] = None,
+    language: str = "",
+) -> Dict[str, Dict[str, Any]]:
+    """Budgeted deterministic findings available before any stage runs."""
+    from .analysis import analyse, views_from_frames
+    from .facts import supporting_breakdowns_for
+
+    dfs = dfs or {}
+    graph_facts = graph_facts or {}
+    labels = graph_facts.get("labels") or {}
+    briefs = {str(key): AccountBrief(str(key)) for key in dfs}
+
+    for key in briefs:
+        briefs[key].linked_breakdowns = supporting_breakdowns_for(
+            key, workbook_digest, graph_facts, max_components=3)[:1]
+
+    if str(language).strip().lower() in ("chi", "chn", "zh", "chinese"):
+        observations = analyse(views_from_frames(dfs, graph_facts))
+    else:
+        observations = []
+    for observation in observations:
+        if observation.code in {"RECEIVABLE_DAYS", "ADVANCE_COVER"}:
+            # Already rendered by the verified ratio block, with the same
+            # arithmetic and a tighter instruction against re-derivation.
+            continue
+        if observation.code == "CIP_TRANSFER":
+            # Internal summary only. A brief's figures ground themselves, so an
+            # observation goes in a prompt only if its arithmetic is tied. This
+            # one printed "原值13.31亿元" for assets with a gross cost of 7.75亿元
+            # (label collisions between the tab's 原值 and 净值 blocks), and the
+            # model put it on slide 1 and in the executive summary. The rule now
+            # drops a gross figure that does not tie; it stays out of prompts
+            # until that has held on a real run.
+            continue
+        if observation.code == "NEGATIVE_BALANCE":
+            # Internal summary and client questions only. The rule knows a
+            # component's sign differs from its account's and nothing about
+            # why, and on one real workbook all three of its findings were
+            # ordinary: the current portion deducted from a long-term loan, a
+            # contra row on an amortisation schedule (「收益」 -722.7万元), and a
+            # straight-line rent adjustment on one tenant. Given to the model
+            # as a verified brief, each was written up as a misclassification
+            # -- 「与科目性质不符，建议核实其归类是否恰当」, 「方向与应收账款科目
+            # 相反」 -- by four different models, and once in the executive
+            # summary. A reviewer can weigh it; a prompt cannot.
+            continue
+        payload = observation.as_dict()
+        for key in observation.accounts:
+            brief = briefs.get(str(key))
+            if brief is not None and len(brief.observations) < 2:
+                brief.observations.append(payload)
+
+    for edge in graph_facts.get("links") or []:
+        if not isinstance(edge, dict) or not edge.get("passed"):
+            continue
+        kind = str(edge.get("kind") or "")
+        evidence = edge.get("evidence") or {}
+        source = str(edge.get("source") or "").split("::", 1)[0]
+        target = str(edge.get("target") or "").split("::", 1)[0]
+        if kind == "remark_reference" and source in briefs:
+            briefs[source].references.append({
+                "kind": kind,
+                "edge_id": edge.get("edge_id"),
+                "other_account": str(labels.get(target) or target),
+                "matched_name": evidence.get("matched_name"),
+                "excerpt": str(evidence.get("excerpt") or "")[:180],
+            })
+        elif kind == "shared_counterparty":
+            for own, other, own_label in (
+                (source, target, evidence.get("source_label")),
+                (target, source, evidence.get("target_label")),
+            ):
+                if own in briefs:
+                    briefs[own].references.append({
+                        "kind": kind,
+                        "edge_id": edge.get("edge_id"),
+                        "other_account": str(labels.get(other) or other),
+                        "matched_name": own_label,
+                    })
+
+    out = {}
+    for key, brief in briefs.items():
+        brief.references = brief.references[:2]
+        if not brief.empty:
+            out[key] = brief.to_dict()
+    return out
+
+
+# -- files -------------------------------------------------------------------
+
+def _safe_name(key: str) -> str:
+    return re.sub(r"[^\w一-鿿-]+", "_", str(key)).strip("_") or "account"
+
+
+def write_evidence(run_folder: str, evidence: AccountEvidence) -> str:
+    folder = os.path.join(run_folder, EVIDENCE_DIR)
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, _safe_name(evidence.mapping_key) + ".json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(evidence.to_dict(), fh, ensure_ascii=False, indent=None)
+    return path
+
+
+def read_evidence(run_folder: str, mapping_key: str) -> Optional[AccountEvidence]:
+    path = os.path.join(run_folder, EVIDENCE_DIR, _safe_name(mapping_key) + ".json")
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        return AccountEvidence.from_dict(json.load(fh))
+
+
+def list_evidence(run_folder: str) -> Dict[str, AccountEvidence]:
+    folder = os.path.join(run_folder, EVIDENCE_DIR)
+    out: Dict[str, AccountEvidence] = {}
+    if not os.path.isdir(folder):
+        return out
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".json"):
+            continue
+        with open(os.path.join(folder, name), encoding="utf-8") as fh:
+            ev = AccountEvidence.from_dict(json.load(fh))
+        out[ev.mapping_key] = ev
+    return out

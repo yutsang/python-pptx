@@ -1,0 +1,994 @@
+"""
+fdd_utils/text_metrics.py — Pillow-based text fitting for PPTX shapes.
+
+Standalone module: predicts how text will wrap inside a PPTX text frame by
+reading the actual font's glyph advance widths (and GPOS kerning, via
+FreeType under the hood) instead of guessing with a chars-per-line constant.
+
+Why this exists
+---------------
+The legacy heuristic in pptx.py multiplies a hardcoded chars-per-line value
+(e.g. 100 for single-slot ENG @ 9pt) by a width scale factor. That model
+treats every glyph as the same width — fine for monospace, wrong for any
+real font. "WWWW" and "iiii" land 2-3x apart in actual rendered width, and
+mixed CJK + Latin commentary makes the error worse. This module replaces
+the guess with a real measurement: for each candidate font size, it walks
+the text word-by-word, asks Pillow for the rendered width, and decides
+where to break lines.
+
+Public API
+----------
+    text_box_from_shape(shape, *, bullet_indent_emu=0) -> TextBox
+        Effective writable text box of a python-pptx shape, in points.
+
+    fit_text_to_box(text, box, *, family, is_cjk, ...) -> FitResult
+        Pick the largest candidate font size whose wrapped lines fit.
+
+    wrap_text(text, font, max_width_pt) -> list[str]
+        Greedy line wrap using real glyph widths.
+
+    add_norm_autofit(text_frame, font_scale_pct=100, ...) -> None
+        Belt-and-braces XML hint so PowerPoint can shrink further on open.
+
+Run this file directly to see predictions against the project template:
+
+    python -m fdd_utils.text_metrics
+"""
+
+from __future__ import annotations
+
+import os
+import platform
+import shutil
+import subprocess
+import sys
+from dataclasses import dataclass
+from functools import lru_cache
+from typing import List, Optional, Sequence, Tuple
+
+from PIL import ImageFont
+
+
+# ---------------------------------------------------------------------------
+# Unit conversions and PPTX defaults
+# ---------------------------------------------------------------------------
+
+EMU_PER_INCH = 914400
+EMU_PER_POINT = 12700
+
+# OOXML bodyPr default insets (used when the attribute is absent).
+# Confirmed from the ECMA-376 spec, NOT 0.05" all-around as some docs say.
+DEFAULT_LIns_EMU = 91440   # 0.10"
+DEFAULT_RIns_EMU = 91440   # 0.10"
+DEFAULT_TIns_EMU = 45720   # 0.05"
+DEFAULT_BIns_EMU = 45720   # 0.05"
+
+A_NS = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+# PowerPoint renders percentage line spacing (spcPct, what python-pptx writes
+# for `paragraph.line_spacing = 1.0`) as 1.2 x the font POINT SIZE — it does
+# NOT consult the font's own ascent/descent/lineGap tables. Confirmed
+# empirically by exporting a test deck through real PowerPoint to PDF and
+# measuring baseline-to-baseline pitch with pdfminer, at 9pt / spcPct 100%:
+#     Arial              -> 10.80 pt   (hhea+gap tables predict 10.35)
+#     Microsoft JhengHei -> 10.80 pt   (hhea tables predict ~11.9)
+#     Arial Unicode MS   -> 10.80 pt
+#     spcAft 3pt         -> adds exactly 3.00 pt between paragraphs
+# Three fonts with wildly different metric tables all land on exactly
+# 1.2 x size, so any font-table-derived line height is the wrong model for
+# PowerPoint fit prediction. The previous table-based values overcharged
+# CJK boxes ~1.1 pt/line (msyh hhea = 1.32 x em vs the real 1.2 x em),
+# which compounded to a consistent ~3-line visible under-fill on every
+# "full" Chinese commentary box. (Width/wrap measurement still uses real
+# glyph advances — only the VERTICAL pitch follows this fixed rule.)
+POWERPOINT_LINE_PITCH_FACTOR = 1.2
+
+
+# ---------------------------------------------------------------------------
+# Metrics-only measurement (no font binary required)
+# ---------------------------------------------------------------------------
+# When the client's font cannot leave their environment as a file, run
+# dump_font_metrics.py there to emit a JSON advance-width table (TEXT), paste it
+# here, and load it with MetricsTable.from_json(). This reproduces exact
+# line-wrapping/fit from advance widths alone — glyph outlines are not needed.
+class MetricsTable:
+    """Advance-width table reconstructed from dump_font_metrics.py JSON text."""
+
+    def __init__(self, *, family: str, units_per_em: int, ascent: int, descent: int,
+                 line_gap: int, default_advance: int, exceptions: dict,
+                 cjk_full_width: bool = False):
+        self.family = family
+        self.units_per_em = max(1, int(units_per_em))
+        self.ascent = int(ascent)
+        self.descent = int(descent)
+        self.line_gap = int(line_gap)
+        self.default_advance = int(default_advance)
+        self._exceptions = {int(k): int(v) for k, v in (exceptions or {}).items()}
+        self.cjk_full_width = bool(cjk_full_width)
+
+    @classmethod
+    def from_json(cls, text_or_obj) -> "MetricsTable":
+        import json as _json
+        obj = text_or_obj if isinstance(text_or_obj, dict) else _json.loads(text_or_obj)
+        if "fonts" in obj and isinstance(obj["fonts"], list) and obj["fonts"]:
+            obj = obj["fonts"][0]  # first font of a multi-font dump
+        return cls(
+            family=obj.get("family", "embedded"),
+            units_per_em=obj.get("units_per_em", 1000),
+            ascent=obj.get("ascent", 800),
+            descent=obj.get("descent", -200),
+            line_gap=obj.get("line_gap", 0),
+            default_advance=obj.get("default_advance", obj.get("units_per_em", 1000)),
+            exceptions=obj.get("exceptions", {}),
+            cjk_full_width=obj.get("cjk_full_width", False),
+        )
+
+    def char_width_pt(self, ch: str, size_pt: float) -> float:
+        units = self._exceptions.get(ord(ch), self.default_advance)
+        return units / self.units_per_em * size_pt
+
+    def text_width_pt(self, text: str, size_pt: float) -> float:
+        return sum(self.char_width_pt(c, size_pt) for c in str(text or ""))
+
+    def line_height_pt(self, size_pt: float, *, line_spacing: float = 1.0) -> float:
+        # NOT (ascent - descent + line_gap) x size: PowerPoint ignores the
+        # font's vertical tables for spcPct spacing and uses 1.2 x point size
+        # (see POWERPOINT_LINE_PITCH_FACTOR). The ascent/descent/line_gap
+        # fields above are kept for reference; only advance widths from this
+        # table still drive measurement (horizontal wrap).
+        return POWERPOINT_LINE_PITCH_FACTOR * size_pt * line_spacing
+
+
+# Characters that PowerPoint/Word never let start a line (行首禁则/kinsoku):
+# closing brackets/quotes and sentence-ending punctuation get pulled back
+# onto the end of the previous line instead, even if that makes the line
+# slightly exceed the nominal width. Our greedy wrap treats every CJK
+# character (punctuation included) as an independently-breakable atom, so
+# without this a period/comma/closing-bracket can land alone at the start
+# of a line in our line-count PREDICTION — one line more than PowerPoint
+# will actually render, which was making capacity estimates unnecessarily
+# conservative (a real contributor to pages reading as under-filled).
+_KINSOKU_NO_LINE_START = set("。，、；：？！）】》」』〉""''’”…‥,.;:?!)]}%％")
+
+
+def _apply_kinsoku(lines: List[str]) -> List[str]:
+    """Pulls a leading kinsoku-forbidden character back onto the previous
+    line, mirroring PowerPoint/Word's own automatic line-breaking so our
+    predicted line count matches what actually renders."""
+    if len(lines) < 2:
+        return lines
+    result = list(lines)
+    i = 1
+    while i < len(result):
+        line = result[i]
+        if line and result[i - 1] and line[0] in _KINSOKU_NO_LINE_START:
+            result[i - 1] = result[i - 1] + line[0]
+            result[i] = line[1:]
+            if not result[i]:
+                del result[i]
+            continue  # re-check index i again: chained punctuation (e.g. "」。")
+                      # needs every leading char pulled back, one per pass
+        i += 1
+    return result
+
+
+def wrap_text_with_metrics(text: str, metrics: "MetricsTable", *, size_pt: float,
+                           max_width_pt: float,
+                           first_line_width_pt: Optional[float] = None) -> List[str]:
+    """Greedy word-wrap using a MetricsTable's advance widths (no font file).
+
+    Latin text wraps on spaces; CJK (no spaces) wraps per character. Mixed text is
+    handled by treating a CJK char as its own breakable unit.
+
+    first_line_width_pt, if given, is the width budget for ONLY the first
+    wrapped line; every subsequent line uses max_width_pt. Mirrors a
+    PowerPoint hanging-indent paragraph (first_line_indent negative,
+    left_indent positive): line 1 spans the box's full width, wrapped
+    continuation lines sit narrower at the indent.
+    """
+    if max_width_pt <= 0 or not str(text or "").strip():
+        return [text] if text else []
+    lines: List[str] = []
+    cur = ""
+    cur_w = 0.0
+
+    def _limit() -> float:
+        return first_line_width_pt if (first_line_width_pt is not None and not lines) else max_width_pt
+
+    def _flush():
+        nonlocal cur, cur_w
+        lines.append(cur)
+        cur, cur_w = "", 0.0
+
+    # Tokenize into words (Latin runs) and individual CJK chars / spaces.
+    import re as _re
+    tokens = _re.findall(r"[^\s　-鿿＀-￯]+|[　-鿿＀-￯]|\s+", text)
+    for tok in tokens:
+        limit = _limit()
+        if tok.isspace():
+            w = metrics.text_width_pt(tok, size_pt)
+            if cur and cur_w + w <= limit:
+                cur += tok
+                cur_w += w
+            continue
+        w = metrics.text_width_pt(tok, size_pt)
+        if cur and cur_w + w > limit:
+            _flush()
+            tok_stripped = tok
+            cur, cur_w = tok_stripped, metrics.text_width_pt(tok_stripped, size_pt)
+        else:
+            cur += tok
+            cur_w += w
+    if cur.strip():
+        lines.append(cur)
+    return _apply_kinsoku(lines) if lines else [text]
+
+
+def emu_to_pt(emu: float) -> float:
+    return emu / EMU_PER_POINT
+
+
+
+
+# ---------------------------------------------------------------------------
+# Font path resolution
+# ---------------------------------------------------------------------------
+#
+# We try a curated, OS-specific fallback chain first, then fall back to
+# fontconfig (fc-match) if the family is not in the chain. This avoids
+# silently substituting a Latin font for a CJK request, which would give
+# wildly wrong widths.
+
+_LATIN_FALLBACKS = {
+    "Darwin": [
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+    ],
+    "Windows": [
+        r"C:\Windows\Fonts\arial.ttf",
+        r"C:\Windows\Fonts\Arial.ttf",
+    ],
+    "Linux": [
+        "/usr/share/fonts/truetype/msttcorefonts/Arial.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ],
+}
+
+_CJK_FALLBACKS = {
+    "Darwin": [
+        "/Library/Fonts/Microsoft/Microsoft YaHei.ttf",
+        "/Library/Fonts/Microsoft YaHei.ttf",
+        "/System/Library/Fonts/PingFang.ttc",
+        "/System/Library/Fonts/STHeiti Light.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+    ],
+    "Windows": [
+        r"C:\Windows\Fonts\msyh.ttc",
+        r"C:\Windows\Fonts\msyh.ttf",
+        r"C:\Windows\Fonts\msyhbd.ttc",
+        r"C:\Windows\Fonts\simhei.ttf",
+    ],
+    "Linux": [
+        "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    ],
+}
+
+
+def _fc_match(family: str) -> Optional[str]:
+    """Use fontconfig fc-match to find a font file path. Returns None if
+    fc-match is not installed or returns nothing useful."""
+    if not shutil.which("fc-match"):
+        return None
+    try:
+        out = subprocess.check_output(
+            ["fc-match", "-f", "%{file}", family],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        ).strip()
+        return out or None
+    except (subprocess.SubprocessError, OSError):
+        return None
+
+
+@lru_cache(maxsize=64)
+def resolve_font_path(family: str, *, is_cjk: bool) -> Optional[str]:
+    """Find a TTF/OTF/TTC file for the requested family.
+
+    Returns None if nothing usable is found — the caller should warn or
+    hard-fail rather than silently using a wrong font.
+    """
+    if os.path.isabs(family) and os.path.exists(family):
+        return family
+
+    system = platform.system()
+    candidates = list(
+        _CJK_FALLBACKS.get(system, []) if is_cjk else _LATIN_FALLBACKS.get(system, [])
+    )
+
+    for path in candidates:
+        if os.path.exists(path):
+            return path
+
+    fc = _fc_match(family)
+    if fc and os.path.exists(fc):
+        return fc
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Font cache
+# ---------------------------------------------------------------------------
+#
+# Loading a TTF takes ~5ms; reuse the loaded face across all measurements.
+# Pillow's `truetype(path, size=N)` interprets N in the same unit it returns
+# from getlength(). If we pass `size=9` (a point value), getlength() returns
+# advance widths in points. Convenient: no DPI math needed.
+
+_FONT_CACHE: dict = {}
+
+
+def get_font(
+    family: str,
+    size_pt: float,
+    *,
+    is_cjk: bool,
+) -> ImageFont.FreeTypeFont:
+    key = (family, round(size_pt, 3), is_cjk)
+    cached = _FONT_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    path = resolve_font_path(family, is_cjk=is_cjk)
+    if path is None:
+        raise FileNotFoundError(
+            f"Could not resolve a font file for family={family!r} "
+            f"is_cjk={is_cjk}. Install the font, pass an absolute path "
+            f"as the family, or extend text_metrics._LATIN_FALLBACKS / "
+            f"_CJK_FALLBACKS for this OS."
+        )
+
+    font = ImageFont.truetype(path, size=size_pt)
+    _FONT_CACHE[key] = font
+    return font
+
+
+# ---------------------------------------------------------------------------
+# Shape geometry
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class TextBox:
+    """Effective writable region of a PPTX text frame, in points."""
+
+    width_pt: float
+    height_pt: float
+    bullet_indent_pt: float
+
+
+def text_box_from_shape(
+    shape,
+    *,
+    bullet_indent_emu: int = 0,
+) -> TextBox:
+    """Compute the effective text box of a python-pptx shape.
+
+    Reads bodyPr lIns/rIns/tIns/bIns from the shape's text frame and
+    subtracts them from the shape size. Optionally subtracts an extra
+    bullet/indent margin (pass marL from the paragraph properties).
+    """
+    body_pr = None
+    try:
+        body_pr = shape.text_frame._txBody.bodyPr
+    except Exception:
+        pass
+
+    def _attr(name: str, default: int) -> int:
+        if body_pr is None:
+            return default
+        v = body_pr.get(name)
+        if v is None:
+            return default
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            return default
+
+    l_ins = _attr("lIns", DEFAULT_LIns_EMU)
+    r_ins = _attr("rIns", DEFAULT_RIns_EMU)
+    t_ins = _attr("tIns", DEFAULT_TIns_EMU)
+    b_ins = _attr("bIns", DEFAULT_BIns_EMU)
+
+    width_emu = max(0, int(shape.width) - l_ins - r_ins - int(bullet_indent_emu))
+    height_emu = max(0, int(shape.height) - t_ins - b_ins)
+
+    return TextBox(
+        width_pt=emu_to_pt(width_emu),
+        height_pt=emu_to_pt(height_emu),
+        bullet_indent_pt=emu_to_pt(bullet_indent_emu),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Word wrap simulator
+# ---------------------------------------------------------------------------
+#
+# Mixed CJK + Latin handling:
+#   - Each CJK character is its own break point (no spaces between).
+#   - Latin runs are split on whitespace; words wrap as units.
+#   - Joining a Latin word to another Latin word inserts a single space;
+#     joining to/from a CJK char inserts nothing.
+#
+# We always measure the full prospective line, never deltas, because Pillow's
+# getlength is non-additive: getlength("A") + getlength("B") != getlength("AB")
+# whenever the font has GPOS kerning between A and B.
+
+# Unicode ranges that should wrap per-character.
+_CJK_RANGES = (
+    (0x3000, 0x303F),   # CJK Symbols and Punctuation
+    (0x3040, 0x309F),   # Hiragana
+    (0x30A0, 0x30FF),   # Katakana
+    (0x3400, 0x4DBF),   # CJK Unified Ideographs Extension A
+    (0x4E00, 0x9FFF),   # CJK Unified Ideographs
+    (0xAC00, 0xD7AF),   # Hangul Syllables
+    (0xF900, 0xFAFF),   # CJK Compatibility Ideographs
+    (0xFF00, 0xFFEF),   # Halfwidth and Fullwidth Forms
+)
+
+
+def _is_cjk_char(ch: str) -> bool:
+    if not ch:
+        return False
+    cp = ord(ch[0])
+    for lo, hi in _CJK_RANGES:
+        if lo <= cp <= hi:
+            return True
+    return False
+
+
+def _measure(font: ImageFont.FreeTypeFont, text: str) -> float:
+    if not text:
+        return 0.0
+    return float(font.getlength(text))
+
+
+def _atomize(text: str) -> List[Tuple[str, str]]:
+    """Split a paragraph into (separator, atom) pairs.
+
+    An atom is either a single CJK character or a Latin "word" (a maximal
+    run of non-CJK, non-whitespace characters). The separator is " " when
+    joining two Latin atoms, "" otherwise. Whitespace runs in the source
+    are collapsed to a single separator and never become atoms themselves.
+    """
+    atoms: List[Tuple[str, str]] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if _is_cjk_char(ch):
+            atoms.append(("", ch))
+            i += 1
+            continue
+        j = i
+        while j < n and not text[j].isspace() and not _is_cjk_char(text[j]):
+            j += 1
+        word = text[i:j]
+        if atoms and not _is_cjk_char(atoms[-1][1][-1]):
+            sep = " "
+        else:
+            sep = ""
+        atoms.append((sep, word))
+        i = j
+    return atoms
+
+
+def wrap_paragraph(
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width_pt: float,
+    *,
+    first_line_width_pt: Optional[float] = None,
+) -> List[str]:
+    """Greedy word wrap of a single paragraph using real glyph widths.
+
+    first_line_width_pt, if given, is the width budget for ONLY the first
+    wrapped line; every subsequent line uses max_width_pt. Mirrors a
+    PowerPoint hanging-indent paragraph (first_line_indent negative,
+    left_indent positive): line 1 spans the box's full width, wrapped
+    continuation lines sit narrower at the indent.
+    """
+    if not text or not text.strip():
+        return [""]
+    if max_width_pt <= 0:
+        return [text]
+
+    atoms = _atomize(text)
+    if not atoms:
+        return [""]
+
+    lines: List[str] = []
+    current = ""
+
+    def _limit() -> float:
+        return first_line_width_pt if (first_line_width_pt is not None and not lines) else max_width_pt
+
+    for sep, word in atoms:
+        limit = _limit()
+        candidate = word if not current else current + sep + word
+        if _measure(font, candidate) <= limit:
+            current = candidate
+            continue
+
+        # Doesn't fit. Flush the current line, then try the word alone.
+        if current:
+            lines.append(current)
+            current = ""
+        limit = _limit()
+
+        if _measure(font, word) > limit:
+            # Word itself is wider than the line — break per character.
+            sub = ""
+            for ch in word:
+                if _measure(font, sub + ch) <= _limit():
+                    sub += ch
+                else:
+                    if sub:
+                        lines.append(sub)
+                    sub = ch
+            current = sub
+        else:
+            current = word
+
+    if current:
+        lines.append(current)
+
+    return _apply_kinsoku(lines) if lines else [""]
+
+
+def wrap_text(
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    max_width_pt: float,
+    *,
+    first_line_width_pt: Optional[float] = None,
+) -> List[str]:
+    """Wrap multi-paragraph text. Empty source paragraphs are preserved as
+    blank lines so the vertical capacity check counts them.
+
+    first_line_width_pt applies only to the first wrapped line of the
+    FIRST non-blank paragraph (matches the render: only that paragraph is
+    a hanging-indent p_key; every later paragraph is fully indented with
+    no first-line exception -- see _fill_text_main_bullets_with_category_
+    and_key's p_text.first_line_indent = Inches(0)).
+    """
+    out: List[str] = []
+    first = True
+    for para in str(text or "").split("\n"):
+        if para.strip() == "":
+            out.append("")
+        else:
+            flw = first_line_width_pt if first else None
+            out.extend(wrap_paragraph(para, font, max_width_pt, first_line_width_pt=flw))
+            first = False
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Vertical capacity & font-size search
+# ---------------------------------------------------------------------------
+
+def line_height_pt(
+    font: ImageFont.FreeTypeFont,
+    *,
+    line_spacing: float = 1.0,
+    extra_leading_pt: float = 0.0,
+) -> float:
+    """Compute baseline-to-baseline distance in points.
+
+    1.2 x the font point size (POWERPOINT_LINE_PITCH_FACTOR) — measured from
+    real PowerPoint output, which ignores the font's vertical metric tables
+    for spcPct line spacing. The previous implementation used Pillow's
+    font.getmetrics(), which is doubly wrong for fit prediction: it reads
+    hhea ascent/descent (a different, font-dependent model) AND rounds each
+    to whole points, so Arial @ 9pt came back as 11.0 pt against a real
+    10.8 pt, and CJK fonts drifted further still.
+    """
+    return POWERPOINT_LINE_PITCH_FACTOR * float(font.size) * line_spacing + extra_leading_pt
+
+
+def lines_that_fit(height_pt: float, line_h_pt: float) -> int:
+    if line_h_pt <= 0:
+        return 0
+    return int(height_pt // line_h_pt)
+
+
+# ---------------------------------------------------------------------------
+# Unified measurer: client-font metrics (metrics.json) OR system Pillow font
+# ---------------------------------------------------------------------------
+@lru_cache(maxsize=8)
+def _load_metrics_table(path: str) -> Optional["MetricsTable"]:
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return MetricsTable.from_json(fh.read())
+    except Exception:
+        return None
+
+
+class CompositeMetrics:
+    """East Asian characters from one advance table, everything else from
+    another -- which is what a run actually renders as.
+
+    Every run this codebase writes carries BOTH <a:latin> (Arial) and <a:ea>
+    (Microsoft YaHei), set unconditionally by _set_east_asian_typeface, and
+    PowerPoint picks between them PER CHARACTER. Measuring a Chinese account's
+    whole string with the CJK table therefore prices its digits wrong: msyh
+    sets '1' at 0.586em against Arial's 0.556em.
+
+    In aggregate that is only +0.79%, which is why it was dismissed early. At a
+    wrap boundary it is a whole line. Measured against real PowerPoint on a
+    Chinese export: with one table 24 of 26 bullets matched and two paragraphs
+    were over-counted; per character it was 26 of 26 and 75 of 75 non-bullet
+    paragraphs, net zero, worst case zero -- 101 of 101. Three other candidate
+    fixes were scored the same way and rejected; this is the one that won.
+    Duplicated as `_wrap_runs(latin_measurer=...)` in inspect_render_truth.py,
+    which is how it was tried before being adopted.
+
+    Exposes the same three methods MetricsTable does, so wrap_text_with_metrics
+    consumes it unchanged.
+    """
+
+    def __init__(self, ea: "MetricsTable", latin: "MetricsTable"):
+        self.ea = ea
+        self.latin = latin
+        self.family = f"{ea.family} + {latin.family}"
+        self.units_per_em = ea.units_per_em
+        self.cjk_full_width = ea.cjk_full_width
+
+    def char_width_pt(self, ch: str, size_pt: float) -> float:
+        return (self.ea if _is_cjk_char(ch) else self.latin).char_width_pt(ch, size_pt)
+
+    def text_width_pt(self, text: str, size_pt: float) -> float:
+        return sum(self.char_width_pt(c, size_pt) for c in str(text or ""))
+
+    def line_height_pt(self, size_pt: float, *, line_spacing: float = 1.0) -> float:
+        # Unchanged: vertical pitch never depended on which table supplied the
+        # advance widths (see POWERPOINT_LINE_PITCH_FACTOR).
+        return POWERPOINT_LINE_PITCH_FACTOR * size_pt * line_spacing
+
+
+@lru_cache(maxsize=8)
+def _companion_metrics(path: str) -> Optional["MetricsTable"]:
+    """The opposite-script metrics table sitting beside `path`.
+
+    Found by scanning the same directory for a table whose cjk_full_width
+    differs, rather than by filename convention -- and resolved HERE rather
+    than at each call site on purpose. get_measurer has 18 callers across six
+    modules; threading a second path through all of them is precisely the shape
+    of the bug this session found in _account_cost_key, where five of seven
+    call sites never got the corrected value and nothing complained.
+    """
+    base = _load_metrics_table(path)
+    if base is None:
+        return None
+    try:
+        directory = os.path.dirname(os.path.abspath(path))
+        for name in sorted(os.listdir(directory)):
+            if not name.lower().endswith(".json"):
+                continue
+            candidate = os.path.join(directory, name)
+            if os.path.abspath(candidate) == os.path.abspath(path):
+                continue
+            other = _load_metrics_table(candidate)
+            if other is not None and other.cjk_full_width != base.cjk_full_width:
+                return other
+    except OSError:
+        pass
+    return None
+
+
+class Measurer:
+    """One text-measurement interface backed by EITHER the client's real font
+    (a MetricsTable loaded from dump_font_metrics.py JSON) OR a Pillow system
+    font. The packer uses this so line counts reflect the font the client's
+    PowerPoint will actually render — not whatever font the dev box happens to
+    have. Falls back transparently when no metrics.json is supplied.
+    """
+
+    def __init__(self, *, size_pt: float, line_spacing: float,
+                 metrics: Optional["MetricsTable"] = None, font=None):
+        self.size_pt = float(size_pt)
+        self.line_spacing = float(line_spacing)
+        self._metrics = metrics
+        self._font = font
+
+    @property
+    def source(self) -> str:
+        return "client-metrics" if self._metrics is not None else "system-font"
+
+    def line_height_pt(self, *, extra_leading_pt: float = 0.0) -> float:
+        # Same fixed PowerPoint rule for BOTH backends — vertical pitch does
+        # not depend on which font supplied the advance widths.
+        return (POWERPOINT_LINE_PITCH_FACTOR * self.size_pt * self.line_spacing
+                + extra_leading_pt)
+
+    def text_width_pt(self, text: str) -> float:
+        """Rendered width of `text` on ONE line (no wrapping), in points --
+        for callers that need to size a container to its content (e.g. a
+        table column) rather than wrap content into a fixed container.
+        Dispatches to whichever backend this Measurer holds, same as wrap()."""
+        if self._metrics is None:
+            return _measure(self._font, str(text or ""))
+        return self._metrics.text_width_pt(str(text or ""), self.size_pt)
+
+    def wrap(self, text: str, max_width_pt: float, *, first_line_width_pt: Optional[float] = None) -> List[str]:
+        if self._metrics is None:
+            return wrap_text(text, self._font, max_width_pt, first_line_width_pt=first_line_width_pt)
+        out: List[str] = []
+        first = True
+        for para in str(text or "").split("\n"):
+            if para.strip() == "":
+                out.append("")
+            else:
+                flw = first_line_width_pt if first else None
+                out.extend(wrap_text_with_metrics(
+                    para, self._metrics, size_pt=self.size_pt, max_width_pt=max_width_pt,
+                    first_line_width_pt=flw,
+                ))
+                first = False
+        return out
+
+
+def get_measurer(family: str, size_pt: float, *, is_cjk: bool,
+                 line_spacing: float = 1.0, metrics_path: Optional[str] = None) -> Measurer:
+    """Prefer the client-font MetricsTable (metrics.json) when a valid path is
+    given; otherwise measure with the resolved system font."""
+    mt = _load_metrics_table(metrics_path) if metrics_path else None
+    if mt is not None:
+        # Pair it with the opposite-script table when one is available, so each
+        # character is priced by the typeface that will actually draw it.
+        other = _companion_metrics(metrics_path)
+        if other is not None:
+            ea, latin = (mt, other) if mt.cjk_full_width else (other, mt)
+            mt = CompositeMetrics(ea, latin)
+        return Measurer(size_pt=size_pt, line_spacing=line_spacing, metrics=mt)
+    return Measurer(size_pt=size_pt, line_spacing=line_spacing,
+                    font=get_font(family, size_pt, is_cjk=is_cjk))
+
+
+@dataclass
+class FitResult:
+    font_size_pt: float
+    family: str
+    is_cjk: bool
+    lines: List[str]
+    line_count: int
+    line_height_pt: float
+    capacity_lines: int
+    fits: bool
+    text_box: TextBox
+
+
+def fit_text_to_box(
+    text: str,
+    box: TextBox,
+    *,
+    family: str,
+    is_cjk: bool,
+    candidate_sizes: Sequence[float] = (9.0, 8.5, 8.0, 7.5, 7.0),
+    line_spacing: float = 1.0,
+    extra_leading_pt: float = 0.0,
+) -> FitResult:
+    """Try each candidate size from largest to smallest. Return the first
+    one whose wrapped line count is within the box's vertical capacity. If
+    none fit, return the smallest size; the caller can then truncate, accept
+    overflow, or rely on a normAutofit safety net.
+    """
+    last: Optional[FitResult] = None
+    for size in candidate_sizes:
+        font = get_font(family, size, is_cjk=is_cjk)
+        lines = wrap_text(text, font, box.width_pt)
+        line_h = line_height_pt(
+            font,
+            line_spacing=line_spacing,
+            extra_leading_pt=extra_leading_pt,
+        )
+        capacity = lines_that_fit(box.height_pt, line_h)
+        result = FitResult(
+            font_size_pt=size,
+            family=family,
+            is_cjk=is_cjk,
+            lines=lines,
+            line_count=len(lines),
+            line_height_pt=line_h,
+            capacity_lines=capacity,
+            fits=len(lines) <= capacity,
+            text_box=box,
+        )
+        if result.fits:
+            return result
+        last = result
+
+    assert last is not None
+    return last
+
+
+# ---------------------------------------------------------------------------
+# normAutofit XML safety net
+# ---------------------------------------------------------------------------
+
+def add_norm_autofit(
+    text_frame,
+    *,
+    font_scale_pct: float = 100.0,
+    line_space_reduction_pct: float = 0.0,
+) -> None:
+    """Inject `<a:normAutofit fontScale=... lnSpcReduction=.../>` into the
+    text frame's bodyPr.
+
+    PowerPoint reads this on open and shrinks text accordingly. Pass 100.0
+    / 0.0 for a no-op marker. LibreOffice and Keynote ignore this hint, so
+    treat it as a safety net on top of an already-correct Pillow estimate,
+    not the primary fitting mechanism.
+    """
+    from lxml import etree  # local import: only needed when this is called
+
+    body_pr = text_frame._txBody.bodyPr
+    for tag in ("normAutofit", "spAutoFit", "noAutofit"):
+        for el in body_pr.findall(f"{{{A_NS}}}{tag}"):
+            body_pr.remove(el)
+
+    autofit = etree.SubElement(body_pr, f"{{{A_NS}}}normAutofit")
+    autofit.set("fontScale", str(int(round(font_scale_pct * 1000))))
+    if line_space_reduction_pct > 0:
+        autofit.set(
+            "lnSpcReduction",
+            str(int(round(line_space_reduction_pct * 1000))),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Demo / sanity check
+# ---------------------------------------------------------------------------
+
+# Legacy CPL constants from config.yml, for side-by-side comparison.
+_LEGACY_CPL = {
+    ("single", False): 100, ("single", True): 50,
+    ("L", False): 56, ("L", True): 30,
+    ("R", False): 56, ("R", True): 30,
+}
+
+
+def _legacy_predict_lines(text: str, slot_key: str, is_cjk: bool) -> int:
+    cpl = _LEGACY_CPL.get((slot_key, is_cjk), 60)
+    n = len(text)
+    return max(1, (n + cpl - 1) // cpl)
+
+
+def _slot_key_for_shape_name(name: str) -> str:
+    n = (name or "").lower()
+    if n.endswith("_l"):
+        return "L"
+    if n.endswith("_r"):
+        return "R"
+    return "single"
+
+
+def _demo() -> int:
+    from pptx import Presentation
+
+    template_path = os.path.join(os.path.dirname(__file__), "template.pptx")
+    if not os.path.exists(template_path):
+        print(f"Template not found at {template_path}", file=sys.stderr)
+        return 1
+
+    prs = Presentation(template_path)
+
+    sample_eng = (
+        "Cash and bank balances increased by RMB 12.3 million from RMB 45.6 "
+        "million as at 31 Dec 2024 to RMB 57.9 million as at 30 Jun 2025, "
+        "primarily driven by a one-off receipt of RMB 8.2 million from the "
+        "disposal of a logistics property and improved collection from key "
+        "customers in Q2 2025. Trade receivables turnover days improved from "
+        "62 days to 48 days over the same period."
+    )
+    sample_chi = (
+        "现金及银行存款由2024年12月31日的人民币4,560万元增加人民币1,230万元至"
+        "2025年6月30日的人民币5,790万元,主要由于出售一处物流物业的一次性收款"
+        "人民币820万元以及2025年第二季度对主要客户应收款项回收情况改善所致。"
+        "应收账款周转天数同期由62天改善至48天。"
+    )
+
+    target_names = {"textmainbullets", "textmainbullets_l", "textmainbullets_r"}
+
+    found = []
+    for slide_idx, slide in enumerate(prs.slides):
+        for shape in slide.shapes:
+            name = (shape.name or "").lower()
+            if name in target_names and shape.has_text_frame:
+                found.append((slide_idx, shape))
+
+    if not found:
+        print("No textMainBullets shapes found in template.", file=sys.stderr)
+        return 1
+
+    print("=" * 78)
+    print("Pillow text-fitting demo — comparing real measurement vs. legacy CPL")
+    print("=" * 78)
+
+    seen_names = set()
+    shown = 0
+    for slide_idx, shape in found:
+        if shape.name in seen_names:
+            continue
+        seen_names.add(shape.name)
+        shown += 1
+        if shown > 3:
+            break
+
+        slot_key = _slot_key_for_shape_name(shape.name)
+        box = text_box_from_shape(shape)
+
+        print()
+        print(f"Slide {slide_idx + 1}, shape={shape.name!r}, slot={slot_key}")
+        print(
+            f"  raw size:        {int(shape.width) / EMU_PER_INCH:.2f}\" x "
+            f"{int(shape.height) / EMU_PER_INCH:.2f}\""
+        )
+        print(
+            f"  effective box:   {box.width_pt:.1f} pt x {box.height_pt:.1f} pt "
+            f"(insets stripped)"
+        )
+
+        for label, text, is_cjk, family, line_spacing in (
+            ("ENG", sample_eng, False, "Arial", 1.0),
+            ("CHI", sample_chi, True, "Microsoft YaHei", 0.95),
+        ):
+            print()
+            print(f"  --- {label} ({len(text)} chars) ---")
+            try:
+                fit = fit_text_to_box(
+                    text,
+                    box,
+                    family=family,
+                    is_cjk=is_cjk,
+                    line_spacing=line_spacing,
+                )
+            except FileNotFoundError as e:
+                print(f"  ERROR: {e}")
+                continue
+
+            legacy_lines = _legacy_predict_lines(text, slot_key, is_cjk)
+
+            resolved = resolve_font_path(family, is_cjk=is_cjk)
+            print(f"  font file:       {resolved}")
+            print(
+                f"  Pillow:          size={fit.font_size_pt} pt   "
+                f"line_h={fit.line_height_pt:.2f} pt   "
+                f"capacity={fit.capacity_lines}   "
+                f"used={fit.line_count}   fits={fit.fits}"
+            )
+            cpl = _LEGACY_CPL.get((slot_key, is_cjk), 60)
+            print(
+                f"  Legacy CPL:      cpl={cpl}   "
+                f"predicted_lines={legacy_lines}   "
+                f"delta_vs_pillow={legacy_lines - fit.line_count:+d}"
+            )
+            for i, line in enumerate(fit.lines, 1):
+                marker = " " if i <= fit.capacity_lines else "!"
+                print(f"  {marker}L{i:>2}: {line}")
+
+    print()
+    print("Legend: '!' marks lines that overflow the box at the chosen size.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_demo())

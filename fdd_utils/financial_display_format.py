@@ -1,0 +1,295 @@
+from __future__ import annotations
+
+"""Display-focused formatting helpers for localized financial tables."""
+
+from typing import Iterable, Union
+
+import pandas as pd
+
+
+def format_number_chinese(value: Union[float, int], language: str = "Chi") -> str:
+    if pd.isna(value) or value == 0:
+        return "0"
+
+    is_negative = value < 0
+    abs_value = abs(value)
+
+    # Precision measured from the real deliverable rather than assumed: its
+    # 万元 figures carry 1dp (1,062.8万元) in 99% of cases and its 亿元
+    # figures 2dp (6.65亿元) in 100%. An earlier comment here reasoned that
+    # 万 "adds little real precision" at whole-number scale -- but a report
+    # that writes 1,062.8万元 while the tool writes 1,063万元 is subtly wrong
+    # on every amount, and the team's own convention is the authority.
+    if language == "Chi":
+        if abs_value < 10000:
+            result = f"{abs_value:,.0f}元"
+        else:
+            wan_value = abs_value / 10000
+            if wan_value >= 10000:
+                yi_value = wan_value / 10000
+                result = f"{yi_value:.2f}亿元"
+            else:
+                result = f"{wan_value:.1f}万元"
+        # Bare by default, matching the report convention measured from the
+        # real deliverable (97% of its amounts carry no 人民币 prefix). This
+        # feeds the LLM-unavailable fallback bullet, which would otherwise
+        # emit a form every prompt now forbids.
+        return f"-{result}" if is_negative else result
+
+    if abs_value < 1000000:
+        result = f"{abs_value:,.0f}"
+    else:
+        result = f"{abs_value / 1000000:.1f} million"
+    return f"CNY-{result}" if is_negative else f"CNY{result}"
+
+
+def convert_scientific_to_normal(value: Union[str, float, int]) -> float:
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return 0.0
+    if isinstance(value, (int, float)):
+        return float(value)
+    return 0.0
+
+
+def detect_and_format_amount(value: Union[str, float, int], language: str = "Chi") -> str:
+    return format_number_chinese(convert_scientific_to_normal(value), language)
+
+
+
+
+
+
+def format_value_by_language(value, language: str, _account_name=None) -> str:
+    if pd.isna(value):
+        return ""
+    if value == 0:
+        return "0"
+
+    is_negative = value < 0
+    abs_value = abs(value)
+
+    # Matches format_number_chinese: 万 1dp, 亿 2dp. This function builds the
+    # "_formatted" columns, which are what the MODEL is shown -- so if these
+    # were rounded to whole 万 the model would copy that precision straight
+    # into the report no matter what the prompt asked for.
+    # EVERY branch carries a unit, including the small one. It used to return a
+    # bare "3091" below 10,000 while everything above it read "705.8万", and a
+    # model reading a column where most figures are labelled 万 takes the
+    # unlabelled one for 万 as well. A real run shipped 预付款项 as
+    # "余额合计为3,091.0万元 ... 国网江苏818.3万元" on two entities at once, for
+    # an account whose actual balance is 3,091 YUAN and whose largest component
+    # is 8,183 yuan -- out by a factor of ten thousand, and consistently so,
+    # because the ambiguity is in the data rather than in the model's attention.
+    # Same lesson as the 10x components: hand over one representation, already
+    # carrying its unit.
+    if language == "Chi":
+        if abs_value >= 100000000:
+            formatted = f"{abs_value / 100000000:.2f}亿"
+        elif abs_value >= 10000:
+            formatted = f"{abs_value / 10000:.1f}万"
+        else:
+            formatted = f"{abs_value:.0f}元"
+        return f"-{formatted}" if is_negative else formatted
+
+    if abs_value >= 1000000:
+        formatted = f"{abs_value / 1000000:.1f} million"
+    else:
+        formatted = f"CNY{abs_value:,.0f}"
+    return f"-{formatted}" if is_negative else formatted
+
+
+
+#: (divisor, label), largest first. One unit is chosen for a WHOLE account and
+#: declared once, rather than each figure carrying its own -- which is how the
+#: deliverable itself writes a table ("人民币千元" in the header, bare numbers
+#: under it).
+_DISPLAY_UNITS_CHI = ((1e8, "人民币亿元", 2), (1e4, "人民币万元", 1), (1.0, "人民币元", 0))
+_DISPLAY_UNITS_ENG = ((1e6, "CNY million", 2), (1e3, "CNY thousand", 1), (1.0, "CNY", 0))
+
+
+def choose_display_unit(values, language: str):
+    """(divisor, label, decimals) for a whole account's figures.
+
+    Per-VALUE units are what produced the worst number error of the project.
+    format_value_by_language decides the unit one figure at a time, so an
+    account whose total is 7,057,567 reads "705.8万" while a component of
+    8,183 read "8183" -- and a model reading a column where most figures say
+    万 takes the unlabelled one for 万 too. 预付款项 shipped as "3,091.0万元"
+    against a real balance of 3,091 YUAN, on two entities at once.
+
+    Labelling each figure would fix the ambiguity but not the shape: a report
+    states its unit once, at the top of the table. Choosing from the account's
+    LARGEST figure keeps every number in that account directly comparable,
+    which is the property a reader actually uses.
+    """
+    magnitudes = [
+        abs(float(v)) for v in values
+        if isinstance(v, (int, float)) and not isinstance(v, bool)
+        and not pd.isna(v) and float(v) != 0.0
+    ]
+    table = _DISPLAY_UNITS_CHI if language == "Chi" else _DISPLAY_UNITS_ENG
+    scale = max(magnitudes) if magnitudes else 0.0
+    for divisor, label, decimals in table:
+        if scale >= divisor:
+            return divisor, label, decimals
+    return table[-1]
+
+
+def format_in_unit(value, divisor: float, decimals: int) -> str:
+    """A bare number in an already-declared unit. No unit text: the caller
+    states it once."""
+    if value is None or pd.isna(value):
+        return ""
+    if float(value) == 0.0:
+        return "0"
+    return f"{float(value) / divisor:,.{decimals}f}"
+
+def handle_retained_earnings(df: pd.DataFrame, language: str) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+
+    df_modified = df.copy()
+    desc_col = df_modified.columns[0]
+    rename_map: dict[str, str] = {}
+    retained_earnings_keywords_chi = ["未分配利润", "留存收益", "盈余公积"]
+    retained_earnings_keywords_eng = [
+        "Retained Earnings",
+        "Retained earnings",
+        "retained earnings",
+        "Accumulated Profit",
+        "Surplus Reserve",
+    ]
+
+    for idx, row in df_modified.iterrows():
+        description = str(row[desc_col])
+        if language == "Chi":
+            is_retained_earnings = any(keyword in description for keyword in retained_earnings_keywords_chi)
+        else:
+            is_retained_earnings = any(keyword in description for keyword in retained_earnings_keywords_eng)
+
+        if not is_retained_earnings:
+            continue
+
+        value_col = df_modified.columns[1]
+        value = row[value_col]
+        if pd.isna(value) or value >= 0:
+            continue
+
+        if language == "Chi":
+            if "未分配利润" in description:
+                df_modified.at[idx, desc_col] = description.replace("未分配利润", "未弥补亏损")
+            elif "留存收益" in description:
+                df_modified.at[idx, desc_col] = description.replace("留存收益", "累计亏损")
+            elif "盈余公积" in description:
+                df_modified.at[idx, desc_col] = description.replace("盈余公积", "亏损")
+        else:
+            if "Retained Earnings" in description:
+                df_modified.at[idx, desc_col] = description.replace("Retained Earnings", "Accumulated Losses")
+            elif "retained earnings" in description:
+                df_modified.at[idx, desc_col] = description.replace("retained earnings", "accumulated losses")
+            elif "Accumulated Profit" in description:
+                df_modified.at[idx, desc_col] = description.replace("Accumulated Profit", "Accumulated Losses")
+
+        rename_map[description] = str(df_modified.at[idx, desc_col]).strip()
+        formatted_col = f"{value_col}_formatted"
+        if formatted_col in df_modified.columns:
+            # Same unit the rest of the frame is already in -- re-deriving it
+            # per figure here would reintroduce exactly the mixed-unit
+            # ambiguity add_language_display_columns exists to remove.
+            divisor = df_modified.attrs.get("display_unit_divisor")
+            decimals = df_modified.attrs.get("display_unit_decimals")
+            if divisor:
+                df_modified.at[idx, formatted_col] = format_in_unit(abs(value), divisor, decimals or 0)
+            else:
+                df_modified.at[idx, formatted_col] = format_value_by_language(abs(value), language)
+
+    if rename_map:
+        existing = dict(df_modified.attrs.get("display_description_map") or {})
+        existing.update(rename_map)
+        for renamed in rename_map.values():
+            existing[renamed] = renamed
+        df_modified.attrs["display_description_map"] = existing
+    return df_modified
+
+
+def add_language_display_columns(df: pd.DataFrame, language: str) -> pd.DataFrame:
+    """Build the _formatted columns the model reads, all in ONE unit chosen
+    across the whole account and recorded in attrs["display_unit_label"] for
+    the prompt to state once. See choose_display_unit for why per-figure units
+    were wrong."""
+    if df is None or df.empty or not language:
+        return df
+
+    df_modified = df.copy()
+    numeric_cols = [
+        col for col in df_modified.columns[1:]
+        if not str(col).endswith("_formatted")
+        and not str(col).startswith("__")
+        and pd.api.types.is_numeric_dtype(df_modified[col])
+    ]
+    if not numeric_cols:
+        return handle_retained_earnings(df_modified, language)
+
+    every_value = [v for col in numeric_cols for v in df_modified[col].tolist()]
+    divisor, label, decimals = choose_display_unit(every_value, language)
+    for col in numeric_cols:
+        df_modified[f"{col}_formatted"] = df_modified[col].apply(
+            lambda x: format_in_unit(x, divisor, decimals)
+        )
+    df_modified.attrs["display_unit_label"] = label
+    df_modified.attrs["display_unit_divisor"] = divisor
+    df_modified.attrs["display_unit_decimals"] = decimals
+    return handle_retained_earnings(df_modified, language)
+
+
+def prepare_display_dataframe(
+    df: pd.DataFrame,
+    *,
+    drop_columns: Iterable[str] = (),
+) -> pd.DataFrame:
+    display_df = df.copy()
+    drop_columns = {str(column) for column in drop_columns}
+    if drop_columns:
+        existing_drop_columns = [column for column in display_df.columns if str(column) in drop_columns]
+        if existing_drop_columns:
+            display_df = display_df.drop(columns=existing_drop_columns)
+
+    if not display_df.empty and len(display_df.columns) > 1:
+        original_columns = list(display_df.columns)
+        column_lookup = {str(column): column for column in original_columns}
+        display_columns = [original_columns[0]]
+        rename_map = {}
+
+        for column in original_columns[1:]:
+            column_name = str(column)
+            if column_name.endswith("_formatted"):
+                base_name = column_name.replace("_formatted", "")
+                if base_name in column_lookup:
+                    continue
+                display_columns.append(column)
+                continue
+
+            formatted_column = column_lookup.get(f"{column_name}_formatted")
+            if formatted_column is not None:
+                display_columns.append(formatted_column)
+                rename_map[formatted_column] = column_name
+            else:
+                display_columns.append(column)
+
+        display_df = display_df[display_columns]
+        if rename_map:
+            display_df = display_df.rename(columns=rename_map)
+    return display_df
+
+
+def stringify_display_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    display_df = df.copy()
+    for col in display_df.columns:
+        if pd.api.types.is_numeric_dtype(display_df[col]):
+            display_df[col] = display_df[col].apply(lambda x: f"{x:,.0f}" if pd.notna(x) else "")
+        else:
+            display_df[col] = display_df[col].fillna("").astype(str)
+    return display_df

@@ -1,0 +1,184 @@
+{
+  "Cash": {
+    "subagent_1": "Fictional demonstration only. Cash was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. Cash was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. Cash was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. Cash was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. Cash was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "AR": {
+    "subagent_1": "Fictional demonstration only. AR was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. AR was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. AR was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. AR was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. AR was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "Prepayments": {
+    "subagent_1": "Fictional demonstration only. Prepayments was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. Prepayments was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. Prepayments was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. Prepayments was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. Prepayments was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "OR": {
+    "subagent_1": "Fictional demonstration only. OR was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. OR was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. OR was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. OR was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. OR was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "Other CA": {
+    "subagent_1": "Fictional demonstration only. Other CA was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. Other CA was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. Other CA was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. Other CA was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. Other CA was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "IP": {
+    "subagent_1": "Fictional demonstration only. IP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. IP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. IP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. IP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. IP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "Advances": {
+    "subagent_1": "Fictional demonstration only. Advances was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. Advances was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. Advances was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. Advances was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. Advances was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "Tax payable": {
+    "subagent_1": "Fictional demonstration only. Tax payable was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. Tax payable was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. Tax payable was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. Tax payable was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. Tax payable was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "OP": {
+    "subagent_1": "Fictional demonstration only. OP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. OP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. OP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. OP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. OP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "AP": {
+    "subagent_1": "Fictional demonstration only. AP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. AP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. AP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. AP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. AP was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "Capital": {
+    "subagent_1": "Fictional demonstration only. Capital was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. Capital was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. Capital was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. Capital was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. Capital was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "OI": {
+    "subagent_1": "Fictional demonstration only. OI was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. OI was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. OI was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. OI was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. OI was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "OC": {
+    "subagent_1": "Fictional demonstration only. OC was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. OC was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. OC was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. OC was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. OC was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "Tax and Surcharges": {
+    "subagent_1": "Fictional demonstration only. Tax and Surcharges was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. Tax and Surcharges was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. Tax and Surcharges was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. Tax and Surcharges was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. Tax and Surcharges was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "GA": {
+    "subagent_1": "Fictional demonstration only. GA was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. GA was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. GA was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. GA was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. GA was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "Fin Exp": {
+    "subagent_1": "Fictional demonstration only. Fin Exp was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. Fin Exp was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. Fin Exp was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. Fin Exp was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. Fin Exp was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "Non-operating Income": {
+    "subagent_1": "Fictional demonstration only. Non-operating Income was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. Non-operating Income was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. Non-operating Income was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. Non-operating Income was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. Non-operating Income was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "Non-operating Exp": {
+    "subagent_1": "Fictional demonstration only. Non-operating Exp was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_2": "Fictional demonstration only. Non-operating Exp was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_3": "Fictional demonstration only. Non-operating Exp was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "subagent_4": "Fictional demonstration only. Non-operating Exp was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "final": "Fictional demonstration only. Non-operating Exp was 100, 120 and 150 units in Period A, Period B and Period C. These synthetic values illustrate formatting, not a real engagement.",
+    "agent_4_validation": {
+      "clause_reviews": []
+    }
+  },
+  "__BS_summary__": "Fictional demonstration only. The example uses synthetic balances and does not describe an actual business.",
+  "__IS_summary__": "Fictional demonstration only. The example uses synthetic balances and does not describe an actual business."
+}

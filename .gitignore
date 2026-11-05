@@ -1,0 +1,171 @@
+# Logs
+*.pptx
+
+# Output
+final_report*
+
+# input
+.pdf 
+*.xlsx
+!*.ipynb
+FDD.Draft Report.For AI solution purpose Only.pptx
+*.txt
+
+# old backups
+archive/
+.archive/
+
+# Streamlit configuration
+.streamlit/
+
+# Ignore pptx templates and databooks
+*template*.pptx
+*databook*.pptx
+
+# Private engagement workbooks and exports remain local-only.
+for_test/
+*.xls
+*.xlsm
+*.csv
+*.parquet
+*.jsonl
+
+# Add any other input/output file types as needed
+fdd_utils/config.json
+fdd_utils/config.yml
+fdd_utils/logs/
+fdd_utils/output/
+python-pptx-hr/hr_utils/hr_config.yml
+
+# Python cache and build files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+.pyre/
+.pytype/
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# Reference folder
+/old_ver
+old_ver/
+
+# Reference screenshots/photos dropped into the working directory for review.
+# These routinely show real client data, and this repository is public, so the
+# rule is by EXTENSION rather than by filename -- an IMG_* pattern missed
+# anything saved as Screenshot..., a pasted image, or a phone default name.
+# The repo tracks no images of its own (verified), so a blanket ignore costs
+# nothing. Force-add with `git add -f` if a diagram ever genuinely belongs here.
+*.JPG
+*.jpg
+*.JPEG
+*.jpeg
+*.PNG
+*.png
+*.GIF
+*.gif
+*.WEBP
+*.webp
+*.HEIC
+*.heic
+*.tif
+*.tiff
+*.bmp
+*.pdf
+
+# System files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# IDE and editor files
+.vscode/
+.idea/
+.cursor/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+*.bak
+clean_cache.py
+txt-to-excel.py
+export_selected_tabs.py
+export_selected_tabs.ipynb
+
+# Documentation (except README.md)
+PORT_MANAGEMENT_GUIDE.md
+LOGGING_ENHANCEMENT_README.md
+# This repo is PUBLIC and the checkout that runs the deliverable needs no docs,
+# so every .md except README.md stays out of it -- working notes name clients.
+# Keep them local; do not add a negation here without checking the content.
+*.md
+!README.md
+# Reviewed for client data before the negation was added, per the note above:
+# no entity names, no databook names, no figures, no per-run counts. Keep it
+# that way -- it documents the verification design, not any engagement.
+!methods.md
+docs/
+
+# Diagnostic output (see fdd_utils/pptx/gen_packing.py's DP packing report)
+dp_packing_report.txt
+
+# Recorded eval baselines are keyed to per-machine databooks -- never commit
+ad-hoc/workbench/golden_verdicts.json
+fdd_deploy*.zip
+
+# inspect_databook.py --export-pptx / --from-run output: decks and their .reexport.json
+# reports name client workbooks and accounts.
+pptx_previews/
+*.reexport.json
+
+# Private regression transcript contains figures copied from an engagement.
+/ad-hoc/databook-probes/probe_analysis_rules.py
+/private-config-additions.yml
+/ad-hoc/databook-probes/probe_composition_check.py

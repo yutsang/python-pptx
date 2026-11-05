@@ -1,0 +1,275 @@
+# Which model a new session starts on. The dropdown itself is built from each
+# provider's available_models; `listed: false` on a provider block (or on one
+# available_models entry) takes it off the dropdown WITHOUT disabling it -- it
+# stays callable from the CLI and stays the baseline in
+#   python ad-hoc/workbench/compare_models.py --list
+# which prints, with no AI call, exactly what the UI will offer from this file.
+default:
+  ai_provider: "dashscope"
+  model: "dashscope_qwen3.7-max"   # an id from that provider's available_models
+
+# Which model compare_models.py puts first and marks [baseline]. Without this
+# block it is the first configured of workbench / local / openai / deepseek.
+# A provider name alone means that provider's chat_model.
+# benchmark:
+#   baseline: "dashscope::dashscope_deepseek-v4-flash-0731"
+
+openai:
+  api_key: ""
+  api_base: ""
+  chat_model: ""
+  api_version_completion: ""
+
+local:
+  listed: true            # false hides the local model from the UI dropdown
+  api_base: "http://localhost:8000/v1"
+  api_key: "not-needed"
+  chat_model: "Qwen3-32B"   # must match the id your local server serves
+  supports_thinking: true   # Qwen3 emits <think>; structured stages disable it via allow_thinking
+  # The local server serves one request effectively serially — default to 1
+  # worker. Every other provider defaults to 4 (parallel, no UI toggle
+  # needed) unless overridden with its own max_workers (see workbench below).
+  max_workers: 1
+
+deepseek:
+  api_key: ""
+  api_base: "https://api.deepseek.com/v1"
+  chat_model: "deepseek-chat"
+
+# Internal enterprise gateway (Azure OpenAI-compatible). api_key doubles as
+# the 'Ocp-Apim-Subscription-Key' header value the gateway requires.
+# This file is committed to a PUBLIC repository -- keep the real hostname,
+# deployment name and any credential in your own config.yml (gitignored),
+# never here.
+workbench:
+  # Set vendor-specific header names only in your private config.yml.
+  header_names: {}  # mapping: charge_code / region_override -> required HTTP header name
+  listed: false           # off the UI dropdown; still the benchmark baseline
+  api_key: ""
+  api_base: ""            # e.g. https://<your-gateway-host>/genai/azure/openai
+  api_version: ""         # e.g. 2024-12-01-preview
+  chat_model: ""          # your Azure deployment name
+  charge_code: ""
+  region_override: ""
+  reasoning_effort: "high"           # "high" | "medium" | "low" | "" to omit
+  # Model capability flags — confirmed against the real gateway. Flip these
+  # if a future model/deployment behaves differently; the client also
+  # self-heals on an unrecognised 400 by reading the rejected param's name
+  # from the error body and retrying (up to 4 rounds), so these are a
+  # fast-path, not the only line of defence.
+  supports_temperature: false        # this model only allows temperature=1 (its default)
+  supports_sampling_params: false    # this model rejects top_p / frequency_penalty / presence_penalty
+  use_max_completion_tokens: true    # this model rejects legacy 'max_tokens'
+  # Floor for max_completion_tokens (not a replacement for agents.*.max_tokens
+  # below). Reasoning models spend part of the budget on hidden reasoning
+  # before the visible answer, so a complex account can exhaust a small
+  # per-agent budget and come back empty. 0/blank disables the floor.
+  min_max_tokens: 3000
+  # Concurrent worker threads per pipeline stage for THIS provider. Built-in
+  # default (if omitted) is 2 for any non-local provider — raise it only
+  # after validating the gateway handles it with test_workbench_concurrency.py.
+  max_workers: 4
+  # Deployment ids are environment-specific -- fill these in your own
+  # config.yml (gitignored), not in this public example.
+  available_models: []
+    # - id: "<your-deployment-id>"
+    #   label: "GPT-5.5"
+
+# DashScope CN AI Workbench (OpenAI-compatible). Real hostname + key live only
+# in your gitignored config.yml — never commit them here. Probe with:
+#   python ad-hoc/workbench/test_dashscope_connectivity.py
+# default.ai_provider / default.model at the top of this file pick the one a
+# session starts on; every `kind: chat` entry below is offered in the sidebar.
+dashscope:
+  header_names: {}  # used only by the connectivity probe with auth: workbench
+  api_key: ""
+  api_base: ""            # e.g. https://<host>/aiworkbench/openAi/v1
+  auth: "bearer"          # bearer | workbench (probe only)
+  charge_code: ""
+  region_override: ""
+  chat_model: "dashscope_qwen3.7-max"
+  max_workers: 4
+  available_models:
+    - id: "dashscope_qwen3.7-max"
+      kind: chat
+      label: "Qwen3.7-Max"
+    - id: "dashscope_deepseek-v4-pro-0813"
+      kind: chat
+      label: "DeepSeek-V4-Pro"
+    - id: "kimi-k2.6_chat"
+      kind: chat
+      label: "Kimi-K2.6"
+      listed: false   # 2026-10-21: gateway answers "Access Denied" for this account -- hidden from the dropdown
+    - id: "dashscope_deepseek-v4-flash-0731"
+      kind: chat
+      label: "DeepSeek-V4-Flash"
+    - id: "text_v4_embedding"
+      kind: embedding
+      label: "Text-V4-Embedding"
+    - id: "qwen3_rerank"
+      kind: rerank
+      label: "Qwen3-Rerank"
+
+agents:
+  # allow_thinking: false sends enable_thinking=false to Qwen3 for structured
+  # stages (skips <think> for speed + clean JSON). Omit / true keeps thinking on.
+  1_Generator:
+    temperature: 0.6
+    max_tokens: 2000
+    top_p: 0.95
+    allow_thinking: true
+  2_Auditor:
+    temperature: 0.2
+    max_tokens: 2000
+    top_p: 0.8
+    allow_thinking: false
+    # workbench only — overrides workbench.reasoning_effort for this stage.
+    # Auditor's job (verification, no creative writing) needs less reasoning
+    # depth than Generator/Validator. Omit to inherit the global setting.
+    reasoning_effort: "low"
+  3_Refiner:
+    temperature: 0.5
+    max_tokens: 2000
+    top_p: 0.9
+    reduction_target_pct: 64
+  4_Validator:
+    temperature: 0.1
+    max_tokens: 2000
+    top_p: 0.8
+    allow_thinking: false
+    # Below this variance, a clause is immaterial and must NOT be flagged as
+    # reasoning/hallucination — tempers the "when in doubt, flag it" bias.
+    materiality_threshold_pct: 5
+
+processing:
+  # Cell styles (Excel indent / bold) of each tab, read straight from the .xlsx
+  # zip. Their only use is the indent-based roll-up check: an indented line
+  # whose parent already equals the sum of its children is treated as a
+  # breakdown of that parent rather than as a separate line. false skips the
+  # read entirely (a real databook once spent 20 minutes on it, before the
+  # read was rewritten on 2026-10-21) at the cost of that check.
+  read_cell_styles: true
+  data_format_for_ai: "json"
+  # Per-account example sentences from mappings.yml go into the Generator
+  # prompt. They were written when a much weaker local model needed a concrete
+  # template to imitate; an audit (inspect_mapping_patterns.py) found 57% are
+  # fill-in-the-blanks templates, which can constrain a capable model rather
+  # than guide it. Set false to generate WITHOUT them and compare, rather than
+  # arguing the point:
+  #   python inspect_databook_to_pptx.py --databook X --pptx Y --style-profile
+  #   python inspect_databook_to_pptx.py --databook X --pptx Y --check-claims
+  inject_mapping_patterns: true
+  # "open" replaces the per-account Generator templates (fixed opening, order,
+  # sentence count, mandatory dimensions) with one analyst brief, and tells the
+  # Auditor and Validator to keep marked inferences. See analysis_mode in
+  # prompts.yml. "guided" is "open" plus the account's old template handed over
+  # as reference for what to look at (its structure rules declared void).
+  # FDD_ANALYSIS_MODE=open|guided|standard overrides this for one run.
+  analysis_mode: guided      # default since 2026-10-15; "standard" = the old per-account templates
+  # An account with no figure in any period and no remark against it gets its
+  # one sentence from code instead of from the model (no request is made).
+  # false sends those accounts to the model as before.
+  deterministic_nil_accounts: true
+  # Cuts to what each request carries, for measuring what a current model
+  # still needs of prompts written for a much weaker one. Empty = every prompt
+  # exactly as before. Names (PromptEngine.PROMPT_TRIMS): dedupe_guidance,
+  # auditor_no_judgement, auditor_no_formatting, validator_no_style.
+  # FDD_PROMPT_TRIM=name,name in the environment overrides this for one run.
+  prompt_trim: []
+  # Input-token budget per LLM call. A 65-component account rendered past a
+  # 32,768-token provider limit three runs in a row and shipped no commentary.
+  # When the estimated prompt exceeds max_input_tokens - headroom_tokens, the
+  # smallest components are left out of what is SHOWN (never a rollup parent;
+  # never the three largest), the model is told how many and what they sum to,
+  # and that sum is grounded. Set max_input_tokens to your provider's limit;
+  # 0 disables. headroom covers the reply and estimation error.
+  prompt_budget:
+    max_input_tokens: 32768
+    headroom_tokens: 4096
+  # Keep each answer the model gives, keyed by the exact request (provider,
+  # model, both prompts, sampling parameters), and reuse it when the identical
+  # request comes round again -- which is most of a re-run of the same
+  # workbook. Anything that changes what is asked (a cell, an instruction, the
+  # model) is asked afresh; the verifier, repair and export always run again.
+  # Stored under fdd_utils/logs/response_cache/. FDD_RESPONSE_CACHE=0 in the
+  # environment forces fresh answers for one run without editing this file.
+  response_cache:
+    enabled: false
+    max_age_days: 30
+  debug_mode: false
+  feedback_loop:
+    enabled: true
+    max_retries: 2
+    unsupported_threshold: 0.3
+
+# Thresholds for _variance_analysis_guidance (ai.py) — the deterministic
+# movement/disproportion checks fed into the Generator+Auditor prompts.
+# Omitting this block (or any key in it) falls back to these same values,
+# so this section is documentation, not a required override.
+analysis:
+  variance_threshold_pct: 30   # an account's own period-over-period move at/above this is "material"
+  disproportion_gap_pp: 30     # percentage-point gap vs revenue growth that counts as disproportionate
+  max_extra_pairs: 2           # cap on how many EARLIER (non-latest) period pairs get a one-line mention
+
+logging:
+  suppress_http_logs: true
+
+pptx:
+  # Optional per-machine attribution; the public default is independent analysis.
+  source_labels: {}
+  # Table style GUID for generated BS/IS tables. Blank = auto-detect from any
+  # styled table already in the template (e.g. your UpSlide style). Find GUIDs
+  # with: python list_table_styles.py <file>.pptx
+  table_style_id: ""
+  presentation_tables:
+    # Renders a native PowerPoint table next to an account's commentary when
+    # workbook.py's extract_presentation_detail_table finds a report-ready
+    # breakdown on that account's sheet (e.g. 管理费用's 会计服务费/审计费/...).
+    # ON since 2026-08-17. It sat "off until verified against a real export"
+    # long enough that seven real entity decks went out with no per-account
+    # breakdown table at all, and the absence was reported as a rendering bug
+    # rather than a setting. An account with a table is pulled out of the
+    # normal commentary-packing pool and given a slot to itself (see
+    # _append_table_accounts_to_distribution) -- set false to compare.
+    # FDD_SUBTABLES=0/1 in the environment overrides whatever is here.
+    enabled: true
+    # Fewest components a breakdown must have before it is worth a table.
+    # Below this the lead-in sentence already names every one of them, so
+    # the table is pure repetition -- a real export drew a 2-row
+    # 管理费用 table under "主要包括管理费用-行政及管理层调整". 3 drops six
+    # of that deck's seventeen tables. Set 2 for the old behaviour.
+    min_rows: 3
+    # Tables in the WHOLE deck, both statements together (not per statement).
+    # Enforced by _select_deck_subtables before either statement is planned,
+    # since the per-statement planner runs BS first and cannot see the budget.
+    max_per_deck: 5
+    # Lines a drawn table shows above its total (2026-10-20). Past this the
+    # smallest lines are folded into one 其他/Others line, so the total still
+    # ties; children (indented drill-downs) go first. Adjustment lines are
+    # always kept. Roll-forward and grouped tables (原值/累计折旧/净值) are
+    # never folded. 0 = show every line the sheet has (the old behaviour).
+    max_rows: 8
+    # When more accounts qualify than max_per_deck allows, the INCOME
+    # STATEMENT is served first and the balance sheet takes what is left --
+    # a BS account's question is "how much", which the embedded BS grid
+    # already answers, while an IS account's is "made of what". This order is
+    # helpers._STATEMENT_PRIORITY and is strict: an income statement with 5
+    # qualifying accounts leaves the balance sheet none. inspect_databook's
+    # 3c prints every rejection, so check there before an expensive run.
+    #
+    # Within a statement, ranking falls to this list of mapping keys
+    # (mappings.yml, not sheet names); blank = helpers._TABLE_PRIORITY_DEFAULT.
+    # An account not listed still gets a table when there is room, ranked
+    # after the list by component count.
+    # priority: [OI, OC, Tax and Surcharges, GA, Selling cost, Fin Exp, NCA, AR]
+  commentary_packing:
+    # Client-font-aware line fitting. metrics json files are committed IN the repo
+    # (font_metrics/) so a deployment server needs no fonts installed at all.
+    # Regenerate with: python dump_font_metrics.py <font>.ttf > font_metrics/x.json
+    # (find the body font with: python detect_body_font.py template.pptx)
+    # Paths are repo-relative or absolute; blank = measure with the system font.
+    # Verify what's active with: python verify_font_calc.py
+    font_metrics_path_eng: "font_metrics/arial_eng.json"
+    font_metrics_path_chi: "font_metrics/msyh_chi.json"
+    font_family_eng: "Arial"          # system-font fallback family (EN)
+    font_family_chi: "Microsoft YaHei" # system-font fallback family (CN)

@@ -1,0 +1,462 @@
+from __future__ import annotations
+
+"""
+Run logging for the FDD AI pipeline.
+"""
+
+import json
+import logging
+import math
+import os
+from datetime import datetime
+from typing import Any, Dict, Iterable, List, Optional
+
+import yaml
+
+
+def coerce_plain(value: Any) -> Any:
+    """Recursively reduce a value to types json.dumps and yaml.dump can write.
+
+    Neither serializer has a sanitizer hook: hand ``yaml.dump`` a ``numpy.int64``
+    and it writes a ``!!python/object/apply`` tag; hand ``json.dumps`` one and it
+    raises ``TypeError`` — at the very END of a paid run, after every LLM call
+    has been spent. Everything that rides on ``results`` or on the audit log
+    passes through here first.
+
+    ``.item()`` is what catches the numpy scalars that are NOT Python subclasses
+    (``int64``, ``bool_``); ``float64`` and ``str_`` already are, and the
+    explicit ``int()``/``float()``/``str()`` calls strip them anyway. A
+    non-finite float becomes ``None``: NaN/Infinity are not legal JSON, and a
+    log line that cannot be parsed is worse than a missing number.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return bool(value)
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        number = float(value)
+        return number if math.isfinite(number) else None
+    if isinstance(value, str):
+        return str(value)
+    if isinstance(value, dict):
+        return {str(k): coerce_plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [coerce_plain(v) for v in value]
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return coerce_plain(item())
+        except Exception:
+            pass
+    return str(value)
+
+
+class PipelineRunLogger:
+    """Unified logger for an FDD AI processing run."""
+
+    def __init__(self, log_dir: str = "fdd_utils/logs", output_dir: str = "fdd_utils/output", debug_mode: bool = False):
+        self.log_dir = log_dir
+        self.output_dir = output_dir
+        self.debug_mode = debug_mode
+        os.makedirs(log_dir, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
+
+        self.run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.run_folder = os.path.join(log_dir, f"run_{self.run_id}")
+        os.makedirs(self.run_folder, exist_ok=True)
+
+        self.log_file = os.path.join(self.run_folder, "processing.log")
+        self.log_data_file = os.path.join(self.run_folder, "data.yml")
+        self.results_file = os.path.join(self.run_folder, "results.yml")
+        self.audit_file = os.path.join(self.run_folder, "audit.jsonl")
+
+        self.logger = logging.getLogger(f"ContentGeneration_{self.run_id}")
+        self.logger.setLevel(logging.DEBUG if debug_mode else logging.INFO)
+        self.logger.handlers = []
+        self.logger.propagate = False
+
+        file_handler = logging.FileHandler(self.log_file, encoding="utf-8")
+        file_handler.setLevel(logging.DEBUG)
+
+        formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
+
+        if debug_mode:
+            self.debug_log_file = os.path.join(self.run_folder, "debug.log")
+            debug_handler = logging.FileHandler(self.debug_log_file, encoding="utf-8")
+            debug_handler.setLevel(logging.DEBUG)
+            debug_handler.setFormatter(formatter)
+            self.logger.addHandler(debug_handler)
+
+        self.run_data: Dict[str, Any] = {
+            "run_id": self.run_id,
+            "start_time": datetime.now().isoformat(),
+            "debug_mode": debug_mode,
+            "agents_executed": [],
+            "processing_results": {},
+        }
+        self.logger.info("=== Started new AI processing run: %s (debug_mode=%s) ===", self.run_id, debug_mode)
+
+    def _display_name(self, agent_name: str) -> str:
+        names = {
+            "subagent_1": "Generator",
+            "subagent_2": "Auditor",
+            "subagent_3": "Refiner",
+            "subagent_4": "Validator",
+        }
+        return names.get(agent_name, agent_name)
+
+    def log_debug(self, category: str, mapping_key: str, message: str, data: Any = None) -> None:
+        if not self.debug_mode:
+            return
+        self.logger.debug("[DEBUG][%s] %s: %s", category, mapping_key, message)
+        if data is not None:
+            data_str = str(data)
+            if len(data_str) > 4000:
+                data_str = data_str[:4000] + "... [truncated]"
+            self.logger.debug("[DEBUG][%s] %s: DATA:\n%s", category, mapping_key, data_str)
+
+    def log_agent_start(self, agent_name: str, mapping_key: str):
+        self.logger.info("[%s] Processing: %s", self._display_name(agent_name), mapping_key)
+
+    def log_agent_complete(
+        self,
+        agent_name: str,
+        mapping_key: str,
+        result: Dict[str, Any],
+        system_prompt: str = "",
+        user_prompt: str = "",
+        prompt_context: Optional[Dict[str, Any]] = None,
+    ):
+        duration = result.get("duration", 0)
+        tokens = result.get("tokens_used", 0)
+        content = result.get("content", "")
+        prompt_length = result.get("prompt_length", len(system_prompt) + len(user_prompt))
+        output_length = result.get("output_length", len(content))
+        prompt_tokens = result.get("prompt_tokens")
+        completion_tokens = result.get("completion_tokens")
+        total_tokens = result.get("total_tokens")
+        estimated_prompt_tokens = result.get("estimated_prompt_tokens")
+        estimated_output_tokens = result.get("estimated_output_tokens")
+        expected_max_output_tokens = result.get("expected_max_output_tokens")
+        model = result.get("model") or "-"
+        model_type = result.get("model_type") or result.get("provider") or result.get("mode", "ai")
+        token_usage_source = result.get("token_usage_source", "unknown")
+
+        self.logger.info(
+            "[%s] Processed: %s | Duration: %.2fs | Model: %s/%s | Prompt chars: %s | Output chars: %s | Tokens used: %s | Prompt tokens: %s | Completion tokens: %s | Total tokens: %s | Estimated prompt tokens: %s | Estimated output tokens: %s | Expected max output tokens: %s | Token source: %s",
+            self._display_name(agent_name),
+            mapping_key,
+            duration,
+            model_type,
+            model,
+            prompt_length,
+            output_length,
+            tokens,
+            prompt_tokens if prompt_tokens is not None else "-",
+            completion_tokens if completion_tokens is not None else "-",
+            total_tokens if total_tokens is not None else "-",
+            estimated_prompt_tokens if estimated_prompt_tokens is not None else "-",
+            estimated_output_tokens if estimated_output_tokens is not None else "-",
+            expected_max_output_tokens if expected_max_output_tokens is not None else "-",
+            token_usage_source,
+        )
+
+        prompt_context = prompt_context or {}
+        rhs_summary = prompt_context.get("rhs_remark_summary") or []
+        supporting_notes = prompt_context.get("supporting_notes") or []
+        table_linked_remarks = prompt_context.get("table_linked_remarks") or []
+        user_comment = str(prompt_context.get("user_comment") or "").strip()
+        context_fragments = [
+            f"supporting_notes={len(supporting_notes)}",
+            f"rhs_rows={int(prompt_context.get('rhs_remark_count') or 0)}",
+            f"rhs_summary={len(rhs_summary)}",
+            f"table_linked_remarks={len(table_linked_remarks)}",
+        ]
+        if rhs_summary:
+            context_fragments.append(
+                "rhs_preview=" + " || ".join(str(item).strip() for item in rhs_summary[:3] if str(item).strip())
+            )
+        if user_comment:
+            context_fragments.append(f"user_comment={user_comment[:240]}")
+        if prompt_context.get("has_previous_output"):
+            context_fragments.append("reprompt_baseline=yes")
+        self.logger.info(
+            "[%s] Prompt context: %s | %s",
+            self._display_name(agent_name),
+            mapping_key,
+            " | ".join(fragment for fragment in context_fragments if fragment),
+        )
+
+        self.run_data["processing_results"].setdefault(mapping_key, {})
+        self.run_data["processing_results"][mapping_key][agent_name] = {
+            "duration": duration,
+            "tokens_used": tokens,
+            "mode": result.get("mode", "ai"),
+            "model_type": model_type,
+            "model": model,
+            "provider": result.get("provider", model_type),
+            "agent_name": result.get("agent_name", agent_name),
+            "language": result.get("language"),
+            "temperature": result.get("temperature"),
+            "max_tokens": result.get("max_tokens"),
+            "top_p": result.get("top_p"),
+            "frequency_penalty": result.get("frequency_penalty"),
+            "presence_penalty": result.get("presence_penalty"),
+            "timestamp": datetime.now().isoformat(),
+            "system_prompt": system_prompt or "",
+            "user_prompt": user_prompt or "",
+            "prompt_context": prompt_context or {},
+            "output": content,
+            "system_prompt_length": result.get("system_prompt_length", len(system_prompt)),
+            "user_prompt_length": result.get("user_prompt_length", len(user_prompt)),
+            "prompt_length": prompt_length,
+            "content_length": output_length,
+            "output_length": output_length,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "estimated_system_prompt_tokens": result.get("estimated_system_prompt_tokens"),
+            "estimated_user_prompt_tokens": result.get("estimated_user_prompt_tokens"),
+            "estimated_prompt_tokens": estimated_prompt_tokens,
+            "estimated_output_tokens": estimated_output_tokens,
+            "estimated_total_tokens": result.get("estimated_total_tokens"),
+            "expected_max_output_tokens": expected_max_output_tokens,
+            "token_usage_source": token_usage_source,
+            # Set only when response_cache answered: what the original call
+            # used, i.e. what this one did not spend.
+            "saved_prompt_tokens": result.get("saved_prompt_tokens"),
+            "saved_completion_tokens": result.get("saved_completion_tokens"),
+            # Prompt-cache counters, when the provider reports them. Prompt
+            # tokens are ~96% of spend here and both later stages send a
+            # byte-identical system prompt on every account, so whether any of
+            # that is being cached is the largest open question about cost --
+            # and until these land in the run log it cannot be answered from an
+            # archived run. None on providers that report nothing.
+            "cached_prompt_tokens": result.get("cached_prompt_tokens"),
+            "prompt_cache_hit_tokens": result.get("prompt_cache_hit_tokens"),
+            "prompt_cache_miss_tokens": result.get("prompt_cache_miss_tokens"),
+            "prompt_cache_hit_ratio": result.get("prompt_cache_hit_ratio"),
+        }
+
+    def checkpoint_stage(self, mapping_key: str, agent_name: str,
+                         account_result: Dict[str, Any], state_dict: Dict[str, Any],
+                         fingerprint: Optional[str] = None) -> None:
+        """Append one line to ``checkpoint.jsonl``: the account's result dict and
+        state AS THEY STAND after this stage was filed.
+
+        ``results`` and ``data.yml`` are written once, at finalize, so a run
+        that dies at the eighteenth account of the Auditor stage used to restart
+        from zero -- every Generator call paid again. Written on the main
+        thread only (the same rule phase transitions follow), after
+        _store_agent_result has filed the stage, so a line is never a
+        half-state. Appended, not rewritten: a die mid-append loses one line,
+        not the file. Never worth losing a run over."""
+        try:
+            path = os.path.join(self.run_folder, "checkpoint.jsonl")
+            record = coerce_plain({
+                "mapping_key": mapping_key,
+                "agent_name": agent_name,
+                "result": account_result,
+                "state": state_dict,
+                # evidence.frame_fingerprint of the account's data; a resume
+                # re-runs any account whose current data does not match it.
+                "fingerprint": fingerprint,
+            })
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except Exception as exc:  # pragma: no cover
+            self.logger.warning("[Checkpoint] %s/%s not written: %s", mapping_key, agent_name, exc)
+
+    @staticmethod
+    def read_checkpoints(run_folder: str) -> List[Dict[str, Any]]:
+        """Every complete line of a run's checkpoint.jsonl, in order. A
+        truncated last line (the run died mid-append) is skipped, not fatal."""
+        path = os.path.join(run_folder, "checkpoint.jsonl")
+        out: List[Dict[str, Any]] = []
+        if not os.path.exists(path):
+            return out
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    continue
+        return out
+
+    def write_audit_log(self, lines: Iterable[Dict[str, Any]]) -> str:
+        """Write ``audit.jsonl`` — one line per account, each line that
+        account's STATE PATH.
+
+        Deliberately not a dump of the final dict. A dump answers "what did
+        this account end up as"; the question a reviewer actually has is "why
+        did it end up like this", and only the ordered transitions with their
+        causes answer that. ``data.yml``/``results.yml`` already hold the
+        contents, so nothing here repeats them beyond the counts a path needs
+        to be readable on its own.
+
+        JSONL rather than one JSON document so a run that dies mid-write still
+        leaves every completed account readable, and so ``grep``/``jq`` can
+        walk it a line at a time. Every value goes through ``coerce_plain``.
+        """
+        with open(self.audit_file, "w", encoding="utf-8") as file:
+            for line in lines:
+                file.write(json.dumps(coerce_plain(line), ensure_ascii=False, sort_keys=True))
+                file.write("\n")
+        return self.audit_file
+
+    def log_error(self, agent_name: str, mapping_key: str, error: Exception):
+        self.logger.error("[%s] Error processing %s: %s", self._display_name(agent_name), mapping_key, error)
+        self.run_data["processing_results"].setdefault(mapping_key, {})
+        self.run_data["processing_results"][mapping_key][agent_name] = {
+            "error": str(error),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    def finalize(self, results: Optional[Dict[str, Dict[str, str]]] = None):
+        self.run_data["end_time"] = datetime.now().isoformat()
+
+        total_duration = 0
+        total_tokens = 0
+        total_items = len(self.run_data["processing_results"])
+
+        for _key, agents in self.run_data["processing_results"].items():
+            for _agent, data in agents.items():
+                total_duration += data.get("duration", 0)
+                total_tokens += data.get("tokens_used", 0)
+
+        self.run_data["summary"] = {
+            "total_items_processed": total_items,
+            "total_duration_seconds": total_duration,
+            "total_tokens_used": total_tokens,
+            "total_prompt_length_chars": sum(
+                (data.get("prompt_length", 0) or 0)
+                for agents in self.run_data["processing_results"].values()
+                for data in agents.values()
+            ),
+            "total_output_length_chars": sum(
+                (data.get("output_length", data.get("content_length", 0)) or 0)
+                for agents in self.run_data["processing_results"].values()
+                for data in agents.values()
+            ),
+            "total_estimated_prompt_tokens": sum(
+                (data.get("estimated_prompt_tokens", 0) or 0)
+                for agents in self.run_data["processing_results"].values()
+                for data in agents.values()
+            ),
+            "total_estimated_output_tokens": sum(
+                (data.get("estimated_output_tokens", 0) or 0)
+                for agents in self.run_data["processing_results"].values()
+                for data in agents.values()
+            ),
+            "agents_used": list(
+                {
+                    agent
+                    for agents in self.run_data["processing_results"].values()
+                    for agent in agents.keys()
+                }
+            ),
+        }
+
+        with open(self.log_data_file, "w", encoding="utf-8") as file:
+            yaml.dump(self.run_data, file, default_flow_style=False, allow_unicode=True)
+
+        if results:
+            with open(self.results_file, "w", encoding="utf-8") as file:
+                yaml.dump(results, file, default_flow_style=False, allow_unicode=True)
+            try:
+                with open(os.path.join(self.run_folder, "summary.txt"), "w", encoding="utf-8") as file:
+                    file.write(render_run_summary(results, run_id=self.run_id))
+            except Exception as exc:  # a summary must never cost the run its results
+                self.logger.warning("summary.txt not written: %s", exc)
+
+        self.logger.info("=== Completed AI processing run: %s ===", self.run_id)
+        self.logger.info(
+            "Summary: %s items, %.2fs, %s tokens",
+            total_items,
+            total_duration,
+            total_tokens,
+        )
+def _short(text: Any, limit: int) -> str:
+    body = " ".join(str(text or "").split())
+    return body if len(body) <= limit else body[: limit - 1] + "…"
+
+
+def render_run_summary(results: Dict[str, Any], *, run_id: str = "") -> str:
+    """The run as a reviewer reads it: one block per account, nothing repeated.
+
+    results.yml stays the complete record every tool in ad-hoc/workbench reads.
+    It is also several thousand lines for one entity -- every stage's text,
+    every retry's text, the Validator's raw JSON, a verdict for every comma --
+    and it is what got pasted back for review. This is the part a person
+    needs: the shipped text and its length, what was flagged (grouped, since
+    one verdict covers several pieces of a sentence), what was retried or
+    patched, and the run's health. Written next to results.yml as summary.txt.
+    """
+    out: List[str] = []
+    run = results.get("__run__") if isinstance(results.get("__run__"), dict) else {}
+    health = results.get("__run_health__") if isinstance(results.get("__run_health__"), dict) else {}
+    state_accounts = ((run.get("state") or {}).get("accounts") or {}) if isinstance(run, dict) else {}
+    accounts = [k for k, v in results.items() if isinstance(v, dict) and not str(k).startswith("__")]
+
+    out.append(f"RUN {run_id}  accounts {len(accounts)}  calls ok {health.get('calls_succeeded', '?')} / "
+               f"failed {health.get('calls_failed', '?')}  safe_to_export {health.get('safe_to_export', '?')}")
+    codes = run.get("defect_codes") or {}
+    if codes:
+        out.append("flags: " + ", ".join(f"{k} {v}" for k, v in sorted(codes.items(), key=lambda kv: -kv[1])))
+    failed = [e for e in ((run.get("facts") or {}).get("links") or [])
+              if isinstance(e, dict) and e.get("passed") is False]
+    for edge in failed:
+        evidence = edge.get("evidence") or {}
+        detail = evidence.get("outside_band") or evidence.get("differing_periods") or ""
+        out.append(f"check failed: {edge.get('kind')} {edge.get('source')} -> {edge.get('target')} {detail}")
+    if health.get("first_failure"):
+        out.append(f"first failure: {_short(health.get('first_failure'), 200)}")
+
+    for key in sorted(accounts):
+        entry = results[key]
+        final = str(entry.get("final") or entry.get("subagent_4") or entry.get("subagent_2")
+                    or entry.get("subagent_1") or "")
+        state = state_accounts.get(key) if isinstance(state_accounts.get(key), dict) else {}
+        head = [str(state.get("phase") or "?"), f"{len(final)}字"]
+        # Which stage the length came from: the Generator wrote it, the Auditor
+        # was meant to trim it, the Validator should leave it alone.
+        stages = [(label, len(str(entry.get(field) or ""))) for label, field in
+                  (("G", "subagent_1"), ("A", "subagent_2"), ("V", "subagent_4")) if entry.get(field)]
+        if len(stages) > 1:
+            head.append(" → ".join(f"{label} {n}" for label, n in stages))
+        retries = entry.get("feedback_retries")
+        if retries:
+            chosen = (entry.get("feedback_arbiter") or {}).get("chosen")
+            head.append(f"{retries} retries, kept {chosen}" if chosen else f"{retries} retries")
+        reviews = ((entry.get("agent_4_validation") or {}).get("clause_reviews") or [])
+        flagged = [r for r in reviews if isinstance(r, dict) and not r.get("supported")]
+        if flagged:
+            head.append(f"{len(flagged)} flagged piece(s)")
+        out.append("")
+        out.append(f"== {key}  [{', '.join(head)}]")
+        out.append(final.strip())
+        groups: Dict[tuple, List[str]] = {}
+        for review in flagged:
+            group = (str(review.get("category") or ""), str(review.get("code") or ""), str(review.get("reason") or ""))
+            groups.setdefault(group, []).append(str(review.get("clause") or "").strip())
+        for (category, code, reason), clauses in groups.items():
+            out.append(f"  ✗ {category} {code}: 「{_short(''.join(clauses), 120)}」")
+            out.append(f"      {_short(reason, 160)}")
+        for repair in entry.get("repair_log") or []:
+            if isinstance(repair, dict):
+                verdict = "ok" if repair.get("verified") else f"failed ({_short(repair.get('reason'), 60)})"
+                out.append(f"  ~ repair {repair.get('code')} {verdict}")
+        if entry.get("remainder_patch"):
+            out.append(f"  ~ remainder patched: {entry.get('remainder_patch')}")
+    out.append("")
+    return "\n".join(out)
+
+
+# --- end ai/logging.py ---
