@@ -212,8 +212,8 @@ class Persistence(unittest.TestCase):
         work.ask("应收账款期末余额是多少？")
         work.report("把这段放入报告")
         self.assertEqual((share["ref"], movement["ref"]), ("D1", "D2"))
-        mode = stat.S_IMODE(os.stat(path).st_mode)
-        self.assertEqual(mode, 0o600)
+        if os.name != "nt":                                                    # Windows has no owner-only mode bits; the file takes the folder's ACL
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
         saved = json.load(open(path, encoding="utf-8"))
         self.assertNotIn("api_key", json.dumps(saved))
         resumed = self.open_with(self.fresh_load(), path)

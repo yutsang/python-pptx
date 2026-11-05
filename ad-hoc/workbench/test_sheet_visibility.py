@@ -139,7 +139,7 @@ class CliExplicitAndRollup(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = make_book(tmp, Data="visible", Financials="hidden")
             run = subprocess.run([sys.executable, "-X", "utf8", str(ROOT / "inspect_databook.py"), path, "--sheet", "Financials"],
-                                 capture_output=True, text=True, cwd=str(ROOT), timeout=240, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+                                 capture_output=True, encoding="utf-8", errors="replace", cwd=str(ROOT), timeout=240, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
             self.assertIn("is hidden", run.stdout + run.stderr)
             self.assertNotIn("Traceback", run.stderr)
 

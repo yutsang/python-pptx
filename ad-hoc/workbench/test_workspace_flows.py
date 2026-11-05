@@ -453,7 +453,7 @@ class ChatCli(unittest.TestCase):
         Path(script).write_text(json.dumps(replies, ensure_ascii=False), encoding="utf-8")
         typed = f"{key}的期末余额是多少？\n把这段放入报告\n/candidates\n/export {deck}\n/status\n/quit\n"
         run = subprocess.run([sys.executable, "-X", "utf8", str(ROOT / "fdd_agent.py"), "chat", work, "--base-run", BASE_RUN, "--session", session_file,
-                              "--scripted", script, "--max-model-calls", "5"], input=typed, capture_output=True, text=True, cwd=str(ROOT), timeout=900,
+                              "--scripted", script, "--max-model-calls", "5"], input=typed, capture_output=True, encoding="utf-8", errors="replace", cwd=str(ROOT), timeout=900,
                              env=dict(os.environ, FDD_AGENT="1", PYTHONIOENCODING="utf-8"))
         out = run.stdout
         self.assertEqual(run.returncode, 0, run.stderr[-600:] + out[-600:])
@@ -464,9 +464,10 @@ class ChatCli(unittest.TestCase):
         self.assertTrue(os.path.exists(deck) or any(p.startswith("cli_out") for p in os.listdir(_STATE["tmp"])), out[-800:])
         self.assertIn("model calls 2", out)                                  # the two scripted replies, nothing else
         self.assertTrue(os.path.exists(session_file))
-        self.assertEqual(oct(os.stat(session_file).st_mode & 0o777), "0o600")
+        if os.name != "nt":                                                    # Windows has no owner-only mode bits
+            self.assertEqual(oct(os.stat(session_file).st_mode & 0o777), "0o600")
         shown = subprocess.run([sys.executable, "-X", "utf8", str(ROOT / "fdd_agent.py"), "session", "show", session_file],
-                               capture_output=True, text=True, cwd=str(ROOT), env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+                               capture_output=True, encoding="utf-8", errors="replace", cwd=str(ROOT), env=dict(os.environ, PYTHONIOENCODING="utf-8"))
         self.assertIn("promote", shown.stdout)
         self.assertIn("accepted", shown.stdout)
         self.assertIn("workbook was not loaded", shown.stdout)

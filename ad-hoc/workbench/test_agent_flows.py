@@ -51,7 +51,7 @@ def setUpModule():
     os.chdir(ROOT)
     before = set(p.name for p in (ROOT / "fdd_utils" / "logs").glob("run_*"))
     subprocess.run([sys.executable, "-X", "utf8", str(HERE / "stub_inspect_run.py"), WORKBOOK, "--limit", "6"],
-                   capture_output=True, text=True, timeout=600, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
+                   capture_output=True, encoding="utf-8", errors="replace", timeout=600, env=dict(os.environ, PYTHONIOENCODING="utf-8"))
     new = sorted(set(p.name for p in (ROOT / "fdd_utils" / "logs").glob("run_*")) - before)
     _STATE["base_run"] = new[-1] if new else None
     _STATE["tmp"] = tempfile.mkdtemp(prefix="agent_flows_")

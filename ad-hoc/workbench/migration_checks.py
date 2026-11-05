@@ -21,6 +21,7 @@ import argparse
 import importlib.util
 import json
 import subprocess
+import os
 import sys
 import time
 import unittest
@@ -55,9 +56,9 @@ SUITES = [
 def _revision() -> str:
     try:
         out = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"],
-                             capture_output=True, text=True, timeout=5)
+                             capture_output=True, encoding="utf-8", errors="replace", timeout=5)
         dirty = subprocess.run(["git", "-C", str(ROOT), "status", "--porcelain"],
-                               capture_output=True, text=True, timeout=5).stdout.strip()
+                               capture_output=True, encoding="utf-8", errors="replace", timeout=5).stdout.strip()
         return out.stdout.strip() + ("+dirty" if dirty else "")
     except Exception:
         return "unknown"
@@ -79,7 +80,8 @@ def run_suite(name: str, module=None) -> dict:
     if module is None:
         return {"suite": name, "status": "MISSING", "tests": 0, "failures": [], "errors": [], "seconds": 0.0}
     suite = unittest.defaultTestLoader.loadTestsFromModule(module)
-    stream = open("/dev/null", "w") if sys.platform != "win32" else open("NUL", "w")
+    # utf-8 on purpose: the default is the Windows code page (cp1252), which cannot hold the Chinese in a failure message and would crash the runner
+    stream = open(os.devnull, "w", encoding="utf-8", errors="replace")
     started = time.perf_counter()
     result = unittest.TextTestRunner(stream=stream, verbosity=0).run(suite)
     stream.close()
