@@ -297,6 +297,28 @@ def deep_check(databook: str, folder: Path, identity: Optional[Dict[str, Any]], 
         return {"status": "error", "reasons": [f"the proof could not be run: {type(exc).__name__}: {str(exc)[:200]}"], "accounts": {}}
 
 
+def prove_runs(databook: str, folders: List[Path], entity: str = "", sheet: Optional[str] = None, financials_from: Optional[str] = None,
+               financials_sheet: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    """{run folder name: the agent path's own check} for runs that have no identity file, each against the workbook as it reads now.
+    The workbook is read ONCE; each run then costs a comparison of its per-account data fingerprints. No model. Only 'verified' (every
+    account's data equals its fingerprint) can pair a run with the databook."""
+    out: Dict[str, Dict[str, Any]] = {}
+    try:
+        from fdd_utils.agent.session import SourceSession, check_base_run
+        from fdd_utils.run_identity import load_run
+        session = SourceSession.load(databook, entity=entity or "", sheet=sheet, financials_from=financials_from or None,
+                                     financials_sheet=financials_sheet or None)
+        for folder in folders:
+            try:
+                out[folder.name] = check_base_run(load_run(folder), session.dfs, {})
+            except Exception as exc:                            # noqa: BLE001
+                out[folder.name] = {"status": "error", "reasons": [f"{type(exc).__name__}: {str(exc)[:160]}"], "accounts": {}}
+    except Exception as exc:                                    # noqa: BLE001
+        for folder in folders:
+            out[folder.name] = {"status": "error", "reasons": [f"the proof could not be run: {type(exc).__name__}: {str(exc)[:200]}"], "accounts": {}}
+    return out
+
+
 # ---------------------------------------------------------------------------------------------------------------------------
 # secrets
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -406,17 +428,36 @@ def build_plan(args: argparse.Namespace, *, config: Optional[Dict[str, Any]] = N
             problems.append("the run named on the command line has no results.yml")
     else:
         paired = []
+
+        def consider(folder: Path, ident: Optional[Dict[str, Any]]) -> None:
+            start, end = run_window(folder)
+            rows = ledger_rows(Path(args.ledger), {databook.name, (ident or {}).get("workbook")}, start, end) if Path(args.ledger).exists() else []
+            kind = run_kind(folder, rows)
+            try:
+                n = len([k for k in load_results(folder) if not str(k).startswith("__")])
+            except Exception:                                   # noqa: BLE001
+                n = 0
+            paired.append({"folder": folder, "identity": ident, "kind": kind, "accounts": n, "time": parse_run_time(folder) or 0.0})
+
         for folder in runs:
             ok, ident, _ = identity_matches(folder, search_sha, fin_sha)
             if ok:
-                start, end = run_window(folder)
-                rows = ledger_rows(Path(args.ledger), {databook.name, (ident or {}).get("workbook")}, start, end) if Path(args.ledger).exists() else []
-                kind = run_kind(folder, rows)
-                try:
-                    n = len([k for k in load_results(folder) if not str(k).startswith("__")])
-                except Exception:                               # noqa: BLE001
-                    n = 0
-                paired.append({"folder": folder, "identity": ident, "kind": kind, "accounts": n, "time": parse_run_time(folder) or 0.0})
+                consider(folder, ident)
+        tried, closest = 0, ""
+        if not paired and args.deep:
+            # no identity file names these bytes: runs written before identity files existed can still be tied to the workbook by the data
+            # fingerprint of every account, which is the same proof --run asks for. A run that fails it is never offered.
+            loose = [f for f in runs if not (f / "run_identity.json").exists()]
+            tried = len(loose)
+            checks = prove_runs(str(databook), loose, args.entity or "", args.sheet, args.financials_from, args.financials_sheet) if loose else {}
+            for folder in loose:
+                if (checks.get(folder.name) or {}).get("status") == "verified":
+                    consider(folder, None)
+            near = [(c.get("accounts") or {}, name) for name, c in checks.items() if (c.get("accounts") or {}).get("in_run")]
+            if near and not paired:
+                acc, name = max(near, key=lambda t: (t[0].get("matched", 0) / t[0]["in_run"], t[0]["in_run"]))
+                closest = (f" The closest was {name}: {acc.get('matched', 0)} of its {acc['in_run']} accounts match the workbook as it reads now; "
+                           "the rest differ (the workbook was edited, or the extraction code changed since that run).")
         # a real run first, then the one with the most accounts, then the newest
         order = {"real": 0, "unknown": 1, "stub-like": 2}
         paired.sort(key=lambda p: (order.get(p["kind"], 1), -p["accounts"], -p["time"]))
@@ -427,8 +468,10 @@ def build_plan(args: argparse.Namespace, *, config: Optional[Dict[str, Any]] = N
                 problems.append("the only run that names this databook looks like a stub run (every account carries the same commentary); "
                                 "it is not a model baseline")
         else:
-            problems.append(f"no archived run names this databook's hash ({search_sha[:8]}): {len(runs)} run folder(s) were looked at. A run made from a "
-                            "different copy of the file (re-saved, rebuilt from a text export, a demo copy) cannot stand in for it")
+            problems.append(f"no archived run names this databook's hash ({search_sha[:8]}): {len(runs)} run folder(s) were looked at"
+                            + (f"; {tried} without an identity file were also tried against the workbook's per-account data fingerprints and none matched every account"
+                               if tried else "") + closest
+                            + ". A run made from a different copy of the file (re-saved, rebuilt from a text export, a demo copy) cannot stand in for it")
     if chosen is None:
         need("the archived run for this databook", "the commentary, the evidence and the fingerprints that say which workbook it describes",
              "to see what each archived run can prove about this file: add --explain-runs (writes nothing). On the machine that ran the AI pass: "

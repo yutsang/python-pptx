@@ -187,6 +187,53 @@ class Pairing(unittest.TestCase):
             plan = w.plan("--run", "run_20260101_100000", deep=True)
         self.assertEqual((plan["status"], plan["proof"]["kind"]), ("complete" if not plan["missing"] else "usable_with_gaps", "fingerprints"))
 
+    def test_runs_without_an_identity_file_are_tried_by_fingerprint_and_only_a_verified_one_pairs(self):
+        w = World(identity=False)
+        import shutil
+        other = w.logs / "run_20260102_100000"
+        shutil.copytree(w.run, other)
+        seen = {}
+
+        def prove(databook, folders, *a, **k):
+            seen["folders"] = sorted(f.name for f in folders)
+            return {"run_20260101_100000": {"status": "verified", "reasons": [], "accounts": {"in_run": 3, "matched": 3}},
+                    "run_20260102_100000": {"status": "edited_since", "reasons": ["account data differs from the run's: AR"], "accounts": {}}}
+        with mock.patch.object(B, "prove_runs", prove), \
+                mock.patch.object(B, "deep_check", lambda *a, **k: {"status": "verified", "reasons": [], "accounts": {"in_run": 3, "matched": 3}}):
+            plan = w.plan(deep=True)
+        self.assertEqual(seen["folders"], ["run_20260101_100000", "run_20260102_100000"])
+        self.assertEqual(plan["run"]["id"], "run_20260101_100000")
+        self.assertEqual(plan["proof"]["kind"], "fingerprints")
+        self.assertEqual(plan["alternatives"], [])                          # the one that failed the proof is not offered as an alternative
+
+    def test_when_no_run_passes_the_fingerprint_proof_nothing_is_paired_and_it_says_how_many_were_tried(self):
+        w = World(identity=False)
+        partial = {"run_20260101_100000": {"status": "edited_since", "reasons": ["x"], "accounts": {"in_run": 27, "matched": 16, "changed": ["AR"]}}}
+        with mock.patch.object(B, "prove_runs", lambda *a, **k: partial):
+            plan = w.plan(deep=True)
+        self.assertEqual(plan["status"], "not_a_baseline")
+        self.assertTrue(any("1 without an identity file were also tried" in p for p in plan["problems"]), plan["problems"])
+        self.assertTrue(any("16 of its 27 accounts match" in p for p in plan["problems"]), plan["problems"])      # how close, so it is not a bare no
+
+    def test_without_the_deep_proof_no_run_is_ever_paired_by_fingerprint(self):
+        w = World(identity=False)
+        with mock.patch.object(B, "prove_runs", side_effect=AssertionError("must not be called")):
+            plan = w.plan()                                                  # --no-deep
+        self.assertEqual(plan["status"], "not_a_baseline")
+
+    def test_a_run_whose_identity_names_other_bytes_is_not_rescued_by_the_fingerprint_route(self):
+        w = World()
+        w.book.write_bytes(b"saved again, other bytes")
+        seen = {}
+
+        def prove(databook, folders, *a, **k):
+            seen["folders"] = [f.name for f in folders]
+            return {}
+        with mock.patch.object(B, "prove_runs", prove):
+            plan = w.plan(deep=True)
+        self.assertNotIn("folders", seen)                                   # it has an identity file, and that file says another databook: nothing to try
+        self.assertEqual(plan["status"], "not_a_baseline")
+
     def test_several_runs_naming_the_databook_pick_a_real_run_with_most_accounts_and_list_the_rest(self):
         w = World()
         import shutil
