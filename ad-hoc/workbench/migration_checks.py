@@ -46,6 +46,7 @@ SUITES = [
     "test_baseline_pack",
     "test_text_transfer",
     "test_databook_dump",
+    "test_extract_private_settings",
     "test_agent_panel",
     "test_workspace_flows",      # real workbook + archived run named by FDD_FLOW_WORKBOOK / FDD_FLOW_BASE_RUN; skipped without them
 ]
