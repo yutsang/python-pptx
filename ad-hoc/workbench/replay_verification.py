@@ -145,7 +145,7 @@ def build_dfs(databook: str, entity: str, sheet: Optional[str]) -> Dict[str, Any
     """
     if sheet is None:
         import inspect_databook  # heavy, and only needed when the sheet is not given
-        found = inspect_databook._resolve_financials_sheets(pd.ExcelFile(databook))
+        found = inspect_databook._resolve_financials_sheets(pd.ExcelFile(databook), databook)
         sheet = found[0] if found else None
     state = process_workbook_data(
         temp_path=databook, entity_name=entity, selected_sheet=sheet, debug=False,

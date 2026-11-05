@@ -80,7 +80,8 @@ def _adjustment_cells(digest: Optional[Dict[str, Any]]) -> List[Tuple[str, Dict[
         if cached_digest is digest:
             return index
     index = []
-    for name, entry in ((digest or {}).get("sheets") or {}).items():
+    from .digest import visible_sheets
+    for name, entry in visible_sheets(digest).items():
         if entry.get("status") == "financials":
             continue
         cells = entry.get("cells") or {}
@@ -122,7 +123,8 @@ def adjustment_entries(digest: Optional[Dict[str, Any]], gap: float, period: str
     no column labels (an adjustment register), the row's own text. It states
     positions and labels; it concludes nothing.
     """
-    sheets = (digest or {}).get("sheets") or {}
+    from .digest import visible_sheets
+    sheets = visible_sheets(digest)
     if abs(gap) < 1000 or not sheets:
         return []
     year = str(period)[:4]
@@ -347,7 +349,8 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
     Returns {"lines": [...], "values": [元, ...]}; values feed the grounding
     pool so a figure the model quotes from here is not called invented.
     """
-    sheets = (digest or {}).get("sheets") or {}
+    from .digest import visible_sheets
+    sheets = visible_sheets(digest)
     lines: List[str] = []
     values: List[float] = []
     if not sheets or not account:

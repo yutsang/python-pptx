@@ -270,6 +270,20 @@ def build_workbook_digest(
     }
 
 
+def visible_sheets(digest: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """The digest's sheets without the hidden ones.
+
+    A hidden tab is a working copy, an old version or a scratch sheet; nothing
+    read from it is offered as evidence. Every reader that turns a digest cell
+    into an adjustment entry, a supporting-schedule tie-out or a figure a person
+    is shown goes through this, so "hidden sheets are not evidence" is one
+    rule with one implementation. (The digest itself still indexes them: the
+    coverage ledger has to be able to say they exist and nothing read them.)
+    """
+    return {name: entry for name, entry in ((digest or {}).get("sheets") or {}).items()
+            if isinstance(entry, dict) and not entry.get("hidden")}
+
+
 def _rows_of(frame: Any, row_key: str) -> set:
     if frame is None or row_key not in getattr(frame, "columns", []):
         return set()

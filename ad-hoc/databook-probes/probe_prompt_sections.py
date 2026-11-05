@@ -291,7 +291,7 @@ def _feed_frames(path, feed, entity, sheet):
     import inspect_databook
 
     if sheet is None:
-        found = inspect_databook._resolve_financials_sheets(pd.ExcelFile(path))
+        found = inspect_databook._resolve_financials_sheets(pd.ExcelFile(path), path)
         sheet = found[0] if found else None
     state = process_workbook_data(temp_path=path, entity_name=entity, selected_sheet=sheet, debug=False)
     language = state.get("language") or "Eng"

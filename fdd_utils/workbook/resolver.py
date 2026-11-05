@@ -291,7 +291,7 @@ def _pick_financial_summary_sheet(profiles: Dict[str, Dict[str, Any]]) -> Option
     summary_candidates = [
         (sheet_name, profile)
         for sheet_name, profile in profiles.items()
-        if profile.get("sheet_kind") == "financial_summary"
+        if profile.get("sheet_kind") == "financial_summary" and not profile.get("is_hidden")   # a hidden sheet is not the reference
     ]
     if not summary_candidates:
         return None

@@ -6,6 +6,7 @@ Combines extraction, reconciliation, AI generation, and PPTX export
 
 import streamlit as st
 import io
+import json
 import logging
 import os
 import re
@@ -816,10 +817,18 @@ def render_batch_processing_section():
                     combined_name = re.sub(
                         r"[^\w\-]", "_", str(st.session_state.get("batch_combined_filename") or "")
                     ).strip("_") or "Batch_Combined"
+                    from fdd_utils.delivery import DeliveryDecision, banner as _delivery_banner, labelled_path
+                    _combined_decision = DeliveryDecision.from_dict(st.session_state.get("batch_combined_delivery") or {})
+                    if not st.session_state.get("batch_combined_delivery"):
+                        from fdd_utils.delivery import unassessed_decision
+                        _combined_decision = unassessed_decision()
+                    if _combined_decision.status != "ready":
+                        (st.error if _combined_decision.status == "blocked" else st.warning)(
+                            _delivery_banner(_combined_decision, limit=6).replace("\n", "\n\n"))
                     st.download_button(
                         label=f"⬇️ Download Combined PPTX ({len(processed_order)} entities)",
                         data=combined_data,
-                        file_name=f"{combined_name}_{batch_timestamp}.pptx",
+                        file_name=os.path.basename(labelled_path(f"{combined_name}_{batch_timestamp}.pptx", _combined_decision)),
                         mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                         use_container_width=True,
                         key="batch_download_combined",
@@ -1013,6 +1022,9 @@ def render_batch_processing_section():
                         pptx_filename = bundle.get("pptx_download_filename")
                         if pptx_bytes and pptx_filename:
                             zip_file.writestr(pptx_filename, pptx_bytes)
+                            if bundle.get("delivery_decision"):
+                                zip_file.writestr(pptx_filename + ".delivery.json",
+                                                  json.dumps(bundle["delivery_decision"], ensure_ascii=False, indent=2))
                 st.session_state.batch_zip_data = zip_buffer.getvalue()
 
                 if len(processed_order) > 1:
@@ -1023,8 +1035,14 @@ def render_batch_processing_section():
                         if entity_cache.get(name, {}).get("pptx_download_data")
                     ]
                     try:
+                        from fdd_utils.delivery import combine_decisions
+                        combined_decision = combine_decisions(
+                            (name, entity_cache.get(name, {}).get("delivery_decision"))
+                            for name in processed_order
+                            if entity_cache.get(name, {}).get("pptx_download_data"))
+                        st.session_state.batch_combined_delivery = combined_decision.to_dict()
                         combined_buffer = io.BytesIO()
-                        combine_presentations(sources, combined_buffer)
+                        combine_presentations(sources, combined_buffer, decision=combined_decision)
                         st.session_state.batch_combined_pptx = combined_buffer.getvalue()
                     except Exception as exc:
                         logger.warning("Batch combine failed: %s", exc)

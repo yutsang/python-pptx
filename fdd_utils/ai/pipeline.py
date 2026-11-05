@@ -1510,6 +1510,7 @@ def _process_single_agent_item(
                         graph_facts=(run_state.facts if run_state is not None else None),
                         account_brief=(run_state.briefs.get(mapping_key)
                                        if run_state is not None else None),
+                        digest=(run_state.profile if run_state is not None else None),
                     )
                     source = evidence_built.source_index()
                 reviews = verify_commentary(
@@ -2800,6 +2801,7 @@ def _apply_deterministic_verification(
                     graph_facts=(run_state.facts if run_state is not None else None),
                     account_brief=(run_state.briefs.get(key)
                                    if run_state is not None else None),
+                    digest=(run_state.profile if run_state is not None else None),
                 )
                 if run_state is not None:
                     run_state.evidence[key] = built

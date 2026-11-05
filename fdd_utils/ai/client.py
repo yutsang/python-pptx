@@ -238,6 +238,17 @@ class AIClient:
             'prompt_cache_miss_tokens': getattr(usage, 'prompt_cache_miss_tokens', None),
         }
 
+    @staticmethod
+    def _read_reasoning_tokens(usage: Any) -> Optional[int]:
+        """Tokens the model spent thinking, where the provider says so (OpenAI-style `completion_tokens_details.
+        reasoning_tokens`). They are already inside completion_tokens and billed as such; this only makes them visible,
+        so a thinking model's cost is not read as long answers. None when the provider does not report it."""
+        if usage is None:
+            return None
+        details = getattr(usage, 'completion_tokens_details', None)
+        value = details.get('reasoning_tokens') if isinstance(details, dict) else getattr(details, 'reasoning_tokens', None)
+        return int(value) if isinstance(value, (int, float)) else None
+
     # CJK ideographs plus the fullwidth/CJK punctuation blocks that Chinese
     # prompts are full of (，。（）：《》 and the fullwidth digits).
     _CJK_CHAR_RE = _re_client.compile(
@@ -523,6 +534,7 @@ class AIClient:
                 completion_tokens=payload.get("completion_tokens"),
                 total_tokens=payload.get("total_tokens"),
                 cached_prompt_tokens=payload.get("cached_prompt_tokens") or payload.get("prompt_cache_hit_tokens"),
+                reasoning_tokens=payload.get("reasoning_tokens"),
                 estimated_prompt_tokens=payload.get("estimated_prompt_tokens"),
                 estimated_output_tokens=payload.get("estimated_output_tokens"),
                 token_source=payload.get("token_usage_source"),
@@ -873,6 +885,7 @@ class AIClient:
                     **cache_usage,
                 )
             )
+            response_payload["reasoning_tokens"] = self._read_reasoning_tokens(usage)
             response_payload["temperature"] = temperature
             response_payload["max_tokens"] = max_tokens
             response_payload["top_p"] = top_p

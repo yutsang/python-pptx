@@ -2296,8 +2296,14 @@ def run_ai_checks(
     has_reconciliation_data = bool(
         (bs_recon is not None and not bs_recon.empty) or (is_recon is not None and not is_recon.empty)
     )
+    from fdd_utils.ui import explain_reconciliation_selection
+    from fdd_utils.workbook.selection import selection_without_financials
     if has_reconciliation_data:
-        mapping_keys = derive_reconciliation_matched_keys((bs_recon, is_recon), dfs.keys(), None, dfs=dfs)
+        selection_record = explain_reconciliation_selection((bs_recon, is_recon), dfs.keys(), None, dfs=dfs)
+        mapping_keys = selection_record.admitted_keys
+        for _d in selection_record.excluded:
+            if _d.reason != "no_activity":
+                print(f"   not sent to AI: {_d.key} -- {_d.reason}: {_d.detail}")
         if not mapping_keys:
             print(
                 "❌ No accounts passed reconciliation with an included Match status "
@@ -2307,6 +2313,7 @@ def run_ai_checks(
             return {"skipped": True, "reason": "no mapped accounts"}
     else:
         mapping_keys = list(dfs.keys())
+        selection_record = selection_without_financials(mapping_keys)
         if not mapping_keys:
             print("❌ No extracted schedule accounts at all — nothing to send to AI.")
             return {"skipped": True, "reason": "no extracted accounts"}
@@ -2758,6 +2765,7 @@ def run_ai_checks(
         "grounding_warnings": len(all_warnings),
         "stage_timing": stage_timing,
         "results": results,
+        "selection": selection_record,
         # 5d. Internal only. Deliberately kept OUT of `results` so there is no
         # path from here into the deck -- build_pptx_structured_payloads is
         # handed `results`, never this dict.
@@ -2789,6 +2797,10 @@ def export_and_inspect_pptx(
     language: str, model_type: str, out_path: str, model_name: Optional[str] = None,
     financials_from: Optional[str] = None,
     offline_summaries: Optional[Dict[str, str]] = None,
+    selection: Any = None,
+    identity_ok: Optional[bool] = None,
+    identity_note: str = "",
+    extra_findings: Optional[List[Any]] = None,
 ) -> Dict[str, Any]:
     """Runs the FULL remaining pipeline (build payloads -> export .pptx),
     captures every [PPTX] stdout line and fdd_utils.pptx logger record
@@ -2817,12 +2829,24 @@ def export_and_inspect_pptx(
         bs_is_results = extract_balance_sheet_and_income_statement(
             workbook_path=financials_from or databook_path, sheet_name=sheet_name, debug=False,
         )
+        if isinstance(bs_is_results, dict):
+            bs_is_results["statement_source"] = "financials"
     else:
         # Mirrors process_workbook_data's fallback (fdd_utils/workbook.py) --
         # no literal Financials sheet, so build the BS/IS summary purely
         # from the mapped schedule tabs instead of skipping the embed.
         bs_is_results = synthesize_balance_sheet_and_income_statement(dfs, mappings)
+        bs_is_results["statement_source"] = "synthesized"
         print("ℹ️  No Financials sheet — using a synthesized BS/IS built from the mapped schedule tabs.")
+    # The delivery decision (fdd_utils/delivery.py): ready / review_required / blocked,
+    # taken from what the run left behind. The deck is exported either way, as a
+    # labelled draft; the label is the file name, a sidecar and the document properties.
+    from fdd_utils.delivery import banner as _delivery_banner, decide_delivery, labelled_path
+    delivery = decide_delivery(selection=selection, ai_results=ai_results, bs_is_results=bs_is_results,
+                               identity_ok=identity_ok, identity_note=identity_note,
+                               extra_findings=extra_findings)
+    out_path = labelled_path(out_path, delivery)
+    print(_delivery_banner(delivery))
     payloads = build_pptx_structured_payloads(ai_results, mappings, bs_is_results=bs_is_results, dfs=dfs)
     print(f"BS items: {len(payloads['BS'])}, IS items: {len(payloads['IS'])}")
 
@@ -2961,6 +2985,7 @@ def export_and_inspect_pptx(
                 model_type=model_type,
                 pre_generated_summaries=section_summaries,
                 mappings=mappings,
+                delivery=delivery,
             )
     finally:
         pptx_logger.removeHandler(handler)
@@ -3029,6 +3054,7 @@ def export_and_inspect_pptx(
 
     return {
         "out_path": out_path,
+        "delivery": delivery.to_dict(),
         "measurement_sources": measurement_sources,
         "export_warnings": warnings_seen,
         "stage_times": stage_times,
@@ -3060,6 +3086,22 @@ def _write_run_identity(path: str, ai_summary: Dict[str, Any], **identity: Any) 
                   f"{Path(str(run_folder)).name.replace('run_', '')})")
     except Exception as exc:
         print(f"  (run identity not saved: {type(exc).__name__}: {exc})")
+
+
+def _write_run_selection(ai_summary: Dict[str, Any]) -> None:
+    """selection.json in the run folder: which accounts reconciliation sent to the
+    model and which it left out, so a later --from-run deck carries the same
+    delivery findings as the original."""
+    results = (ai_summary or {}).get("results") or {}
+    run_folder = ((results.get("__run__") or {}).get("run_folder")) if isinstance(results, dict) else None
+    selection = (ai_summary or {}).get("selection")
+    if not run_folder or selection is None:
+        return
+    try:
+        from fdd_utils.workbook.selection import save_selection
+        save_selection(str(run_folder), selection)
+    except Exception as exc:
+        print(f"  (account selection not saved: {type(exc).__name__}: {exc})")
 
 
 #: Layout findings that fail an offline re-export, by the text inspect_pptx
@@ -3207,9 +3249,21 @@ def reexport_from_run(
             with _compact("8-10 PPTX export + layout",
                           keep=("DROPPED", "⚠️", "OVERFLOW RISK", "OVERLAPS REAL TEXT",
                                 "LEAKED", "warning(s) found")):
+                from fdd_utils.delivery import Finding
+                from fdd_utils.workbook.selection import load_selection
+                saved_selection = load_selection(folder)
                 pptx_summary = export_and_inspect_pptx(
                     path, selected_sheet, ai_dfs, results, language, model_type, out_path,
                     model_name=model_name, financials_from=financials_from, offline_summaries=summaries,
+                    selection=saved_selection,
+                    # an --allow-unverified re-export is a layout preview of text that may not
+                    # describe this workbook: never a deliverable
+                    identity_ok=not bool(report.get("_identity_mismatch")),
+                    identity_note="; ".join(report.get("notes") or [])[:300],
+                    extra_findings=([] if saved_selection is not None else [Finding(
+                        "SELECTION_UNKNOWN", "review",
+                        "this run saved no account-selection record (it predates delivery control), so which "
+                        "accounts were left out of it cannot be told")]),
                 )
         except Exception as exc:
             report["problems"].append(f"export failed: {type(exc).__name__}: {exc}")
@@ -3439,7 +3493,7 @@ def analyze_population_fill(
 
 # ---------------------------------------------------------------------------
 
-def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
+def _resolve_financials_sheets(xl: pd.ExcelFile, path: str) -> List[str]:
     """Exact 'Financials' match wins. Otherwise look for a multi-entity
     pattern -- either 'Financials - NB' / 'Financials - HN' (space/hyphen-
     separated, common when one workbook covers several properties) OR
@@ -3464,12 +3518,16 @@ def _resolve_financials_sheets(xl: pd.ExcelFile) -> List[str]:
     reconciles against the wrong sheet and reports an empty/misleading
     result, so that fallback is deliberately NOT used here.
     """
-    exact = [s for s in xl.sheet_names if s.strip().lower() == "financials"]
+    # Only sheets the workbook shows (workbook/visibility.py): a hidden sheet is never the Financials
+    # sheet, and when visibility cannot be read nothing is chosen. Visible sheets keep their old order.
+    from fdd_utils.workbook.visibility import filter_visible
+    names = filter_visible(str(path), xl.sheet_names)
+    exact = [s for s in names if s.strip().lower() == "financials"]
     if exact:
         return exact
-    prefixed = [s for s in xl.sheet_names if re.match(r"^financials\s*-", s.strip(), re.IGNORECASE)]
+    prefixed = [s for s in names if re.match(r"^financials\s*-", s.strip(), re.IGNORECASE)]
     suffixed = [
-        s for s in xl.sheet_names
+        s for s in names
         if re.search(r"financials\s*$", s.strip(), re.IGNORECASE) and s.strip().lower() != "financials"
     ]
     seen: set = set()
@@ -3558,6 +3616,17 @@ def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool
 
     xl = pd.ExcelFile(path)
     summary["total_sheets"] = len(xl.sheet_names)
+    from fdd_utils.workbook.visibility import HiddenSheetError, refuse_hidden
+    try:
+        # A sheet NAMED on the command line is refused if it is hidden (or cannot be shown not to be).
+        if financials_from:
+            refuse_hidden(financials_from, financials_sheet)
+        elif sheet:
+            refuse_hidden(path, sheet)
+    except HiddenSheetError as exc:
+        print(f"\n❌ {exc}")
+        summary["status"] = "Financials sheet is hidden"
+        return summary
     if financials_from:
         # This entity's own file has no Financials-pattern sheet at all --
         # the real summary lives in a sibling roll-up ("主表") workbook, one
@@ -3567,7 +3636,15 @@ def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool
     elif sheet:
         sheet_names = [sheet]
     else:
-        sheet_names = _resolve_financials_sheets(xl)
+        sheet_names = _resolve_financials_sheets(xl, path)
+        _hidden_candidates = [n for n in xl.sheet_names if re.search("financials", n, re.IGNORECASE)
+                              and n not in sheet_names]
+        if _hidden_candidates:
+            from fdd_utils.workbook.visibility import hidden_among
+            _hidden_only = hidden_among(path, _hidden_candidates)
+            if _hidden_only:
+                print(f"\nℹ️  Hidden sheet(s) that look like Financials were NOT used: {_hidden_only} "
+                      "(hidden sheets are not evidence; unhide one and re-run, or name a visible sheet with --sheet).")
         if not sheet_names:
             # Previously this bailed out of inspect_one() entirely, meaning
             # --run-ai/--export-pptx could never even be tried on a file with
@@ -3722,6 +3799,7 @@ def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool
         _write_run_identity(path, ai_summary, entity_name=entity_name, sheet=selected_sheet_for_ai,
                             financials_from=financials_from, financials_sheet=financials_sheet,
                             language=language, model_type=model_type, model_name=model_name)
+        _write_run_selection(ai_summary)
 
         if export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
             out_path = pptx_out_path            # resolved and lock-checked up front
@@ -3734,11 +3812,14 @@ def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool
                         path, selected_sheet_for_ai, ai_dfs, ai_summary["results"], language,
                         model_type, out_path, model_name=model_name,
                         financials_from=financials_from,
+                        selection=ai_summary.get("selection"),
                     )
                 summary["pptx"] = pptx_summary
+                out_path = pptx_summary.get("out_path", out_path)  # carries the delivery label
                 # Repeated dead-last: section 9/10 print a lot after the export,
                 # and the path is useless if it's buried thousands of lines up.
-                print(f"\n📄 Open this to eyeball-check the deck:\n   {Path(out_path).resolve()}\n")
+                print(f"\n📄 Open this to eyeball-check the deck:\n   {Path(out_path).resolve()}")
+                print(f"   delivery: {pptx_summary['delivery']['status']}\n")
             except Exception as exc:
                 print(f"\n❌ PPTX export/inspect FAILED: {type(exc).__name__}: {exc}")
                 import traceback
@@ -3988,7 +4069,8 @@ def resolve_auto_rollup_targets(files: List[Path]) -> Dict[Path, Tuple[Path, str
         if not rollup or not entities:
             continue
         try:
-            rollup_sheets = _load_workbook_names(rollup, read_only=True).sheetnames
+            from fdd_utils.workbook.visibility import filter_visible
+            rollup_sheets = filter_visible(str(rollup), _load_workbook_names(rollup, read_only=True).sheetnames)
         except Exception as exc:
             print(f"  ⚠️ Portfolio {portfolio}: could not read roll-up {rollup.name!r} sheet names: {exc}")
             continue
@@ -4461,7 +4543,11 @@ def main() -> int:
                 f"Portfolio_{args.portfolio.replace(',', '-')}" if args.portfolio else "Combined")
             combined_path = Path(paths[0]).parent / f"{name}_{stamp}.pptx"
             try:
-                combine_presentations(paths, str(combined_path))
+                from fdd_utils.delivery import banner as _banner, combine_decisions, labelled_path, read_sidecar
+                combined_decision = combine_decisions((Path(p).name, read_sidecar(p)) for p in paths)
+                combined_path = Path(labelled_path(str(combined_path), combined_decision))
+                combine_presentations(paths, str(combined_path), decision=combined_decision)
+                print(_banner(combined_decision, limit=6))
                 print(f"\n  Merged {len(paths)} entity deck(s) in run order"
                       + (f" for Portfolio {label}" if label else "") + ":")
                 for one in paths:

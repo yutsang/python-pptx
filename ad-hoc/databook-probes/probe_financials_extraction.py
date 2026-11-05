@@ -82,7 +82,8 @@ def main() -> int:
     args = ap.parse_args()
 
     names = pd.ExcelFile(args.workbook, engine="openpyxl").sheet_names
-    targets = args.sheet or [n for n in names if str(n).strip().endswith("Financials")]
+    from fdd_utils.workbook.visibility import filter_visible
+    targets = args.sheet or filter_visible(args.workbook, [n for n in names if str(n).strip().endswith("Financials")])
     if not targets:
         print(f"no sheet name ends in 'Financials'. Sheets present: {names}")
         return 2

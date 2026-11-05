@@ -287,68 +287,36 @@ def detect_statement_mode(reconciliation: tuple[pd.DataFrame | None, pd.DataFram
     return "full"
 
 
+def explain_reconciliation_selection(
+    reconciliation: tuple[pd.DataFrame | None, pd.DataFrame | None] | None,
+    available_keys: Iterable[str],
+    resolution: Dict[str, Any] | None = None,
+    dfs: Dict[str, Any] | None = None,
+):
+    """Account-by-account route and reason; see workbook/selection.py."""
+    from ..workbook.selection import select_reconciliation_keys
+    return select_reconciliation_keys(reconciliation, available_keys, resolution, dfs=dfs)
+
+
 def derive_reconciliation_matched_keys(
     reconciliation: tuple[pd.DataFrame | None, pd.DataFrame | None] | None,
     available_keys: Iterable[str],
     resolution: Dict[str, Any] | None = None,
     dfs: Dict[str, Any] | None = None,
 ) -> List[str]:
-    available_key_order = dedupe_non_empty(available_keys)
-    available_key_set = set(available_key_order)
-    if not reconciliation or not available_key_order:
-        return []
+    """The accounts that go to commentary, in order.
 
-    # AI processes matched (✅ / ⚠️) and immaterial accounts.
-    # BS: ❌ Diff intentionally excluded — those need human reconciliation
-    # before AI commentary can be trusted.
-    # IS: ❌ Diff included — IS recon is inherently noisier (period-flow
-    # semantics, YoY movements). Excluding ❌ Diff for IS would drop most
-    # of the income statement from the report, which is undesirable.
-    bs_included_statuses = {"✅ Match", "⚠️ Match", "✅ Immaterial"}
-    is_included_statuses = {"✅ Match", "⚠️ Match", "✅ Immaterial", "❌ Diff"}
-    matched_keys: List[str] = []
-    seen = set()
+    Admitted: lines reconciliation tied out (BS ✅ / ⚠️ Match / ✅ Immaterial; IS
+    additionally ❌ Diff, because IS reconciliation is period-flow noisy and
+    excluding it would drop most of the statement), a partial-period line whose
+    previous full period ties out, and a Financials line that was nil in both
+    recent periods -- so never compared -- whose tab has earlier activity.
 
-    # reconciliation is positionally (bs_recon_df, is_recon_df) — see
-    # workbook.reconcile_financial_statements return order.
-    for recon_idx, recon_df in enumerate(reconciliation):
-        if recon_df is None or recon_df.empty:
-            continue
-        if "Match" not in recon_df.columns or "Tab_Account" not in recon_df.columns:
-            continue
-
-        included = is_included_statuses if recon_idx == 1 else bs_included_statuses
-        filtered = recon_df[recon_df["Match"].isin(included)]
-        for value in filtered["Tab_Account"].tolist():
-            key = str(value or "").strip()
-            if not key or key == "-" or key in seen or key not in available_key_set:
-                continue
-            seen.add(key)
-            matched_keys.append(key)
-
-    # A Financials line that is nil in the LATEST period never gets compared at
-    # all, so it reconciles to "-" and was dropped here -- even when the same
-    # account carries real balances in earlier periods. On a real file that
-    # silently excluded 其他应收款, 所得税费用 and 营业外支出, each of which
-    # has 2024 data and a breakdown; the project team expects a comment on
-    # every non-zero Financials item, in ANY column, not just the last one.
-    #
-    # Admitting them cannot weaken the reconciliation guarantee the comment
-    # above describes: these lines were not rejected by reconciliation, they
-    # were never examined by it. Requires a schedule tab whose own parse says
-    # some period is non-zero, so a genuinely dormant account still stays out.
-    if dfs:
-        for key in available_key_order:
-            if key in seen:
-                continue
-            attrs = getattr(dfs.get(key), "attrs", {}) or {}
-            any_period = attrs.get("any_period_nonzero_by_description") or {}
-            if isinstance(any_period, dict) and any(bool(v) for v in any_period.values()):
-                seen.add(key)
-                matched_keys.append(key)
-
-    # Only accounts that passed reconciliation with an included status go to AI.
-    # Dynamic-mapping and resolved-map fallbacks are intentionally removed —
-    # they added accounts that were never validated by reconciliation.
-    return matched_keys
+    NOT admitted by history: a balance-sheet ❌ Diff, a tab no Financials line
+    reconciles to, a tab with no activity. The earlier version of this function
+    re-admitted all three whenever the tab had any non-zero period, which undid
+    its own BS ❌ Diff exclusion. workbook/selection.py has the reasons per
+    account (``explain_reconciliation_selection``).
+    """
+    return explain_reconciliation_selection(reconciliation, available_keys, resolution, dfs=dfs).admitted_keys
 # --- end ui/views.py ---

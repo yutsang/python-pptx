@@ -169,3 +169,9 @@ pptx_previews/
 /ad-hoc/databook-probes/probe_analysis_rules.py
 /private-config-additions.yml
 /ad-hoc/databook-probes/probe_composition_check.py
+# Delivery decisions beside a deck (inspect_databook / UI export): they name accounts and findings.
+*.delivery.json
+# Lineage sidecar of an exported deck: baseline fact values and paragraph texts. Working files, never committed or sent.
+*.lineage.json
+# an agent working session holds a workbook's figures and commentary
+*.agent-session.json

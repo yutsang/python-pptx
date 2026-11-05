@@ -299,9 +299,9 @@ class RunMemory:
 
     def tab(self, sheet: str) -> Dict[str, Any]:
         """One workbook tab -- mapped or not -- as the digest recorded it."""
-        from ..workbook.digest import sheet_view
+        from ..workbook.digest import sheet_view, visible_sheets
 
-        sheets = list((self.digest.get("sheets") or {}))
+        sheets = list(visible_sheets(self.digest))   # a hidden tab is not offered as evidence
         if not sheets:
             return {"error": "no digest.json in this run (it predates the workbook digest, or none was passed)"}
         want = str(sheet or "").strip()
@@ -318,7 +318,7 @@ class RunMemory:
         """Every tab: how much of it reached the model, and which tabs nothing reads."""
         from ..workbook.digest import coverage_rows
 
-        if not self.digest.get("sheets"):
+        if not self.digest.get("sheets"):   # digest-ok: the coverage ledger reports hidden tabs too
             return {"error": "no digest.json in this run (it predates the workbook digest, or none was passed)"}
         return {"workbook": self.digest.get("workbook"), "reach_marked": self.digest.get("reach_marked"),
                 "totals": self.digest.get("coverage"), "tabs": coverage_rows(self.digest),

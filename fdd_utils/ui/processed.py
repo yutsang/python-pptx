@@ -381,8 +381,17 @@ def render_processed_view(
                 use_container_width=True,
             )
 
+    _delivery = session_state.get("delivery_decision")
+    if _delivery and session_state.get("pptx_ready", False) and _delivery.get("status") != "ready":
+        from ..delivery import DeliveryDecision, banner
+        _banner = banner(DeliveryDecision.from_dict(_delivery)).replace("\n", "\n\n")
+        (st.error if _delivery.get("status") == "blocked" else st.warning)(_banner)
+
     if before_ai_section:
         before_ai_section()
     render_ai_generation_section(session_state, get_model_display_name)
     render_generated_content(session_state, account_display_dfs, mappings, get_model_display_name)
+    # Off unless agent.enabled / FDD_AGENT: renders nothing then, so the app is what it was.
+    from .agent_panel import render_agent_panel
+    render_agent_panel(session_state)
 # --- end ui/processed.py ---

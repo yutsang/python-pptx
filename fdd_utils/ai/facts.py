@@ -579,7 +579,8 @@ def build_digest_graph_links(
     sheet/title also explicitly names the account. Ambiguous matches are kept
     as failed edges and cannot be consumed later.
     """
-    sheets = (workbook_digest or {}).get("sheets") or {}
+    from ..workbook.digest import visible_sheets
+    sheets = visible_sheets(workbook_digest)
     series = (facts or {}).get("series") or {}
     labels = (facts or {}).get("labels") or {}
     if not sheets or not series:
@@ -776,7 +777,8 @@ def digest_tieout_diagnostics(
         if edge.get("passed")
     }
     rows: List[Dict[str, Any]] = []
-    for sheet_name, sheet in ((workbook_digest or {}).get("sheets") or {}).items():
+    from ..workbook.digest import visible_sheets
+    for sheet_name, sheet in visible_sheets(workbook_digest).items():
         if not isinstance(sheet, dict) or sheet.get("status") != "unmapped":
             continue
         period_by_col, multiplier, total_rows = _digest_total_rows(sheet)
@@ -865,7 +867,8 @@ def supporting_breakdowns_for(
     tied column themselves sum back to the verified total. This rejects annual
     statement tabs, nested subtotal layouts and arbitrary nearby numbers.
     """
-    sheets = (workbook_digest or {}).get("sheets") or {}
+    from ..workbook.digest import visible_sheets
+    sheets = visible_sheets(workbook_digest)
     out: List[Dict[str, Any]] = []
     for edge in (graph_facts or {}).get("links") or []:
         if (not isinstance(edge, dict) or not edge.get("passed")

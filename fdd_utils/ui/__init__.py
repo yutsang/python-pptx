@@ -83,6 +83,7 @@ from .views import (  # noqa: F401
     build_entity_selector_model,
     build_processed_display_groups,
     derive_reconciliation_matched_keys,
+    explain_reconciliation_selection,
     describe_statement_period,
     detect_statement_mode,
     should_render_preprocess_controls,

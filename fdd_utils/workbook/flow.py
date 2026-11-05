@@ -120,6 +120,12 @@ def process_workbook_data(
             os.path.basename(_financials_workbook_path),
             time.perf_counter() - bs_started,
         )
+    if isinstance(bs_is_results, dict):
+        # Where the statement tables came from. A deck whose tables are built from
+        # the schedule tabs (below) has never been tied to anything independent;
+        # delivery.decide_delivery reads this to say so.
+        bs_is_results["statement_source"] = "financials"
+        bs_is_results["statement_source_sheet"] = _financials_sheet_name
     _lap("financials")
 
     # The deck follows Financials wherever a tab's account total disagrees with
@@ -191,6 +197,7 @@ def process_workbook_data(
         effective_mappings = get_effective_mappings(load_mappings(), resolution)
         synthesized = synthesize_balance_sheet_and_income_statement(dfs_original, effective_mappings)
         if synthesized.get("balance_sheet") is not None or synthesized.get("income_statement") is not None:
+            synthesized["statement_source"] = "synthesized"
             bs_is_results = synthesized
 
     logger.debug(

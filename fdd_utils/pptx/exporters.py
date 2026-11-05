@@ -110,6 +110,7 @@ def export_pptx_from_structured_data_combined(
     pre_generated_summaries: Optional[Dict[str, str]] = None,  # {"BS": str, "IS": str} — bypass AI in PPTX export
     mappings: Optional[Dict[str, Any]] = None,  # for translating the embedded BS/IS table's row labels when Chinese
     financials_from: Optional[str] = None,  # workbook the Financials SHEET lives in, when not temp_path
+    delivery: Optional[Any] = None,  # fdd_utils.delivery.DeliveryDecision; None = the caller did not assess (fails closed to review_required)
 ):
     from .generation import PowerPointGenerator  # local: exporters imports the later generation; module-level would be a cycle
     try:
@@ -184,11 +185,20 @@ def export_pptx_from_structured_data_combined(
             generator.refresh_project_placeholders(project_name)
             _stage_log(f"refresh_project_placeholders: {time.perf_counter() - stage_started_at:.2f}s")
 
+        # Every deck leaves this function labelled. A caller that assessed the
+        # run passes its DeliveryDecision; one that did not gets the fail-closed
+        # "unassessed -> review_required" label rather than none (an unlabelled
+        # deck reads as a deliverable one). The label is document properties and
+        # a sidecar -- never a change to a slide.
+        from ..delivery import apply_to_presentation, unassessed_decision, write_sidecar
+        decision = delivery if delivery is not None else unassessed_decision()
+        apply_to_presentation(generator.presentation, decision)
         stage_started_at = time.perf_counter()
         generator.save(output_path)
+        write_sidecar(output_path, decision)
         _stage_log(f"save_presentation: {time.perf_counter() - stage_started_at:.2f}s")
         _stage_log(f"TOTAL export: {time.perf_counter() - export_started_at:.2f}s")
-        logger.info("Combined PPTX generation completed: %s", output_path)
+        logger.info("Combined PPTX generation completed: %s (delivery: %s)", output_path, decision.status)
         return output_path
     except Exception as exc:
         logger.error("PPTX generation failed: %s", exc)
@@ -414,7 +424,7 @@ def _copy_slide_into(dest_prs: "Presentation", source_slide, renamed_part_ids: O
         dest_slide.shapes._spTree.append(new_elm)
 
 
-def combine_presentations(pptx_sources: List, output_path) -> "str | None":
+def combine_presentations(pptx_sources: List, output_path, decision: Optional[Any] = None) -> "str | None":
     """Combine several already-exported .pptx decks (e.g. one per batch
     entity, all built from the same template.pptx) into a single deck --
     every slide from every source, in order, via _copy_slide_into().
@@ -444,8 +454,21 @@ def combine_presentations(pptx_sources: List, output_path) -> "str | None":
         for source_slide in source_prs.slides:
             _copy_slide_into(combined_prs, source_slide, renamed_part_ids)
 
+    # A combined deck is only as deliverable as its worst part. When the caller
+    # does not hand in the merged decision, read each part's sidecar; a part
+    # with none (or one that is not a file) counts as unassessed.
+    from ..delivery import apply_to_presentation, combine_decisions, read_sidecar, write_sidecar
+    if decision is None:
+        parts = []
+        for index, source in enumerate(pptx_sources, 1):
+            label = os.path.basename(source) if isinstance(source, str) else f"part {index}"
+            parts.append((label, read_sidecar(source) if isinstance(source, str) else None))
+        decision = combine_decisions(parts)
+    apply_to_presentation(combined_prs, decision)
     combined_prs.save(output_path)
-    logger.info("Combined %s presentation(s)", len(pptx_sources))
+    if isinstance(output_path, str):
+        write_sidecar(output_path, decision)
+    logger.info("Combined %s presentation(s) (delivery: %s)", len(pptx_sources), decision.status)
     if isinstance(output_path, str):
         return output_path
     return None

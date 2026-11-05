@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-from .views import derive_reconciliation_matched_keys, detect_statement_mode
+from .views import derive_reconciliation_matched_keys, detect_statement_mode, explain_reconciliation_selection
 import time
 import traceback
 from typing import Any, Dict
@@ -348,24 +348,31 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
                 ]
                 if not matched_mapping_keys:
                     matched_mapping_keys = list(selected_pipeline_dfs.keys())
+                session_state.reconciliation_selection = None
                 status_placeholder.info(
                     f"{'IS' if statement_mode == 'is_only' else 'BS'}-only mode: processing "
                     f"{len(matched_mapping_keys)} schedule account(s) — reconciliation filter bypassed."
                 )
             else:
-                matched_mapping_keys = derive_reconciliation_matched_keys(
+                selection = explain_reconciliation_selection(
                     reconciliation,
                     selected_pipeline_dfs.keys(),
                     session_state.get("resolution"),
                     dfs=selected_pipeline_dfs,
                 )
+                matched_mapping_keys = selection.admitted_keys
                 has_reconciliation_data = bool(reconciliation and any(recon_df is not None and not recon_df.empty for recon_df in reconciliation))
                 if not has_reconciliation_data:
                     matched_mapping_keys = list(selected_pipeline_dfs.keys())
+                    from ..workbook.selection import selection_without_financials
+                    selection = selection_without_financials(matched_mapping_keys)
                     if not matched_mapping_keys:
                         status_placeholder.warning("No reconciliation results and no extracted schedule data available.")
                     else:
                         status_placeholder.info(f"No reconciliation data; proceeding with all {len(matched_mapping_keys)} extracted schedule account(s).")
+                # Filed for the delivery decision (delivery.py): which accounts were left out
+                # of the deck, and which were let in without being tied out.
+                session_state.reconciliation_selection = selection
                 if has_reconciliation_data and not matched_mapping_keys:
                     status_placeholder.warning("No eligible matched or dynamically resolved schedule accounts were found, so AI generation was skipped.")
                     matched_mapping_keys = []

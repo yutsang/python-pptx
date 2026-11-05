@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 from dataclasses import dataclass, field
@@ -41,6 +42,8 @@ from .validator import SourceIndex
 from .logging import coerce_plain
 
 EVIDENCE_DIR = "evidence"
+
+logger = logging.getLogger(__name__)
 
 # Guidance section markers, matched on the rendered prompt so `shown` records
 # what actually reached the model rather than what a builder intended.
@@ -143,6 +146,11 @@ class AccountEvidence:
     shown: Dict[str, Any] = field(default_factory=dict)
     #: frame_fingerprint of the frame this pool was built from
     fingerprint: Optional[str] = None
+    #: evidence_contract.EvidenceContract.to_dict(): the figures by basis (raw
+    #: schedule / Financials / authority-adjusted), the checks per period and
+    #: what the commentary may do with each period. None for a pool built
+    #: before the contract existed.
+    contract: Optional[Dict[str, Any]] = None
 
     # -- the pool ------------------------------------------------------------
 
@@ -168,6 +176,7 @@ class AccountEvidence:
             "pool_size": self.pool_size,
             "facts": list(self.facts),
             "dates": list(self.dates),
+            "contract": self.contract,
         })
 
     @classmethod
@@ -180,6 +189,7 @@ class AccountEvidence:
             dates=list(data.get("dates") or []),
             shown=dict(data.get("shown") or {}),
             fingerprint=data.get("fingerprint"),
+            contract=data.get("contract") or None,
         )
 
 
@@ -236,6 +246,8 @@ def compile_account_evidence(
     shown: Optional[Dict[str, Any]] = None,
     graph_facts: Optional[Dict[str, Any]] = None,
     account_brief: Optional[Dict[str, Any]] = None,
+    digest: Optional[Dict[str, Any]] = None,
+    binding: Optional[Any] = None,
 ) -> AccountEvidence:
     """Build the pool once, from the frame as it stands NOW plus verified links.
 
@@ -248,7 +260,7 @@ def compile_account_evidence(
     index.facts.extend(linked_fact_records(str(mapping_key), graph_facts))
     index.facts.extend(brief_fact_records(account_brief))
     index.values = [fact["value"] for fact in index.facts if fact.get("value") is not None]
-    return AccountEvidence(
+    evidence = AccountEvidence(
         mapping_key=str(mapping_key),
         language=str(language or ""),
         statement_type=str(statement_type or ""),
@@ -256,6 +268,16 @@ def compile_account_evidence(
         dates=list(index.date_facts),
         shown=dict(shown or {}),
     )
+    # The figures by basis and the checks on them. Enrichment: a frame the
+    # contract cannot read leaves the pool exactly as it was, and says so.
+    try:
+        from .evidence_contract import build_contract
+        evidence.contract = build_contract(
+            str(mapping_key), df, statement_type=str(statement_type or ""),
+            graph_facts=graph_facts, binding=binding, digest=digest).to_dict()
+    except Exception as exc:
+        logger.warning("Evidence contract not built for %s: %s: %s", mapping_key, type(exc).__name__, exc)
+    return evidence
 
 
 def linked_fact_records(

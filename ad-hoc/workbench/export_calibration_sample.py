@@ -339,7 +339,7 @@ def build_dfs(databook: str, entity: Optional[str], sheet: Optional[str]) -> Dic
     if sheet is None:
         import inspect_databook
 
-        found = inspect_databook._resolve_financials_sheets(pd.ExcelFile(databook))
+        found = inspect_databook._resolve_financials_sheets(pd.ExcelFile(databook), databook)
         sheet = found[0] if found else None
     state = process_workbook_data(
         temp_path=databook, entity_name=entity, selected_sheet=sheet, debug=False,

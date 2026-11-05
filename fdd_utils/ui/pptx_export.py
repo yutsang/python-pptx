@@ -17,7 +17,8 @@ from ..financial_common import extract_result_text_content, get_pipeline_result_
 import pandas as pd
 
 
-from .views import derive_reconciliation_matched_keys, detect_statement_mode
+from .views import derive_reconciliation_matched_keys, detect_statement_mode, explain_reconciliation_selection
+from ..workbook.selection import selection_without_financials
 from .ai_panel import build_selected_pipeline_dfs, effective_mappings_from_session
 import datetime as dt_module
 import logging
@@ -111,7 +112,15 @@ def generate_pptx_presentation(
         )
 
         from .. import usage_ledger
-        usage_ledger.record_event("export_pptx", mode="single")
+        from ..delivery import decide_delivery, labelled_path
+        delivery = decide_delivery(
+            selection=session_state.get("reconciliation_selection"),
+            ai_results=session_state.ai_results,
+            bs_is_results=session_state.get("bs_is_results"),
+        )
+        combined_output_path = labelled_path(combined_output_path, delivery)
+        session_state.delivery_decision = delivery.to_dict()
+        usage_ledger.record_event("export_pptx", mode="single", delivery=delivery.status)
         with st.spinner("Generating PPTX…"):
             export_pptx_from_structured_data_combined(
                 template_path,
@@ -129,6 +138,7 @@ def generate_pptx_presentation(
                 skip_summary_ai=False,
                 pre_generated_summaries=session_state.get("section_summaries") or None,
                 mappings=mappings,
+                delivery=delivery,
             )
         if os.path.exists(combined_output_path):
             with open(combined_output_path, "rb") as handle:
@@ -219,6 +229,7 @@ def batch_extract_entity_data(
         effective_language = "Chn" if raw_language in ("Chi", "Chn", "chinese", "Chinese") else "Eng"
 
     statement_mode = detect_statement_mode(reconciliation)
+    selection = None
     if statement_mode in ("is_only", "bs_only"):
         target_type = "IS" if statement_mode == "is_only" else "BS"
         matched_mapping_keys = [
@@ -228,12 +239,14 @@ def batch_extract_entity_data(
         if not matched_mapping_keys:
             matched_mapping_keys = list(dfs.keys())
     else:
-        matched_mapping_keys = derive_reconciliation_matched_keys(reconciliation, dfs.keys(), resolution, dfs=dfs)
+        selection = explain_reconciliation_selection(reconciliation, dfs.keys(), resolution, dfs=dfs)
+        matched_mapping_keys = selection.admitted_keys
         has_reconciliation_data = bool(
             reconciliation and any(recon_df is not None and not recon_df.empty for recon_df in reconciliation)
         )
         if not has_reconciliation_data:
             matched_mapping_keys = list(dfs.keys())
+            selection = selection_without_financials(matched_mapping_keys)
 
     if not matched_mapping_keys:
         result["status"] = "failed"
@@ -269,6 +282,7 @@ def batch_extract_entity_data(
             "reconciliation": reconciliation,
             "resolution": resolution,
             "entity_name": entity_name,
+            "reconciliation_selection": selection,
         },
     }
     result["_internal"] = {
@@ -278,6 +292,7 @@ def batch_extract_entity_data(
         "resolution": resolution,
         "mappings": mappings,
         "matched_mapping_keys": matched_mapping_keys,
+        "selection": selection,
         "effective_language": effective_language,
         "entity_name": entity_name,
         "temp_path": temp_path,
@@ -1511,6 +1526,14 @@ def batch_run_ai_for_entity(
     timestamp = dt_module.datetime.now().strftime("%Y%m%d_%H%M%S")
     sanitized_entity = re.sub(r"[^\w\-_]", "_", str(entity_name)).strip("_") or "Entity"
     output_path = os.path.join(output_dir, f"{sanitized_entity}_{timestamp}.pptx")
+    from ..delivery import decide_delivery, labelled_path
+    delivery = decide_delivery(
+        selection=internal.get("selection"),
+        ai_results=ai_results,
+        bs_is_results=state.get("bs_is_results"),
+    )
+    output_path = labelled_path(output_path, delivery)
+    result["delivery"] = delivery.to_dict()
 
     # embed_financial_tables reads (temp_path, selected_sheet) for its
     # currency-unit-label detection and as a fresh-extraction fallback --
@@ -1537,6 +1560,7 @@ def batch_run_ai_for_entity(
         skip_summary_ai=False,
         pre_generated_summaries=section_summaries or None,
         mappings=mappings,
+        delivery=delivery,
     )
 
     result["output_path"] = output_path
@@ -1575,6 +1599,8 @@ def batch_run_ai_for_entity(
         "selected_sheet": financials_sheet_name,
         "mapping_overrides": mapping_overrides,
         "ai_results": ai_results,
+        "reconciliation_selection": internal.get("selection"),
+        "delivery_decision": delivery.to_dict(),
         # So a later "Regenerate PPTX" click from within the reused
         # single-file UI (generate_pptx_presentation, which reads
         # session_state.section_summaries) reuses these instead of

@@ -1054,6 +1054,11 @@ def extract_balance_sheet_and_income_statement(
         >>> print(results['income_statement'])
         >>> print(results['project_name'])
     """
+    # The one function that reads a Financials sheet refuses a hidden one (workbook/visibility.py).
+    # Outside the try below on purpose: a refusal must reach the caller, not become an empty result.
+    from .visibility import refuse_hidden
+    refuse_hidden(workbook_path, sheet_name)
+
     results = {
         'balance_sheet': None,
         'income_statement': None,
