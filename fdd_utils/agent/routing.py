@@ -37,6 +37,8 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 REWRITE, EVIDENCE, HUMAN, REFRESH, FORMAT, SYSTEM, INFO = "rewrite", "evidence", "human", "refresh", "format", "system", "info"
+#: not a code's own class: what an EVIDENCE code becomes once the tools were asked and the workbook holds nothing (effective_classes)
+ABSENT = "absent"
 CAPABILITY_CLASSES = (REWRITE, FORMAT)
 
 ROLE_PRIMARY, ROLE_ESCALATION = "primary", "escalation"
@@ -88,6 +90,8 @@ NEXT_STEP = {
     REFRESH: "The workbook was saved since it was read: call refresh_sources, then start from the new evidence.",
     FORMAT: "Reply with exactly one JSON object of the kind the protocol lists.",
     SYSTEM: "A tool failed on its own: retry once with the same arguments, then report it under 'unresolved'.",
+    ABSENT: "The tools were asked and the workbook holds no such evidence: drop the statement or name it under 'unresolved'. "
+            "Do not ask again and do not state it.",
 }
 
 _ISSUE_PREFIXES = (("conflict:", HUMAN), ("source:", HUMAN), ("stale", REFRESH), ("replaced:", EVIDENCE),
@@ -125,13 +129,82 @@ def next_step_hint(codes: List[str]) -> str:
     return " NEXT: " + " ".join(lines) if lines else ""
 
 
-def is_capability_failure(codes: List[str]) -> bool:
+def next_step_hint_for(classes: Dict[str, str]) -> str:
+    """The same, from classes already settled in context (effective_classes), so 'the tools found nothing' reads as such."""
+    present = sorted(set(classes.values()), key=lambda k: (HUMAN, ABSENT, EVIDENCE, REFRESH, REWRITE, FORMAT, SYSTEM, INFO).index(k)
+                     if k in (HUMAN, ABSENT, EVIDENCE, REFRESH, REWRITE, FORMAT, SYSTEM, INFO) else 99)
+    lines = [f"[{kind}] " + NEXT_STEP[kind] for kind in present if kind in NEXT_STEP]
+    return " NEXT: " + " ".join(lines) if lines else ""
+
+
+@dataclass
+class StepContext:
+    """What the controller knows about a step beyond its codes: which evidence was read, whether what was cited exists at all,
+    what the searches found, and how often a code came back after the hint that should have settled it. One code can mean
+    "go and read it" in one step and "the workbook does not have it" in the next; the code alone cannot tell them apart."""
+    fetched_accounts: set = field(default_factory=set)        # accounts whose evidence the model has been shown
+    cited_refs_exist: Optional[bool] = None                  # UNSEEN/UNKNOWN_REF: do the refs exist in any account (None: not asked)
+    cited_ref_accounts: set = field(default_factory=set)      # the accounts those refs belong to
+    cited_refs_hidden_by_paging: bool = False                 # they exist, but in components the evidence view left out
+    cause_accounts: set = field(default_factory=set)          # accounts of claims that assert a cause with no note
+    notes_found: Dict[str, int] = field(default_factory=dict) # account -> notes the evidence or a search returned
+    searched: set = field(default_factory=set)               # accounts search_notes was run for
+    repeated_tool_failure: bool = False                       # the same tool and arguments failed the same way before
+    repeats: Dict[str, int] = field(default_factory=dict)     # code -> times it came back after its hint, this turn
+
+
+def effective_classes(codes: List[str], ctx: Optional[StepContext] = None, *, give_up_after: int = 2) -> Dict[str, str]:
+    """Each code's class in context. The rules the routing follows:
+
+      evidence that exists but was not read  -> EVIDENCE (investigate first; no stronger model)
+      evidence the tools were asked for and the workbook does not hold -> ABSENT (unresolved; never escalated)
+      a ref that exists nowhere              -> REWRITE (the model invented it: that is a capability failure)
+      evidence read, and the same code still back after its hint `give_up_after` times -> REWRITE (it is not using what it has)
+      a source conflict or an authority no rule settles -> HUMAN (asked or named, never retried, never escalated)
+    """
+    ctx = ctx or StepContext()
+    out: Dict[str, str] = {}
+    for code in codes:
+        kind = classify(code)
+        if code in ("UNSEEN_REF", "UNKNOWN_REF") and ctx.cited_refs_exist is not None:
+            if not ctx.cited_refs_exist:
+                kind = REWRITE
+            elif ctx.cited_ref_accounts and ctx.cited_ref_accounts <= ctx.fetched_accounts and not ctx.cited_refs_hidden_by_paging:
+                kind = REWRITE if ctx.repeats.get(code, 0) >= give_up_after else EVIDENCE
+            else:
+                kind = EVIDENCE
+        elif code == "CAUSE_UNSUPPORTED":
+            accounts = ctx.cause_accounts or set()
+            looked = bool(accounts) and all(a in ctx.searched and not ctx.notes_found.get(a) for a in accounts)
+            kind = ABSENT if looked else EVIDENCE
+        elif kind == EVIDENCE and code in ("NOT_FOUND", "NO_SUCH_SHEET", "NOT_COMPUTABLE") and ctx.repeated_tool_failure:
+            kind = ABSENT
+        elif kind == EVIDENCE and ctx.repeats.get(code, 0) >= give_up_after and ctx.fetched_accounts:
+            kind = REWRITE
+        out[code] = kind
+    return out
+
+
+def is_capability_failure(codes: List[str], classes: Optional[Dict[str, str]] = None) -> bool:
     """A step the model did not manage with what it had: only REWRITE / FORMAT codes, and nothing in it that waits on
-    a person, on a tool, on a refresh or on the harness."""
-    present = classify_all([c for c in codes if classify(c) != INFO])
-    if not present:
+    a person, on a tool, on a refresh or on the harness. `classes` (effective_classes) overrides each code's own class."""
+    kinds = {(classes or {}).get(c) or classify(c) for c in codes}
+    kinds.discard(INFO)
+    if not kinds:
         return False
-    return all(kind in CAPABILITY_CLASSES for kind in present)
+    return all(kind in CAPABILITY_CLASSES for kind in kinds)
+
+
+_TASK_PATTERNS = {
+    "cross_account": re.compile(r"(跨科目|勾稽|關聯|关联|對應|对应|cross[- ]?account|tie[- ]?out|related accounts?)", re.I),
+    "adjustment_bridge": re.compile(r"(調整|调整|差異|差异|對賬|对账|bridge|adjust|reconcil)", re.I),
+}
+
+
+def task_kinds(request: str) -> List[str]:
+    """The kinds of task a request names, for the configured 'start on the escalation model' list (agent.escalate_tasks).
+    Word patterns only; a request that names none is an ordinary task."""
+    return [kind for kind, rx in _TASK_PATTERNS.items() if rx.search(str(request or ""))]
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -191,6 +264,15 @@ class CallRecord:
     thinking: str = ""
     cost: Optional[float] = None
     reply_used: bool = True
+    #: the model id the provider says answered (None when it does not say); `model` is the configured id
+    model_reported: Optional[str] = None
+    #: the output this call was allowed (the role's max_output or the step's), reserved against the cap before sending
+    max_output: int = 0
+    #: why this call was made again: "" (a new step), "failed" (the call before it failed), "discarded" (its reply was thrown away),
+    #: "rejected" (the gate sent the answer back)
+    after: str = ""
+    #: the provider reported more reasoning tokens than completion tokens, so they cannot be part of completion: added to `charged`
+    reasoning_separate: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return dict(self.__dict__)
@@ -207,7 +289,10 @@ class CallRecord:
         if self.usage_source == "response_cache":
             return 0
         if self.usage_source == "provider":
-            return _int(self.prompt_provider) + _int(self.completion_provider)
+            # OpenAI-compatible usage counts reasoning INSIDE completion_tokens (completion_tokens_details.reasoning_tokens is a
+            # part of it), so it is shown, never added; only a provider that reports more reasoning than completion is counting
+            # it outside, and then it is added once
+            return _int(self.prompt_provider) + _int(self.completion_provider) + (_int(self.reasoning) if self.reasoning_separate else 0)
         if self.usage_source == "failed":
             return self.prompt_est
         return self.prompt_est + self.completion_est
@@ -252,7 +337,12 @@ class SharedBudget:
         for r in self.records:
             row = by_role.setdefault(r.role, {"calls": 0, "failed": 0, "model": r.model, "provider": r.provider, "charged_tokens": 0,
                                               "prompt_provider": 0, "completion_provider": 0, "prompt_est": 0, "completion_est": 0,
-                                              "cached_prompt": 0, "reasoning": 0, "thinking": r.thinking})
+                                              "cached_prompt": 0, "reasoning": 0, "thinking": r.thinking, "models_reported": [],
+                                              "retries": 0, "seconds": 0.0})
+            if r.model_reported and r.model_reported not in row["models_reported"]:
+                row["models_reported"].append(r.model_reported)
+            row["retries"] += 1 if r.after else 0
+            row["seconds"] = round(row["seconds"] + float(r.seconds or 0.0), 2)
             row["calls"] += 1
             row["failed"] += 0 if r.ok else 1
             row["charged_tokens"] += r.charged
@@ -278,6 +368,14 @@ class SharedBudget:
                                "saved_prompt": sum(_int(r.saved_prompt) for r in self.records),
                                "saved_completion": sum(_int(r.saved_completion) for r in self.records)},
             "cost": self.cost, "cost_basis": "prices from config (yuan per million tokens), provider-reported tokens where reported",
+            "price_source": "config.yml available_models price_in / price_out, as written there; not checked against a provider bill",
+            "reasoning_basis": ("reasoning tokens are shown, not added: OpenAI-compatible usage counts them inside completion. "
+                                f"{sum(r.reasoning_separate for r in self.records)} call(s) reported more reasoning than completion and had it added once"),
+            "retries": {"after_failed_call": sum(r.after == "failed" for r in self.records),
+                        "after_discarded_reply": sum(r.after == "discarded" for r in self.records),
+                        "after_rejection": sum(r.after == "rejected" for r in self.records)},
+            "reservation": ("before each call the expected input (estimated) and the call's whole output allowance are reserved against "
+                            "the caps; the provider's own count of the input can differ from the estimate, so a token cap is not a hard limit"),
             "unmeasured": ["retries made inside the provider SDK or gateway are not visible here"],
             "by_role": by_role, "limits": self.limits.to_dict(),
         }
@@ -339,6 +437,12 @@ class RoleSpec:
     thinking: str = ""
     thinking_applied: bool = False
     price: Optional[Tuple[float, float]] = None        # yuan per million tokens, in / out, from config; None = unknown
+    #: the most output a call of this role may ask for (agent.models.<role>.max_output); None: the step's own allowance
+    max_output: Optional[int] = None
+    #: a thinking parameter is sent only because config declares its shape; no probe has shown the gateway acts on it
+    thinking_unverified: bool = False
+    #: the provider the role asked for, when the client fell back to another configured one ("" when it did not)
+    provider_requested: str = ""
 
 
 @dataclass
@@ -349,6 +453,8 @@ class Policy:
     handoff_max_tokens: int = 3000
     #: the escalation model's own rejection allowance; it is not charged for the primary's objections
     fresh_rejections: bool = True
+    #: task kinds (task_kinds) that start on the escalation model, within max_escalations (agent.escalate_tasks); empty: none
+    escalate_tasks: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -358,6 +464,8 @@ class StepEvent:
     codes: List[str] = field(default_factory=list)
     progress: bool = False
     no_progress: int = 0
+    #: each code's class in context (effective_classes); empty: the codes' own classes
+    classes: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -403,11 +511,29 @@ class RoutedModel:
         self.turn_escalations = 0
         self._capability_run = 0
         self.turn_log: List[Dict[str, Any]] = []
+        self._after = ""
 
     # -- a turn -----------------------------------------------------------------------------------------------------------------
-    def begin_turn(self, turn: int) -> None:
+    def begin_turn(self, turn: int, task: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
+        """Start a turn on the first model, or, for a task kind listed in policy.escalate_tasks, on the escalation model (counted
+        as an escalation, within the same caps). Returns the escalation record when it started there."""
         self.turn, self.role, self.turn_escalations, self._capability_run = turn, ROLE_PRIMARY, 0, 0
-        self.turn_log = []
+        self.turn_log, self._after = [], ""
+        listed = sorted(set(task or []) & set(self.policy.escalate_tasks or []))
+        if (listed and self.policy.mode == "escalate" and ROLE_ESCALATION in self.roles and self.budget.can_escalate()
+                and self.policy.max_escalations_per_turn > 0):
+            self.role = ROLE_ESCALATION
+            self.turn_escalations = 1
+            record = {"turn": turn, "step": 0, "after_call": self.budget.calls, "from": ROLE_PRIMARY, "to": ROLE_ESCALATION,
+                      "reason": "configured_task", "trigger": "agent.escalate_tasks lists " + ", ".join(listed), "codes": [], "classes": [],
+                      "model": self.roles[ROLE_ESCALATION].model, "handoff_chars": 0, "handoff_tokens_est": 0, "handoff_sha": ""}
+            self.budget.escalations.append(record)
+            return record
+        return None
+
+    def note_rejection(self) -> None:
+        """The gate sent the last answer back: the next call is a retry of it, and is recorded as one."""
+        self._after = "rejected"
 
     @property
     def escalated(self) -> bool:
@@ -415,12 +541,20 @@ class RoutedModel:
 
     def __call__(self, system: str, user: str, max_tokens: int) -> Dict[str, Any]:
         spec = self.roles[self.role]
+        if spec.max_output:
+            max_tokens = min(int(max_tokens), int(spec.max_output))
         prompt_est = estimate_tokens(system) + estimate_tokens(user)
         self.budget.check(prompt_est, max_tokens, spec.price)
         started = time.perf_counter()
+        thinking = spec.thinking + ("" if not spec.thinking or spec.thinking_applied else " (not sent by this provider branch)")
+        if spec.thinking and spec.thinking_applied and spec.thinking_unverified:
+            thinking += " (sent as config declares; gateway support unverified)"
+        previous = next((r for r in reversed(self.budget.records) if r.turn == self.turn), None)
+        after = self._after or ("failed" if previous is not None and not previous.ok else
+                                ("discarded" if previous is not None and not previous.reply_used else ""))
+        self._after = ""
         record = CallRecord(n=self.budget.calls + 1, role=spec.role, turn=self.turn, model=spec.model, provider=spec.provider, ok=True,
-                            usage_source="estimate", prompt_est=prompt_est, thinking=spec.thinking + ("" if not spec.thinking or spec.thinking_applied
-                                                                                                        else " (not sent by this provider branch)"))
+                            usage_source="estimate", prompt_est=prompt_est, thinking=thinking, max_output=int(max_tokens), after=after)
         try:
             reply = spec.call(system, user, max_tokens) or {}
         except Exception as exc:                                    # noqa: BLE001
@@ -439,9 +573,14 @@ class RoutedModel:
             record.usage_source = "provider"
             record.prompt_provider, record.completion_provider = _int(reply.get("prompt_tokens")), _int(reply.get("completion_tokens"))
         record.cached_prompt, record.reasoning = reply.get("cached_prompt_tokens"), reply.get("reasoning_tokens")
+        record.model_reported = reply.get("model_reported") or None
+        if record.usage_source == "provider" and record.reasoning is not None and record.completion_provider is not None:
+            record.reasoning_separate = _int(record.reasoning) > _int(record.completion_provider)
         if spec.price is not None and record.usage_source != "response_cache":
             tin = record.prompt_provider if record.usage_source == "provider" else record.prompt_est
             tout = record.completion_provider if record.usage_source == "provider" else record.completion_est
+            if record.reasoning_separate:
+                tout = _int(tout) + _int(record.reasoning)
             record.cost = round((_int(tin) * spec.price[0] + _int(tout) * spec.price[1]) / 1e6, 6)
         self.budget.add(record)
         return {**reply, "role": spec.role, "model": spec.model, "call_n": record.n}
@@ -454,20 +593,22 @@ class RoutedModel:
     # -- deciding ------------------------------------------------------------------------------------------------------------------
     def observe(self, event: StepEvent) -> Decision:
         """Called after each step. Escalates only on consecutive capability failures, once per turn, once the budget allows."""
+        classes = {c: (event.classes or {}).get(c) or classify(c) for c in event.codes}
         if event.progress or not event.codes:
             self._capability_run = 0
-        elif is_capability_failure(event.codes):
+        elif is_capability_failure(event.codes, classes):
             self._capability_run += 1
         else:
             self._capability_run = 0            # waiting on evidence, a person, a refresh or the harness: not the model's limit
-        self.turn_log.append({"step": event.step, "role": self.role, "codes": list(event.codes), "classes": sorted(classify_all(event.codes)),
+        self.turn_log.append({"step": event.step, "role": self.role, "codes": list(event.codes), "classes": sorted(set(classes.values())),
                               "progress": event.progress, "capability_run": self._capability_run})
         if (self.policy.mode != "escalate" or self.role == ROLE_ESCALATION or ROLE_ESCALATION not in self.roles
                 or self.turn_escalations >= self.policy.max_escalations_per_turn or not self.budget.can_escalate()
                 or self._capability_run < max(1, self.policy.escalate_after)):
             return Decision()
         return Decision(True, reason="capability", trigger=f"{self._capability_run} consecutive steps the model did not manage with the evidence it had",
-                        codes=sorted({c for e in self.turn_log[-self._capability_run:] for c in e["codes"] if classify(c) in CAPABILITY_CLASSES}))
+                        codes=sorted({c for e in self.turn_log[-self._capability_run:] for c in e["codes"]
+                                      if c in classes and classes[c] in CAPABILITY_CLASSES or classify(c) in CAPABILITY_CLASSES}))
 
     def escalate(self, decision: Decision, handoff: str, step: int) -> Dict[str, Any]:
         self.role = ROLE_ESCALATION
@@ -480,7 +621,8 @@ class RoutedModel:
         self.budget.escalations.append(record)
         return record
 
-    def stop_class(self, stop_reason: str, *, open_human: bool, last_codes: List[str], ok: bool) -> str:
+    def stop_class(self, stop_reason: str, *, open_human: bool, last_codes: List[str], ok: bool,
+                   last_classes: Optional[Dict[str, str]] = None) -> str:
         """Why a turn ended, in the terms the comparison needs: finished, ran out of budget, needs a person, the evidence is not
         there, the model did not manage with the evidence it had (and whether the escalation model was tried), or the provider failed."""
         if ok:
@@ -491,8 +633,12 @@ class RoutedModel:
             return "provider_error"
         if stop_reason == "needs_user" or open_human:
             return "needs_human"
-        kinds = classify_all([c for c in last_codes if classify(c) != INFO])
-        if kinds.get(EVIDENCE) or kinds.get(REFRESH):
+        kinds: Dict[str, List[str]] = {}
+        for c in last_codes:
+            kind = (last_classes or {}).get(c) or classify(c)
+            if kind != INFO:
+                kinds.setdefault(kind, []).append(c)
+        if kinds.get(ABSENT) or kinds.get(EVIDENCE) or kinds.get(REFRESH):
             return "evidence_insufficient"
         if kinds.get(SYSTEM):
             return "tool_error"

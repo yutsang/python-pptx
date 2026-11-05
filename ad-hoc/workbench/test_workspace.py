@@ -98,10 +98,14 @@ class Thread(unittest.TestCase):
         self.assertEqual(turn.tool_path, [])                                 # it did not fetch the evidence again
         self.assertIn("EARLIER IN THIS SESSION", seen_prompts[0])
         self.assertIn("应收账款余额130.0万元", seen_prompts[0])
-        # the same citation from a controller with no memory is refused: that is what the memory buys
+        self.assertEqual(turn.usage["model_calls"], 1)
+        # the same citation from a controller with no memory is sent back first: the controller has to fetch the evidence and
+        # ask again. That fetch and that second call are what the memory saves.
         cold = C.AgentController(self.source, Policy(second)).run("再说一次期末余额")
-        self.assertNotEqual(cold.stop_reason, C.STOP_ANSWERED)
-        self.assertIn("UNSEEN_REF", json.dumps(cold.steps, ensure_ascii=False))
+        self.assertFalse(cold.steps[0]["accepted"])
+        self.assertIn("UNSEEN_REF", cold.steps[0]["feedback"])
+        self.assertEqual(cold.steps[0].get("controller_fetched"), [ACCOUNT])
+        self.assertEqual(cold.usage["model_calls"], 2)
 
     def test_put_that_in_the_report_makes_a_draft_from_the_answer_with_no_model_call(self):
         self.work.ask("应收账款期末余额是多少？")

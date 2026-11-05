@@ -216,20 +216,65 @@ class Escalation(unittest.TestCase):
         self.assertIn("TASK STATE", text)
         self.assertIn("budget left: calls 3", text)
 
-    def test_missing_evidence_never_sends_a_turn_to_the_stronger_model(self):
+    def test_evidence_that_exists_but_was_not_read_is_fetched_by_the_controller_not_by_a_stronger_model(self):
+        calls, seen = [], []
+        session = clean_session()
+        real_ref = total_ref(cl.evidence_view(session.contracts[ACCOUNT]), P2)
+
+        def skips_reading(user, results):
+            seen.append(user)
+            return {"answer": {"claims": [{"account": ACCOUNT, "kind": "amount", "periods": [P2], "cites": [real_ref],
+                                           "text": "2025年12月31日应收账款余额130.0万元"}], "unresolved": []}}
+        router = routed(Policy(skips_reading), Policy(lambda u, r: calls.append(u) or tool("inspect_sources")))
+        run = C.AgentController(session, router).run("应收账款？")
+        self.assertTrue(run.ok, run.report)                                  # the second answer cites what the controller fetched
+        self.assertEqual(calls, [])
+        self.assertEqual(router.budget.escalations, [])
+        self.assertEqual(run.steps[0].get("controller_fetched"), [ACCOUNT])
+        self.assertIn("fetched for you", seen[1])
+        self.assertEqual(router.turn_log[0]["classes"], ["evidence"])
+
+    def test_a_ref_that_exists_nowhere_after_the_evidence_was_read_is_a_capability_failure_and_escalates_once(self):
         calls = []
 
-        def unseen(user, results):
+        def invents(user, results):
             view = evidence_of(results)
             if view is None:
                 return tool("get_account_evidence", account=ACCOUNT)
             return {"answer": {"claims": [{"account": ACCOUNT, "kind": "amount", "periods": [P2], "cites": ["F999"], "text": "2025年12月31日应收账款余额130.0万元"}],
                                "unresolved": []}}
-        router = routed(Policy(unseen), Policy(lambda u, r: calls.append(u) or tool("inspect_sources")))
+        router = routed(Policy(invents), Policy(lambda u, r: calls.append(u) or tool("inspect_sources")))
         run = C.AgentController(clean_session(), router).run("应收账款？")
-        self.assertEqual(run.stop_reason, C.STOP_REJECTED)
+        self.assertFalse(run.ok)
+        self.assertEqual(len(router.budget.escalations), 1)
+        self.assertEqual(router.budget.escalations[0]["reason"], "capability")
+        self.assertTrue(calls)
+        self.assertIn(run.report["routing"]["stop_class"], ("capability_insufficient_after_escalation", "evidence_insufficient"))
+
+    def test_a_cause_the_tools_were_asked_about_and_found_nothing_for_is_absent_never_escalated(self):
+        calls = []
+
+        def keeps_the_cause(user, results):
+            names = [n for n, _ in results]
+            view = evidence_of(results)
+            if view is None:
+                return tool("get_account_evidence", account=ACCOUNT)
+            if "search_notes" not in names:
+                return tool("search_notes", query="不存在的原因关键词", account=ACCOUNT)
+            return {"answer": {"claims": [{"account": ACCOUNT, "kind": "amount", "periods": [P2], "cites": [total_ref(view, P2)],
+                                           "text": "2025年12月31日应收账款余额130.0万元，主要由于新增大客户"}], "unresolved": []}}
+        session = clean_session()
+        for contract in session.contracts.values():
+            contract.notes = []                                             # no remark anywhere: the cause has nothing behind it
+        router = routed(Policy(keeps_the_cause), Policy(lambda u, r: calls.append(u) or tool("inspect_sources")))
+        from fdd_utils.agent import tools as T
+        nothing = lambda session, query, account="", max_hits=12: {"query": query, "hits": [], "total_matches": 0, "source": {}, "limits": {}}
+        with mock.patch.object(T.TOOLS["search_notes"], "fn", nothing):    # the synthetic session has no file to scan; the search finds nothing
+            run = C.AgentController(session, router).run("应收账款为什么增加？")
+        self.assertFalse(run.ok)
         self.assertEqual(calls, [])
         self.assertEqual(router.budget.escalations, [])
+        self.assertTrue(any(s.get("absent") == ["CAUSE_UNSUPPORTED"] for s in run.steps), run.steps)
         self.assertEqual(run.report["routing"]["stop_class"], "evidence_insufficient")
 
     def test_a_conflict_only_a_person_can_settle_never_sends_a_turn_to_the_stronger_model(self):
@@ -433,9 +478,15 @@ class Books(unittest.TestCase):
 
 class Thinking(unittest.TestCase):
     def test_what_each_provider_branch_actually_sends(self):
-        self.assertEqual(C.thinking_params("dashscope", ""), ({"allow_thinking": False}, False))     # the old default, nothing requested
-        self.assertEqual(C.thinking_params("dashscope", "off"), ({"allow_thinking": False}, False))  # asked for, but this branch sends no such field
-        self.assertEqual(C.thinking_params("deepseek", "high"), ({"allow_thinking": True, "reasoning_effort": "high"}, False))
+        self.assertEqual(C.thinking_params("dashscope", ""), ({}, False))                           # nothing requested, nothing sent
+        self.assertEqual(C.thinking_params("dashscope", "off"), ({}, False))                        # asked for, but config declares no field for it
+        self.assertEqual(C.thinking_params("deepseek", "high"), ({}, False))
+        # a provider block that declares its thinking body (thinking_extra_body) gets the request, labelled unverified elsewhere
+        self.assertEqual(C.thinking_params("dashscope", "on", declared=True), ({"allow_thinking": True}, True))
+        self.assertEqual(C.thinking_params("dashscope", "off", declared=True), ({"allow_thinking": False}, True))
+        self.assertEqual(C.thinking_params("deepseek", "high", declared=True), ({"allow_thinking": True, "reasoning_effort": "high"}, True))
+        self.assertEqual(C.thinking_params("dashscope", "", declared=True), ({}, False))
+        self.assertEqual(C.thinking_params("workbench", "on", reasoning_effort="high"), ({"allow_thinking": True, "reasoning_effort": "high"}, True))
         self.assertEqual(C.thinking_params("local", "off"), ({"allow_thinking": False}, True))
         self.assertEqual(C.thinking_params("local", "on"), ({"allow_thinking": True}, True))
         self.assertEqual(C.thinking_params("workbench", "low"), ({"allow_thinking": True, "reasoning_effort": "low"}, True))
@@ -454,6 +505,7 @@ class Thinking(unittest.TestCase):
 
         class FakeClient:
             def __init__(self, **kw):
+                seen["init"] = kw
                 self.config_details = {"chat_model": "gateway-model-id"}
 
             def get_response(self, user, system, **kw):
@@ -468,8 +520,9 @@ class Thinking(unittest.TestCase):
         row = json.loads(tmp.read_text(encoding="utf-8").splitlines()[0])
         self.assertEqual(row["stage"], "agent_escalation")
         self.assertNotEqual(row["stage"], "Validator")
-        self.assertEqual(seen["kwargs"]["allow_thinking"], False)
+        self.assertNotIn("allow_thinking", seen["kwargs"])                  # dashscope with no declared thinking body: nothing is sent
         self.assertNotIn("reasoning_effort", seen["kwargs"])
+        self.assertEqual(seen["init"]["agent_name"], C.AGENT_IDENTITY)      # its own identity, not subagent_4's
         self.assertEqual((out["cached_prompt_tokens"], out["reasoning_tokens"]), (7, 3))
         self.assertEqual(model.chat_model, "gateway-model-id")
 
@@ -537,11 +590,19 @@ class InAWorkingSession(unittest.TestCase):
         self.assertEqual((F.agent_policy(cfg).mode, F.agent_policy(cfg).escalate_after), ("escalate", 3))
         limits = F.agent_limits(cfg)
         self.assertEqual((limits.max_tokens, limits.max_cost, limits.max_calls), (400000, None, 60))
-        self.assertEqual(F.role_config(cfg, "escalation"), {"provider": "dashscope", "model": "pro-id", "thinking": "off"})
+        self.assertEqual(F.role_config(cfg, "escalation"), {"provider": "dashscope", "model": "pro-id", "thinking": "off",
+                                                             "reasoning_effort": "", "max_output": None})
+        cfg["agent"]["models"]["primary"] = {"provider": "dashscope", "model": "flash-id", "reasoning_effort": "low", "max_output": 900}
+        self.assertEqual(F.role_config(cfg, "primary"), {"provider": "dashscope", "model": "flash-id", "thinking": "",
+                                                          "reasoning_effort": "low", "max_output": 900})
+        self.assertEqual(F.agent_policy(cfg).escalate_tasks, [])
+        cfg["agent"]["escalate_tasks"] = ["adjustment_bridge"]
+        self.assertEqual(F.agent_policy(cfg).escalate_tasks, ["adjustment_bridge"])
         self.assertEqual(F.price_for(cfg, "dashscope", "pro-id"), (12.0, 24.0))
         self.assertIsNone(F.price_for(cfg, "dashscope", "flash-id"), "an entry with no price has none; nothing is borrowed")
         self.assertIsNone(F.price_for(cfg, "deepseek", "pro-id"))
-        self.assertEqual(F.parse_role("dashscope::flash-id"), {"provider": "dashscope", "model": "flash-id", "thinking": ""})
+        self.assertEqual(F.parse_role("dashscope::flash-id"), {"provider": "dashscope", "model": "flash-id", "thinking": "",
+                                                               "reasoning_effort": "", "max_output": None})
         with self.assertRaises(ValueError):
             F.agent_policy({"agent": {"routing": "both"}})
 

@@ -82,21 +82,27 @@ def agent_policy(config: Optional[Dict[str, Any]] = None, *, mode: Optional[str]
     if chosen not in ("single", "escalate"):
         raise ValueError(f"agent.routing must be 'single' or 'escalate', not {chosen!r}")
     defaults = Policy()
+    tasks = block.get("escalate_tasks") or []
+    if isinstance(tasks, str):
+        tasks = [t.strip() for t in tasks.split(",") if t.strip()]
     return Policy(mode=chosen, escalate_after=int(block.get("escalate_after", defaults.escalate_after)),
                   max_escalations_per_turn=int(block.get("max_escalations", defaults.max_escalations_per_turn)),
-                  handoff_max_tokens=int(block.get("handoff_max_tokens", defaults.handoff_max_tokens)))
+                  handoff_max_tokens=int(block.get("handoff_max_tokens", defaults.handoff_max_tokens)),
+                  escalate_tasks=[str(t) for t in tasks])
 
 
-def role_config(config: Optional[Dict[str, Any]], role: str) -> Dict[str, str]:
-    """{'provider', 'model', 'thinking'} configured for a role under agent.models; empty strings when unset."""
+def role_config(config: Optional[Dict[str, Any]], role: str) -> Dict[str, Any]:
+    """{'provider', 'model', 'thinking', 'reasoning_effort', 'max_output'} configured for a role under agent.models; empty strings
+    (and None for max_output) when unset."""
     entry = ((_agent_block(config).get("models") or {}).get(role)) or {}
-    return {"provider": str(entry.get("provider") or ""), "model": str(entry.get("model") or ""), "thinking": str(entry.get("thinking") or "")}
+    return {"provider": str(entry.get("provider") or ""), "model": str(entry.get("model") or ""), "thinking": str(entry.get("thinking") or ""),
+            "reasoning_effort": str(entry.get("reasoning_effort") or ""), "max_output": _number(entry.get("max_output"))}
 
 
-def parse_role(text: str) -> Dict[str, str]:
+def parse_role(text: str) -> Dict[str, Any]:
     """'provider::model' (the form compare_models.py uses), or a bare provider."""
     provider, _, model = str(text or "").partition("::")
-    return {"provider": provider.strip(), "model": model.strip(), "thinking": ""}
+    return {"provider": provider.strip(), "model": model.strip(), "thinking": "", "reasoning_effort": "", "max_output": None}
 
 
 def price_for(config: Optional[Dict[str, Any]], provider: str, model: str):

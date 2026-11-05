@@ -204,7 +204,9 @@ class Gates(unittest.TestCase):
         self.assertEqual(run.stop_reason, C.STOP_ANSWERED)
         self.assertFalse(run.steps[0]["accepted"])
         self.assertIn("UNSEEN_REF", run.steps[0]["feedback"])
-        self.assertEqual(run.tool_path, ["inspect_sources", "get_account_evidence"])
+        # the ref it cited exists, its evidence had not been read: the controller fetched it (a free tool call, not a model step)
+        self.assertEqual(run.steps[0].get("controller_fetched"), ["应收账款"])
+        self.assertEqual(run.tool_path, ["inspect_sources"])
 
     def test_a_blocking_issue_must_be_investigated_or_named(self):
         def naive(user, results):

@@ -238,6 +238,16 @@ class AIClient:
             'prompt_cache_miss_tokens': getattr(usage, 'prompt_cache_miss_tokens', None),
         }
 
+    def _thinking_extra_body(self, allow_thinking: Optional[bool], reasoning_effort: Optional[str]) -> Optional[Dict[str, Any]]:
+        """The request body a provider block declares for thinking (thinking_extra_body: {on: {...}, off: {...}, high: {...}}), or None.
+        Nothing is sent when the block declares nothing or the caller asked for nothing (allow_thinking None, no effort)."""
+        mapping = (self.config_details or {}).get('thinking_extra_body')
+        if not isinstance(mapping, dict) or (allow_thinking is None and not reasoning_effort):
+            return None
+        key = reasoning_effort if reasoning_effort and reasoning_effort in mapping else ('on' if allow_thinking else 'off')
+        body = mapping.get(key)
+        return dict(body) if isinstance(body, dict) and body else None
+
     @staticmethod
     def _read_reasoning_tokens(usage: Any) -> Optional[int]:
         """Tokens the model spent thinking, where the provider says so (OpenAI-style `completion_tokens_details.
@@ -535,6 +545,7 @@ class AIClient:
                 total_tokens=payload.get("total_tokens"),
                 cached_prompt_tokens=payload.get("cached_prompt_tokens") or payload.get("prompt_cache_hit_tokens"),
                 reasoning_tokens=payload.get("reasoning_tokens"),
+                model_reported=payload.get("model_reported"),
                 estimated_prompt_tokens=payload.get("estimated_prompt_tokens"),
                 estimated_output_tokens=payload.get("estimated_output_tokens"),
                 token_source=payload.get("token_usage_source"),
@@ -845,7 +856,13 @@ class AIClient:
                 usage = getattr(response, 'usage', None)
                 
             elif self.model_type in ('deepseek', 'dashscope'):
-                response = response_method(**params)
+                ds_params = dict(params)
+                thinking_body = self._thinking_extra_body(allow_thinking, reasoning_effort)
+                if thinking_body:
+                    # Only a provider block that DECLARES its thinking parameter (thinking_extra_body in config.yml) gets one; this
+                    # branch sent none before, and whether a given gateway honours it is unverified until a probe says so.
+                    ds_params['extra_body'] = thinking_body
+                response = response_method(**ds_params)
                 content = self._extract_response_content(response)
                 usage = getattr(response, 'usage', None)
             else:
@@ -886,6 +903,9 @@ class AIClient:
                 )
             )
             response_payload["reasoning_tokens"] = self._read_reasoning_tokens(usage)
+            # the model id the provider says answered (a gateway alias can resolve to a dated version); None when it does not say
+            reported_model = getattr(response, 'model', None)
+            response_payload["model_reported"] = str(reported_model) if isinstance(reported_model, str) and reported_model else None
             response_payload["temperature"] = temperature
             response_payload["max_tokens"] = max_tokens
             response_payload["top_p"] = top_p

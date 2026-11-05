@@ -116,18 +116,37 @@ class Memory:
 #: (see THINKING_HONOURED); asking for it on another is recorded as not applied, never reported as if it had been.
 THINKING_EFFORTS = ("low", "medium", "high")
 THINKING_HONOURED = {"local": ("allow_thinking",), "workbench": ("reasoning_effort",)}
+#: provider branches that send a thinking parameter only when the provider block in config.yml declares its shape
+#: (thinking_extra_body); what the gateway does with it is unverified until a probe has been run against it
+THINKING_DECLARED = ("dashscope", "deepseek")
+
+#: the name the agent path's calls carry in the client's logs and the usage ledger (`client_agent`); it is not a pipeline stage,
+#: so nothing it spends is filed under the Validator. Per-agent settings, if any, live under agents.fdd_agent in config.yml.
+AGENT_IDENTITY = "fdd_agent"
 
 
-def thinking_params(model_type: str, thinking: str) -> Tuple[Dict[str, Any], bool]:
+def thinking_params(model_type: str, thinking: str, *, declared: bool = False, reasoning_effort: str = "") -> Tuple[Dict[str, Any], bool]:
     """(keyword arguments for get_response, whether this provider branch acts on them). `thinking` is "" (the provider's
-    default: nothing is sent, except that allow_thinking stays False as it always was here), "off", "on" or an effort."""
-    honoured = THINKING_HONOURED.get(model_type, ())
+    default: nothing is sent, except that allow_thinking stays False on the branches that always had it), "off", "on" or an
+    effort. `declared` says the provider block declares a thinking body (dashscope / deepseek only). An explicit
+    `reasoning_effort` wins over an effort given as `thinking`."""
     want = str(thinking or "").strip().lower()
-    params: Dict[str, Any] = {"allow_thinking": want in ("on", "true") or want in THINKING_EFFORTS}
-    if want in THINKING_EFFORTS:
-        params["reasoning_effort"] = want
-    sent = bool(want) and (("allow_thinking" in honoured and want in ("off", "on", "true", "false")) or
-                           ("reasoning_effort" in honoured and want in THINKING_EFFORTS))
+    effort = str(reasoning_effort or "").strip().lower() or (want if want in THINKING_EFFORTS else "")
+    if model_type in THINKING_DECLARED:
+        if not declared or not (want or effort):
+            return {}, False
+        params: Dict[str, Any] = {"allow_thinking": want in ("on", "true") or bool(effort)}
+        if want in ("off", "false") and not effort:
+            params["allow_thinking"] = False
+        if effort:
+            params["reasoning_effort"] = effort
+        return params, True
+    honoured = THINKING_HONOURED.get(model_type, ())
+    params = {"allow_thinking": want in ("on", "true") or bool(effort)}
+    if effort:
+        params["reasoning_effort"] = effort
+    sent = bool(want or effort) and (("allow_thinking" in honoured and want in ("off", "on", "true", "false")) or
+                                     ("reasoning_effort" in honoured and bool(effort)))
     return params, sent
 
 
@@ -136,16 +155,24 @@ class AIClientModel:
     response cache already sit behind. Constructed lazily so importing the
     controller needs no provider.
 
-    The ledger line it writes is labelled by `ledger_stage` (default "agent"), not by the client's agent name: the
-    client is built on subagent_4's settings, and a ledger that called every agent call a Validator call would
-    put this path's tokens into the legacy pipeline's column."""
+    The client is built under its own identity (AGENT_IDENTITY), not a pipeline stage's: the ledger's `client_agent` says
+    fdd_agent and its `stage` says agent_<role>, so the agent's tokens never land in the Validator's column. `provider` is
+    the branch the client actually uses: AIClient falls back to another configured provider when the requested one is not
+    configured, and that difference is kept (`provider_fallback`) rather than hidden."""
 
     def __init__(self, model_type: str = "local", model_name: Optional[str] = None, language: str = "Chi", *,
-                 thinking: str = "", ledger_stage: str = "agent"):
+                 thinking: str = "", ledger_stage: str = "agent", reasoning_effort: str = "", max_output: Optional[int] = None):
         from ..ai.client import AIClient
-        self.client = AIClient(model_type=model_type, agent_name="subagent_4", language=language, model_name=model_name)
-        self.model_type, self.model_name, self.thinking, self.ledger_stage = model_type, model_name, thinking, ledger_stage
-        self.params, self.thinking_applied = thinking_params(model_type, thinking)
+        self.client = AIClient(model_type=model_type, agent_name=AGENT_IDENTITY, language=language, model_name=model_name)
+        self.requested_provider = model_type
+        self.provider = str(getattr(self.client, "model_type", model_type) or model_type)
+        self.provider_fallback = self.provider != model_type
+        self.model_type, self.model_name, self.thinking, self.ledger_stage = self.provider, model_name, thinking, ledger_stage
+        self.reasoning_effort, self.max_output = reasoning_effort, max_output
+        declared = isinstance((getattr(self.client, "config_details", None) or {}).get("thinking_extra_body"), dict)
+        self.params, self.thinking_applied = thinking_params(self.provider, thinking, declared=declared, reasoning_effort=reasoning_effort)
+        #: a thinking parameter is sent because config declares its shape; no probe has shown the gateway acts on it
+        self.thinking_unverified = self.thinking_applied and self.provider in THINKING_DECLARED
 
     @property
     def chat_model(self) -> str:
@@ -153,12 +180,15 @@ class AIClientModel:
 
     def __call__(self, system: str, user: str, max_tokens: int) -> Dict[str, Any]:
         from .. import usage_ledger
+        if self.max_output:
+            max_tokens = min(int(max_tokens), int(self.max_output))
         with usage_ledger.scope(stage=self.ledger_stage):
             response = self.client.get_response(user, system, temperature=0.1, max_tokens=max_tokens, **self.params) or {}
         return {"content": str(response.get("content") or ""),
                 "prompt_tokens": response.get("prompt_tokens"), "completion_tokens": response.get("completion_tokens"),
                 "cached_prompt_tokens": response.get("cached_prompt_tokens") or response.get("prompt_cache_hit_tokens"),
                 "reasoning_tokens": response.get("reasoning_tokens"), "token_source": response.get("token_usage_source"),
+                "model_reported": response.get("model_reported"),
                 "saved_prompt_tokens": response.get("saved_prompt_tokens"), "saved_completion_tokens": response.get("saved_completion_tokens")}
 
 
@@ -252,6 +282,14 @@ class AgentController:
         self.last_draft: Optional[Dict[str, Any]] = None
         self._gate_codes: List[str] = []
         self._step_log: List[Tuple[int, List[str]]] = []
+        #: what routing.effective_classes needs beyond the codes (filled as the turn goes)
+        self._step_classes: Dict[int, Dict[str, str]] = {}
+        self._unseen: Dict[str, Any] = {}
+        self._cause_accounts: set = set()
+        self._searched: set = set()
+        self._notes_found: Dict[str, int] = {}
+        self._tool_failures: Dict[str, int] = {}
+        self._repeated_failure = False
 
     # -- the run -----------------------------------------------------------------------
 
@@ -262,7 +300,9 @@ class AgentController:
                                  "provider_completion_tokens": 0, "provider_reported": False, "by_role": {}}
         router = self.router
         if router is not None:
-            router.begin_turn(turn_number)
+            started_on = router.begin_turn(turn_number, R.task_kinds(request))
+            if started_on is not None:
+                self.escalations.append({**started_on, "handoff": ""})
         system = system_prompt(mode, self.session, self.language, remembered=bool(self.memory and self.memory.history))
         goal = request if not account else f"{request}\n[account: {account}; export: {str(export).lower()}]"
         no_progress, last_signature = 0, self._signature()
@@ -335,6 +375,11 @@ class AgentController:
                 self.rejections += 1
                 self._note("CONTROLLER: answer not accepted. " + feedback)
                 record["feedback"] = feedback
+                if router is not None:
+                    router.note_rejection()
+                fetched = self._fetch_unread_evidence(codes)
+                if fetched:
+                    record["controller_fetched"] = fetched
                 if self.rejections >= self.budget.max_rejections:
                     self._step_log.append((step, codes))
                     run.stop_reason = STOP_REJECTED
@@ -351,6 +396,8 @@ class AgentController:
                 self.rejections += 1
                 self._note("CONTROLLER: not finished. " + feedback)
                 record["feedback"] = feedback
+                if router is not None:
+                    router.note_rejection()
                 if self.rejections >= self.budget.max_rejections:
                     self._step_log.append((step, codes))
                     run.stop_reason = STOP_REJECTED
@@ -379,8 +426,14 @@ class AgentController:
             if router is not None:
                 if not progress and not codes and not self._waiting_on_others():
                     codes = ["NO_PROGRESS"]             # a step that added nothing, with nothing the model was waiting on
+                classes = R.effective_classes(codes, self._context(codes))
                 self._step_log.append((step, codes))
-                decision = router.observe(R.StepEvent(step=step, codes=codes, progress=progress, no_progress=no_progress))
+                self._step_classes[step] = classes
+                absent = {c: k for c, k in classes.items() if k == R.ABSENT}
+                if absent:
+                    record["absent"] = sorted(absent)
+                    self._note("CONTROLLER:" + R.next_step_hint_for(absent))
+                decision = router.observe(R.StepEvent(step=step, codes=codes, progress=progress, no_progress=no_progress, classes=classes))
                 if decision.escalate:
                     handoff = self._build_handoff(goal, mode, resolved_account or "", step)
                     info = router.escalate(decision, handoff, step)
@@ -399,6 +452,57 @@ class AgentController:
         if not run.stop_reason:
             run.stop_reason = STOP_STEPS
         return self._finish(run, usage, started)
+
+    def _context(self, codes: List[str]) -> R.StepContext:
+        """What this step's codes mean in context (routing.effective_classes): what was read, what exists, what the searches found."""
+        repeats: Dict[str, int] = {}
+        for _step, earlier in self._step_log:
+            for code in earlier:
+                repeats[code] = repeats.get(code, 0) + 1
+        ctx = R.StepContext(fetched_accounts=set(self.consulted), cause_accounts=set(self._cause_accounts), searched=set(self._searched),
+                            notes_found=dict(self._notes_found), repeated_tool_failure=self._repeated_failure, repeats=repeats)
+        if any(c in ("UNSEEN_REF", "UNKNOWN_REF") for c in codes) and self._unseen:
+            ctx.cited_refs_exist = bool(self._unseen.get("exist"))
+            ctx.cited_ref_accounts = set(self._unseen.get("accounts") or [])
+            ctx.cited_refs_hidden_by_paging = bool(self._unseen.get("paging"))
+        self._repeated_failure = False
+        return ctx
+
+    def _fetch_unread_evidence(self, codes: List[str]) -> List[str]:
+        """Evidence that exists but was not read is fetched here, by the controller, before the next model call: reading it is a
+        tool call, free and deterministic, and no stronger model is needed to do it. At most two accounts per step."""
+        if "UNSEEN_REF" not in codes or not self._unseen.get("exist"):
+            return []
+        fetched = []
+        for account in [a for a in self._unseen.get("accounts") or [] if a not in self.consulted][:2]:
+            result = T.call_tool(self.session, "get_account_evidence", {"account": account})
+            self._absorb("get_account_evidence", {"account": account}, result)
+            self.transcript.append({"tool": "get_account_evidence", "args": {"account": account}, "result": result.to_dict(), "by": "controller"})
+            if result.ok:
+                fetched.append(account)
+        if fetched:
+            self._note("CONTROLLER: the refs you cited exist; their evidence was not read, so it was fetched for you: " + ", ".join(fetched)
+                       + ". Cite only refs it shows.")
+        return fetched
+
+    def _unseen_context(self, claims: List[Dict[str, Any]], unseen: List[str], default_account: str) -> None:
+        """For refs no tool returned: do they exist in the account the claim names (refs are numbered per account), and if they do,
+        were they among the components the evidence view left out (so paging, not a stronger model, would show them)?"""
+        exist, accounts, paging = True, set(), False
+        for claim in claims:
+            account = self.session.resolve_account(str(claim.get("account") or default_account)) or ""
+            contract = self.session.contracts.get(account)
+            for ref in list(claim.get("cites") or []) + list(claim.get("cause_cites") or []):
+                if ref not in unseen:
+                    continue
+                item = (contract.fact(ref) or contract.note(ref)) if contract is not None else None
+                if item is None:
+                    exist = False
+                    continue
+                accounts.add(account)
+                if item.get("role") == "component" or item.get("line") not in (None, "", "(total)"):
+                    paging = paging or account in self.consulted
+        self._unseen = {"exist": exist, "accounts": sorted(accounts), "paging": paging}
 
     def _waiting_on_others(self) -> bool:
         """An issue is open that a tool or a person has to settle: a step that adds nothing then is not the model's failure."""
@@ -500,6 +604,14 @@ class AgentController:
 
     def _absorb(self, name: str, args: Dict[str, Any], result: T.ToolResult) -> None:
         self.seen_refs |= set(result.basis)
+        if not result.ok:
+            key = f"{name}|{json.dumps(args, sort_keys=True, ensure_ascii=False, default=str)}|{(result.error or {}).get('code')}"
+            self._tool_failures[key] = self._tool_failures.get(key, 0) + 1
+            self._repeated_failure = self._tool_failures[key] > 1
+        if name == "search_notes" and result.ok and args.get("account"):
+            account = self.session.resolve_account(str(args.get("account"))) or str(args.get("account"))
+            self._searched.add(account)
+            self._notes_found[account] = max(self._notes_found.get(account, 0), len((result.data or {}).get("hits") or []))
         if result.error and result.error["code"] == "STALE_SOURCE":
             self._issue("stale", "blocking", "", "the workbook changed on disk since this session read it; figures may no longer exist",
                         "tell the user the sources moved; do not answer from earlier results")
@@ -519,6 +631,7 @@ class AgentController:
             account = self.session.resolve_account(str(args.get("account"))) or str(args.get("account"))
             if account not in self.consulted:
                 self.consulted.append(account)
+            self._notes_found[account] = max(self._notes_found.get(account, 0), len((result.data or {}).get("notes") or []))
             self._issues_from_evidence(account, result.data)
         if name == "validate_candidate" and isinstance(args.get("claims"), list):
             account = self.session.resolve_account(str(args.get("account"))) or str(args.get("account") or "")
@@ -582,6 +695,7 @@ class AgentController:
         unseen = sorted({r for c in stamped for r in list(c.get("cites") or []) + list(c.get("cause_cites") or [])
                          if r not in self.seen_refs})
         if unseen:
+            self._unseen_context(stamped, unseen, default_account)
             self._gate_codes = ["UNSEEN_REF"]
             self.last_draft = {"claims": stamped, "objections": [f"UNSEEN_REF: {unseen}"]}
             return False, (f"UNSEEN_REF: you cite {unseen}, which no tool returned in this conversation. "
@@ -595,6 +709,8 @@ class AgentController:
                        + next((f['message'] for f in v['findings'] if f['severity'] in ('failed', 'review')), "")
                        for v in outcome["verdicts"] if v["verdict"] in ("failed", "unverified")]
                 self._gate_codes = sorted(outcome.get("by_code") or {})
+                self._cause_accounts = {v.get("account") or default_account for v in outcome["verdicts"]
+                                        if any(f.get("code") == "CAUSE_UNSUPPORTED" for f in v.get("findings") or [])}
                 self.last_draft = {"claims": stamped, "objections": self._objections(outcome)}
                 return False, "the verifier did not accept: " + " | ".join(bad)[:900] + R.next_step_hint(self._gate_codes), None
         blocking = [i for i in self.issues.values() if i.severity == "blocking" and not i.resolved
@@ -677,10 +793,16 @@ class AgentController:
         if self.router is not None:
             open_human = any(R.classify(i.id) == R.HUMAN and not i.resolved for i in self.issues.values())
             last_codes = [c for _step, codes in self._step_log[-3:] for c in codes]
+            last_classes: Dict[str, str] = {}
+            for step_n, _codes in self._step_log[-3:]:
+                last_classes.update(self._step_classes.get(step_n) or {})
             run.report["routing"] = {
-                "stop_class": self.router.stop_class(run.stop_reason, open_human=open_human, last_codes=last_codes, ok=run.ok),
+                "stop_class": self.router.stop_class(run.stop_reason, open_human=open_human, last_codes=last_codes, ok=run.ok,
+                                                     last_classes=last_classes),
                 "role_at_end": self.router.role, "mode": self.router.policy.mode,
-                "models": {role: {"provider": spec.provider, "model": spec.model, "thinking": spec.thinking, "thinking_applied": spec.thinking_applied}
+                "models": {role: {"provider": spec.provider, "model": spec.model, "thinking": spec.thinking, "thinking_applied": spec.thinking_applied,
+                                  "thinking_unverified": spec.thinking_unverified, "max_output": spec.max_output,
+                                  "provider_requested": spec.provider_requested or None}
                            for role, spec in self.router.roles.items()},
                 "escalations": self.escalations, "steps": self.router.turn_log}
         return run
