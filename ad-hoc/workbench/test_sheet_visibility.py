@@ -108,7 +108,8 @@ class CliAutoDetect(unittest.TestCase):
         self.cli = inspect_databook
 
     def names(self, path):
-        return self.cli._resolve_financials_sheets(pd.ExcelFile(path), path)
+        with pd.ExcelFile(path) as book:                                    # closed before the temp folder goes (Windows refuses otherwise)
+            return self.cli._resolve_financials_sheets(book, path)
 
     def test_visible_sheets_keep_the_old_choice_and_order(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -31,6 +31,17 @@ def app(work, path):
     render_agent_panel(st.session_state, factory=lambda _s: work)
 
 
+def nested_expanders(node, inside=False):
+    """Labels of expanders found inside another expander. Older Streamlit versions raise on this at run time; a newer one may not."""
+    found = []
+    for child in getattr(node, "children", {}).values():
+        is_expander = getattr(child, "type", "") == "expander"
+        if is_expander and inside:
+            found.append(getattr(child, "label", "?"))
+        found += nested_expanders(child, inside or is_expander)
+    return found
+
+
 class Panel(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="panel_")
@@ -76,7 +87,8 @@ class Panel(unittest.TestCase):
         self.assertEqual(self.work.candidates_view()[0]["status"], "accepted")
         page = " ".join(m.value for m in at.markdown)
         self.assertIn("ACCEPTED", page)
-        self.assertTrue(any("What it replaces" in e.label for e in at.expander), [e.label for e in at.expander])
+        self.assertIn("What it replaces", page)
+        self.assertEqual(nested_expanders(at.main), [], "Streamlit refuses an expander inside an expander; the panel is itself one")
         self.assertIn("应收账款余额较低。", page)                              # what the draft would replace is shown
         self.assertFalse(at.button(key="agent_export").disabled)
 

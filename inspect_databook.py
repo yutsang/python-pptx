@@ -4070,7 +4070,12 @@ def resolve_auto_rollup_targets(files: List[Path]) -> Dict[Path, Tuple[Path, str
             continue
         try:
             from fdd_utils.workbook.visibility import filter_visible
-            rollup_sheets = filter_visible(str(rollup), _load_workbook_names(rollup, read_only=True).sheetnames)
+            wb_names = _load_workbook_names(rollup, read_only=True)
+            try:
+                all_names = list(wb_names.sheetnames)
+            finally:
+                wb_names.close()                        # an open handle makes Windows refuse to delete or replace the file
+            rollup_sheets = filter_visible(str(rollup), all_names)
         except Exception as exc:
             print(f"  ⚠️ Portfolio {portfolio}: could not read roll-up {rollup.name!r} sheet names: {exc}")
             continue

@@ -348,7 +348,7 @@ def scan_files(paths: Iterable[Path], values: List[str], root: Optional[Path] = 
         except OSError:
             continue
         for kind in scan_text_for_secrets(text, values):
-            out.append((str(path.relative_to(root)) if root else path.name, kind))
+            out.append((path.relative_to(root).as_posix() if root else path.name, kind))
     return out
 
 
@@ -557,7 +557,7 @@ def collect_files(plan: Dict[str, Any], leave_out_databook: bool = False) -> Lis
         elif name == "run/evidence":
             for p in sorted(Path(piece["path"]).rglob("*")):
                 if p.is_file():
-                    out.append((p, f"run/{run.name}/evidence/{p.relative_to(piece['path'])}"))
+                    out.append((p, f"run/{run.name}/evidence/{p.relative_to(piece['path']).as_posix()}"))
         elif name.startswith("deck") and piece.get("present"):
             out.append((Path(piece["path"]), f"deck/{Path(piece['path']).name}"))
     return out
@@ -636,7 +636,7 @@ def verify_pack(pack: Path, *, config: Optional[Dict[str, Any]] = None) -> Dict[
             problems.append(f"listed but missing: {rel}")
         elif sha256_file(path) != entry["sha256"]:
             problems.append(f"changed since it was packed: {rel}")
-    on_disk = {str(p.relative_to(pack)) for p in pack.rglob("*") if p.is_file()} - {MANIFEST, "README.txt"}
+    on_disk = {p.relative_to(pack).as_posix() for p in pack.rglob("*") if p.is_file()} - {MANIFEST, "README.txt"}   # posix: a pack written on Windows is verified on a Mac
     for extra in sorted(on_disk - set(listed)):
         problems.append(f"not in the manifest: {extra}")
     for name in on_disk:

@@ -90,8 +90,9 @@ def _show_candidates(work: Any, can_export: bool) -> None:
             st.caption(f"{v['verified']} verified, {v['inference']} inference, {v['failed']} failed, {v['unverified']} unverified"
                        + (" · carried over a change in the workbook" if view["carried"] else ""))
             if view["replaces"]:
-                with st.expander(f"What it replaces ({len(view['changes']['added'])} added, {len(view['changes']['removed'])} removed, {view['changes']['kept']} kept)"):
-                    st.markdown(view["replaces"])
+                # shown inline: this panel is itself one expander, and Streamlit does not allow an expander inside an expander
+                st.markdown(f"**What it replaces** ({len(view['changes']['added'])} added, {len(view['changes']['removed'])} removed, {view['changes']['kept']} kept)")
+                st.markdown(view["replaces"])
             else:
                 st.caption("Replaces nothing: the base run has no commentary for this account.")
             for item in view["unresolved"]:
@@ -184,6 +185,6 @@ def render_agent_panel(session_state: Any, factory: Optional[Callable[[Any], Any
         _show_export(session_state.get(EXPORT_KEY))
         open_items = work.unresolved()
         if open_items:
-            with st.expander(f"Open items ({len(open_items)})"):
-                for item in open_items:
-                    st.write(f"({item['from']}) {item['account'] or 'workbook'}: {item['message']}")
+            st.markdown(f"##### Open items ({len(open_items)})")
+            for item in open_items:
+                st.write(f"({item['from']}) {item['account'] or 'workbook'}: {item['message']}")
