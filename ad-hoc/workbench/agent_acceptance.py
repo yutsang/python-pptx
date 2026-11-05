@@ -1,0 +1,488 @@
+#!/usr/bin/env python3
+"""One entry for the company-side acceptance of the agent path: what would run, what it may spend, and a short summary to send back.
+
+    python ad-hoc/workbench/agent_acceptance.py plan  --databook <xlsx> [--base-run <RUN_ID>]       free, seconds: nothing is sent
+    python ad-hoc/workbench/agent_acceptance.py probe                                             free: what each role WOULD send
+    python ad-hoc/workbench/agent_acceptance.py probe --send                                      PAID, tiny: one call per role
+    python ad-hoc/workbench/agent_acceptance.py free  --databook <xlsx> [--base-run <RUN_ID>]       free, minutes: zero model calls
+    python ad-hoc/workbench/agent_acceptance.py paid  --databook <xlsx> --base-run <RUN_ID> --i-accept-paid-calls \\
+            [--max-calls 90] [--max-tokens 600000] [--max-cost 0]                                  PAID, capped, stops itself
+
+The three configurations come from config.yml (agent.models): flash_only (primary alone), pro_only (the escalation model
+alone) and routing (primary, escalating to the other on the code's rule). Each runs the SAME tasks on the SAME account of a
+COPY of the workbook, so a task is compared only with itself:
+
+    investigate   a question about the account, then a follow-up
+    rewrite       "put it in the report, shorter" (a model edit), accept, export a deck
+    update        the same controlled change to one cell of the copy, then a rewrite of the same paragraph from the new figures
+
+A whole entity's first draft is NOT one of them: the agent does not write an entity from nothing; that comparison is the legacy
+pipeline's (compare_models.py), printed by `plan`, never run here. Do not compare a task's tokens with a whole entity's.
+
+`free` runs everything that costs nothing: the baseline search (identity hash and per-account fingerprints, reported apart),
+the offline gate, the real-workbook flows with scripted models, the three configurations with scripted stand-ins (to check the
+books and the plumbing on real frames, not how a model writes), and the reading tools. `paid` refuses to start unless every role
+resolves to the provider it names (no silent fallback), the base run describes the workbook, and --i-accept-paid-calls is given.
+Results go to fdd_utils/output/agent_acceptance/ (git-ignored); the printed summary carries no workbook text.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parents[1]
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(ROOT))
+
+OUT_DIR = ROOT / "fdd_utils" / "output" / "agent_acceptance"
+CONFIGS = ("flash_only", "pro_only", "routing")
+TASKS = ("investigate", "rewrite", "update")
+TURNS_PER_CONFIG = 5                       # investigate 2 + rewrite 1 + update 1, and one spare for a refusal
+
+
+def _utf8() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
+def _config() -> Dict[str, Any]:
+    from fdd_utils.ai import FDDConfig
+    return FDDConfig().config or {}
+
+
+def roles(cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    from fdd_utils.agent import flag as F
+    return {"primary": F.role_config(cfg, "primary"), "escalation": F.role_config(cfg, "escalation")}
+
+
+def configurations(cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+    r = roles(cfg)
+    return {"flash_only": {"primary": r["primary"], "escalation": None, "routing": "single"},
+            "pro_only": {"primary": r["escalation"], "escalation": None, "routing": "single"},
+            "routing": {"primary": r["primary"], "escalation": r["escalation"], "routing": "escalate"}}
+
+
+def preview_roles(cfg: Dict[str, Any], send: bool = False) -> Dict[str, Dict[str, Any]]:
+    from fdd_utils.agent import probe
+    from fdd_utils.agent.controller import AIClientModel
+    out = {}
+    for name, sel in roles(cfg).items():
+        if not sel.get("provider"):
+            out[name] = {"error": f"agent.models.{name}.provider is not set in config.yml"}
+            continue
+        try:
+            role = AIClientModel(sel["provider"], sel.get("model") or None, thinking=sel.get("thinking") or "", ledger_stage=f"agent_probe_{name}",
+                                 reasoning_effort=sel.get("reasoning_effort") or "", max_output=sel.get("max_output"))
+        except Exception as exc:                                       # noqa: BLE001
+            out[name] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+            continue
+        out[name] = probe.preview(role)
+        if send and not out[name].get("error") and not out[name].get("provider_fallback"):
+            out[name]["live"] = probe.send(role)
+    return out
+
+
+def preflight(cfg: Dict[str, Any], previews: Dict[str, Dict[str, Any]]) -> List[str]:
+    """Why a paid run must not start (empty: it may)."""
+    problems = []
+    for name, p in previews.items():
+        if p.get("error"):
+            problems.append(f"{name}: {p['error']}")
+        elif p.get("provider_fallback"):
+            problems.append(f"{name}: asks for '{p.get('provider_requested')}' but the client would use '{p.get('provider')}' "
+                            "(not configured here); a different provider cannot stand in for the gateway")
+    r = roles(cfg)
+    if r["primary"].get("provider") and r["primary"] == r["escalation"]:
+        problems.append("agent.models.primary and agent.models.escalation are the same model: the comparison would compare nothing")
+    return problems
+
+
+# ---------------------------------------------------------------------------------------------------------------------------
+# baseline (baseline_pack does the work; identity and fingerprints are reported apart)
+# ---------------------------------------------------------------------------------------------------------------------------
+
+def baseline(databook: str, deep: bool = True) -> Dict[str, Any]:
+    import baseline_pack as B
+    argv = ["--databook", databook] + ([] if deep else ["--no-deep"])
+    plan = B.build_plan(B.make_parser().parse_args(argv))
+    proof = plan.get("proof") or {}
+    return {"status": plan.get("status"), "run": (plan.get("run") or {}).get("id"), "proof_kind": proof.get("kind"),
+            "proof_status": proof.get("status"), "problems": [p[:300] for p in plan.get("problems") or []],
+            "meaning": {"identity": "the run's identity file names these exact bytes (sha256)",
+                        "fingerprints": "every account the run wrote reads the same in the workbook now; that proves the parsed data agree, "
+                                        "not that the files are byte-identical",
+                        "none": "no run is shown to describe this workbook: the new architecture can still be tested on it, but no "
+                                "historical regression is claimed"}.get(proof.get("kind") or "none")}
+
+
+# ---------------------------------------------------------------------------------------------------------------------------
+# the tasks
+# ---------------------------------------------------------------------------------------------------------------------------
+
+def _books_delta(books: Any, start: int) -> Dict[str, Any]:
+    from fdd_utils.agent.routing import SharedBudget
+    part = SharedBudget(books.limits)
+    part.records = list(books.records[start:])
+    part.escalations = [e for e in books.escalations if int(e.get("after_call") or 0) >= start]
+    summary = part.summary()
+    summary.pop("limits", None)
+    summary["seconds"] = round(sum(float(r.seconds or 0.0) for r in part.records), 2)
+    return summary
+
+
+def choose_account(source: Any, copy_path: str) -> Optional[Tuple[str, str, str, Dict[str, Any], int, float]]:
+    """The account the base run commented on that suits all three tasks; without a base run, any account that suits them."""
+    from flow_helpers import pick_account
+    return pick_account(source, copy_path) or pick_account(source, copy_path, require_base=False)
+
+
+def _turn_brief(turn: Any) -> Dict[str, Any]:
+    routing = (turn.report or {}).get("routing") or {}
+    return {"ok": bool(turn.ok), "stop": turn.stop_reason, "stop_class": routing.get("stop_class"), "tools": list(turn.tool_path or []),
+            "escalations": [{k: e.get(k) for k in ("reason", "trigger", "to")} for e in routing.get("escalations") or []],
+            "unresolved": len(turn.unresolved or []), "verification": dict(turn.verification or {})}
+
+
+def run_configuration(name: str, setup: Dict[str, Any], databook: str, base_run: str, workdir: Path, limits: Any,
+                      scripted: Optional[Dict[str, Any]] = None, on_open=None) -> Dict[str, Any]:
+    """The three tasks, in order, on this configuration's own copy of the workbook, under its own caps."""
+    from fdd_utils.agent import controller as C
+    from fdd_utils.agent import routing as R
+    from fdd_utils.agent.workspace import WorkSession
+    from flow_helpers import bump_cached_values
+    copy = workdir / f"{name}.xlsx"
+    shutil.copyfile(databook, copy)
+    kwargs: Dict[str, Any] = {"budget": C.Budget(max_steps=10), "limits": limits, "policy": R.Policy(mode=setup["routing"])}
+    if scripted is not None:
+        kwargs.update(model=scripted["primary"], escalation=scripted.get("escalation"), model_name=f"scripted-{name}")
+    else:
+        kwargs.update(model_type=setup["primary"]["provider"], model_name=setup["primary"].get("model") or None,
+                      thinking=setup["primary"].get("thinking") or "", escalation=setup.get("escalation"))
+    work = WorkSession.open(str(copy), base_run=base_run or None, **kwargs)
+    if on_open is not None:
+        on_open(work)
+    picked = choose_account(work.source, str(copy))
+    result: Dict[str, Any] = {"configuration": name, "routing": setup["routing"], "tasks": {}, "base_run_check": (work.source.base_run_check or {}).get("status")}
+    if picked is None:
+        result["error"] = "no account suits the tasks (needs a base commentary, two periods, an unreplaced total and a findable cell)"
+        return result
+    key, last, prev, raw, row, unit = picked
+    result["account_index"] = sorted(work.source.contracts).index(key)          # which account, without its name
+    books = work.shared
+
+    def task(label: str, fn) -> None:
+        start = books.calls
+        started = time.perf_counter()
+        try:
+            briefs = fn()
+            entry = {"ran": True, "turns": briefs}
+        except R.BudgetExhausted as exc:
+            entry = {"ran": False, "stopped": f"budget: {exc}"}
+        except Exception as exc:                                       # noqa: BLE001
+            entry = {"ran": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        entry["books"] = _books_delta(books, start)
+        entry["wall_seconds"] = round(time.perf_counter() - started, 2)
+        result["tasks"][label] = entry
+
+    def investigate():
+        a = work.ask(f"{key}截至{last}的余额是多少？较{prev}变动多少？请说明数据来源。")
+        b = work.ask("这个变动的幅度是多少？")
+        return [_turn_brief(a), _turn_brief(b)]
+
+    def rewrite():
+        t = work.report(f"把{key}的分析放入报告，精简为两句", account=key)
+        exported = work.export(out_path=str(workdir / f"{name}.pptx")) if t.ok else {"ok": False, "error": {"code": "NOT_DRAFTED"}}
+        return [_turn_brief(t) | {"export_ok": bool(exported.get("ok")), "export_error": (exported.get("error") or {}).get("code")}]
+
+    def update():
+        delta = 1000.0 if unit == 1.0 else (1.0 if unit == 1e3 else 0.1)
+        bumped = bump_cached_values(str(copy), raw["sheet"], row, raw["value"] / unit, delta)
+        notice = work.ensure_fresh() or {}
+        effects = [e.get("status") for e in notice.get("candidate_effects") or [] if e.get("account") == key]
+        t = work.edit(f"工作簿已更新，请根据最新数据重写{key}的段落", key, accept=True)
+        return [_turn_brief(t) | {"cells_changed": len(bumped), "draft_after_change": effects}]
+
+    for label, fn in (("investigate", investigate), ("rewrite", rewrite), ("update", update)):
+        if any(not e.get("ran") and str(e.get("stopped", "")).startswith("budget") for e in result["tasks"].values()):
+            result["tasks"][label] = {"ran": False, "stopped": "an earlier task reached this configuration's cap"}
+            continue
+        task(label, fn)
+    result["books"] = books.summary()
+    return result
+
+
+# ---------------------------------------------------------------------------------------------------------------------------
+# scripted stand-ins (free mode): they read the evidence and answer from it, so the plumbing and the books run on real frames
+# ---------------------------------------------------------------------------------------------------------------------------
+
+class Scripted:
+    """A stand-in model: returns the JSON a policy builds, and reports no usage, so the books hold estimates only."""
+
+    def __init__(self, fn, label: str):
+        self.fn, self.label, self.calls = fn, label, 0
+
+    def __call__(self, system: str, user: str, max_tokens: int) -> Dict[str, Any]:
+        from test_agent_controller import returned
+        self.calls += 1
+        return {"content": json.dumps(self.fn(system, user, returned(user)), ensure_ascii=False)}
+
+
+def scripted_models(get_source, wrong_first: bool = False) -> Tuple[Any, Any]:
+    """(primary, escalation) policies that read the evidence and answer from it, in ask and in edit mode. `wrong_first` makes the
+    primary misstate the figure twice (a capability failure the gate catches), so the routing path escalates."""
+    from flow_helpers import date_text, wan
+    from fdd_utils.ai import claims as cl
+    state = {"failures": 0}
+
+    def claims_for(source, key, bad=False):
+        contract = source.contracts[key]
+        view = cl.evidence_view(contract)
+        last = contract.periods[-1]
+        total = next((t for t in view["totals"] if t["period"] == last and t["basis"] == "authority_adjusted"), None) or view["totals"][-1]
+        value = total["yuan"] * (1.5 if bad else 1.0)
+        return [{"account": key, "kind": "amount", "periods": [total["period"]], "cites": [total["ref"]],
+                 "text": f"截至{date_text(total['period'])}，{key}余额{wan(value)}"}]
+
+    def policy(system, user, results, bad=False):
+        source = get_source()
+        names = [n for n, _ in results]
+        key = next((a for a in sorted(source.contracts, key=len, reverse=True) if a in user), None) or next(iter(source.contracts))
+        if "get_account_evidence" not in names and "TASK STATE" not in user and "fetched for you" not in user:
+            return {"tool": "get_account_evidence", "args": {"account": key}}
+        if "EDIT MODE" in system:
+            validated = [r for n, r in results if n == "validate_candidate"]
+            if validated and validated[-1].get("ok"):
+                return {"done": {"account": key, "export": False, "summary": "scripted"}}
+            return {"tool": "validate_candidate", "args": {"account": key, "claims": claims_for(source, key, bad)}}
+        return {"answer": {"claims": claims_for(source, key, bad), "unresolved": [f"{key}：变动原因未能在工作簿中核实"]}}
+
+    def primary(system, user, results):
+        bad = wrong_first and state["failures"] < 2 and "TASK STATE" not in user
+        action = policy(system, user, results, bad=bad)
+        if bad and (action.get("answer") or (action.get("tool") == "validate_candidate")):
+            state["failures"] += 1                                     # only a misstated figure counts, not the fetch before it
+        return action
+    return primary, policy
+
+
+# ---------------------------------------------------------------------------------------------------------------------------
+# commands
+# ---------------------------------------------------------------------------------------------------------------------------
+
+def _caps(args: argparse.Namespace) -> Dict[str, Any]:
+    per = {"max_calls": max(1, int(args.max_calls) // len(CONFIGS)), "max_tokens": max(1, int(args.max_tokens) // len(CONFIGS)),
+           "max_cost": (float(args.max_cost) / len(CONFIGS)) if args.max_cost else None}
+    return {"total": {"max_calls": int(args.max_calls), "max_tokens": int(args.max_tokens), "max_cost": float(args.max_cost) or None},
+            "per_configuration": per}
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    cfg = _config()
+    previews = preview_roles(cfg)
+    caps = _caps(args)
+    print("AGENT ACCEPTANCE PLAN (nothing was sent)")
+    for name, p in previews.items():
+        print(f"  {name:10s} provider {p.get('provider')} model {p.get('model') or p.get('configured_model')}  output<= {p.get('max_output')}  "
+              f"thinking requested {p.get('thinking_requested') or '-'} sent {p.get('thinking_sent')}"
+              + (" (unverified)" if p.get("thinking_unverified") else "") + (f"  extra_body {p.get('extra_body')}" if p.get("extra_body") else "")
+              + (f"  FALLBACK from {p.get('provider_requested')}" if p.get("provider_fallback") else "") + (f"  ERROR {p['error']}" if p.get("error") else ""))
+    problems = preflight(cfg, previews)
+    print("  configurations: flash_only (primary), pro_only (escalation model alone), routing (primary -> escalation on the code's rule)")
+    print(f"  tasks per configuration: {', '.join(TASKS)} ({TURNS_PER_CONFIG} turns at most); all on the same account of a copy of the workbook")
+    print(f"  caps: total {caps['total']}; each configuration {caps['per_configuration']} (a configuration stops at its cap; the others still run)")
+    print("  stop conditions: a cap (calls, tokens, cost) -> that configuration stops; a provider error on its first call -> everything stops")
+    print("  first full entity (NOT run here; legacy pipeline, compare like with like):")
+    r = roles(cfg)
+    if r["primary"].get("provider") and r["escalation"].get("provider"):
+        print(f"    python ad-hoc/workbench/compare_models.py {args.databook or '<databook.xlsx>'} --all "
+              f"--models {r['primary']['provider']}::{r['primary'].get('model')} --baseline {r['escalation']['provider']}::{r['escalation'].get('model')}")
+    else:
+        print("    (set agent.models.primary and agent.models.escalation in config.yml first)")
+    print("  base run: " + (args.base_run or "none given (run `free` to search for one: identity and fingerprints are reported apart)"))
+    print("  paid run may start: " + ("yes" if not problems else "NO -- " + " | ".join(problems)))
+    return 0 if not problems else 1
+
+
+def cmd_probe(args: argparse.Namespace) -> int:
+    cfg = _config()
+    previews = preview_roles(cfg, send=args.send)
+    print(json.dumps(previews, ensure_ascii=False, indent=1, default=str))
+    if args.send:
+        print("PAID: one small call per role was made (see 'live'); the ledger has them under stage agent_probe_<role>.")
+    return 0 if not preflight(cfg, previews) else 1
+
+
+def cmd_free(args: argparse.Namespace) -> int:
+    started = time.perf_counter()
+    report: Dict[str, Any] = {"mode": "free", "model_calls": 0}
+    print("FREE ACCEPTANCE (zero model calls)")
+    found = baseline(args.databook, deep=not args.no_deep)
+    report["baseline"] = found
+    # A run whose identity names these bytes (or whose every account still reads the same) can carry the base commentary for the
+    # new-architecture flows even when the current extractor reads some accounts differently (edited_since); that is reported, and no
+    # historical regression is claimed from it.
+    usable = found["run"] if found["run"] and found["proof_status"] in ("verified", "edited_since") else ""
+    base_run = args.base_run or usable
+    if found["run"] and found["proof_status"] == "verified":
+        report["historical_regression"] = (f"a run describes this workbook (proof: {found['proof_kind']}); pack {found['status']}"
+                                           + ("; checked by identity hash only (--no-deep)" if args.no_deep else ""))
+    elif found["run"] and found["proof_status"] == "edited_since":
+        report["historical_regression"] = ("NOT claimed: the run was written from these bytes, but the current extractor reads some accounts "
+                                           "differently (the differences are listed in the baseline problems)")
+    else:
+        report["historical_regression"] = "NOT claimed: no run is shown to describe this workbook"
+    print(f"  baseline: {found['status']}; run {'found' if found['run'] else 'none'}; proof {found['proof_kind']} ({found['proof_status']}); {found['meaning']}")
+    print(f"  historical regression: {report['historical_regression']}; base commentary for the flows: {'that run' if base_run else 'none'}")
+    for p in found["problems"][:2]:
+        print("    problem:", p[:240])
+    gate = subprocess.run([sys.executable, str(HERE / "migration_checks.py")], capture_output=True, encoding="utf-8", errors="replace", cwd=str(ROOT))
+    last = [l for l in gate.stdout.splitlines() if "GREEN" in l][-1:] or ["(no summary line)"]
+    report["offline_gate"] = last[0]
+    print("  offline gate:", last[0])
+    if base_run:
+        env = dict(os.environ, FDD_FLOW_WORKBOOK=args.databook, FDD_FLOW_BASE_RUN=base_run, PYTHONIOENCODING="utf-8")
+        flows = subprocess.run([sys.executable, str(HERE / "migration_checks.py"), "--only", "test_workspace_flows"], capture_output=True,
+                               encoding="utf-8", errors="replace", cwd=str(ROOT), env=env)
+        summary = [l for l in flows.stdout.splitlines() if l.startswith(("ok ", "FAIL", "ALL GREEN", "NOT GREEN")) or l.strip().startswith("x ")]
+        report["real_workbook_flows"] = summary
+        print("  real-workbook flows (scripted model):", " | ".join(summary)[:400])
+    else:
+        print("  real-workbook flows: skipped (no base run describes this workbook)")
+    from fdd_utils.agent.routing import Limits
+    workdir = Path(tempfile.mkdtemp(prefix="agent_accept_"))
+    try:
+        holder: Dict[str, Any] = {}
+        results = {}
+        for name in CONFIGS:
+            primary_fn, good_fn = scripted_models(lambda: holder["source"], wrong_first=(name == "routing"))
+            primary = Scripted(primary_fn, f"scripted-{name}-primary")
+            escalation = Scripted(good_fn, f"scripted-{name}-escalation") if name == "routing" else None
+            setup = configurations(_config_or_empty())[name]
+            results[name] = run_configuration(name, setup, args.databook, base_run, workdir, Limits(max_calls=40),
+                                              scripted={"primary": primary, "escalation": escalation},
+                                              on_open=lambda work: holder.__setitem__("source", work.source))
+        report["scripted_configurations"] = results
+        for name, res in results.items():
+            line = [f"{t}: {'ran' if e.get('ran') else (e.get('stopped') or e.get('error'))}, calls {e['books']['calls']}, "
+                    f"est {e['books']['estimated']['prompt']}+{e['books']['estimated']['completion']}"
+                    for t, e in res.get("tasks", {}).items()]
+            print(f"  scripted {name}: " + ("; ".join(line) if line else res.get("error", "")) +
+                  (f"; escalations {res['books']['escalations']}" if res.get("books") else ""))
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    report["seconds"] = round(time.perf_counter() - started, 1)
+    path = _save(report)
+    print(f"  ({report['seconds']}s, no model call; full report: {path.relative_to(ROOT)})")
+    print("  scripted stand-ins prove the plumbing and the books on real frames; they say nothing about how a real model writes or chooses")
+    return 0
+
+
+def _config_or_empty() -> Dict[str, Any]:
+    try:
+        return _config()
+    except Exception:                                                   # noqa: BLE001
+        return {}
+
+
+def cmd_paid(args: argparse.Namespace) -> int:
+    cfg = _config()
+    previews = preview_roles(cfg)
+    problems = preflight(cfg, previews)
+    if not args.i_accept_paid_calls:
+        problems.append("--i-accept-paid-calls was not given")
+    if not args.base_run:
+        problems.append("--base-run is required (the rewrite task exports a deck over the base run's commentary)")
+    if problems:
+        print("NOT STARTED (nothing was sent):")
+        for p in problems:
+            print("  -", p)
+        return 2
+    from fdd_utils.agent.routing import Limits
+    caps = _caps(args)
+    per = caps["per_configuration"]
+    report: Dict[str, Any] = {"mode": "paid", "caps": caps, "previews": previews, "configurations": {}}
+    workdir = Path(tempfile.mkdtemp(prefix="agent_paid_"))
+    print(f"PAID ACCEPTANCE: {len(CONFIGS)} configurations x {len(TASKS)} tasks; caps {caps['total']}")
+    try:
+        for name, setup in configurations(cfg).items():
+            limits = Limits(max_calls=per["max_calls"], max_tokens=per["max_tokens"], max_cost=per["max_cost"])
+            res = run_configuration(name, setup, args.databook, args.base_run, workdir, limits)
+            report["configurations"][name] = res
+            first = (res.get("tasks") or {}).get("investigate") or {}
+            books = first.get("books") or {}
+            if books.get("calls") and books.get("failed_calls") == books.get("calls"):
+                report["stopped"] = f"{name}: every call of its first task failed at the provider; nothing further was run"
+                print("  " + report["stopped"])
+                break
+    finally:
+        shutil.rmtree(workdir, ignore_errors=True)
+    path = _save(report)
+    print(summary_text(report))
+    print(f"full report (local, git-ignored): {path.relative_to(ROOT)}")
+    return 0
+
+
+def summary_text(report: Dict[str, Any]) -> str:
+    """The short summary to send back: per task, per configuration. No account names, no workbook text."""
+    lines = ["SUMMARY (per task; compare a task only with itself)"]
+    for task in TASKS:
+        lines.append(f"  {task}:")
+        for name, res in (report.get("configurations") or {}).items():
+            e = (res.get("tasks") or {}).get(task) or {}
+            b = e.get("books") or {}
+            pr = b.get("provider_reported") or {}
+            roles_line = ", ".join(f"{r}:{v['calls']}c/{v['charged_tokens']}t" + (f"/{','.join(v['models_reported'])}" if v.get("models_reported") else "")
+                                   for r, v in (b.get("by_role") or {}).items())
+            turns = e.get("turns") or []
+            lines.append(f"    {name:10s} {'ran' if e.get('ran') else (e.get('stopped') or e.get('error') or 'not run')}; "
+                         f"ok {sum(1 for t in turns if t.get('ok'))}/{len(turns)}; calls {b.get('calls', 0)} (failed {b.get('failed_calls', 0)}, "
+                         f"retries {sum((b.get('retries') or {}).values())}); provider {pr.get('prompt', 0)}+{pr.get('completion', 0)} "
+                         f"(reasoning {pr.get('reasoning', 0)}, cache {pr.get('cached_prompt', 0)}); est {b.get('estimated', {}).get('prompt', 0)}+"
+                         f"{b.get('estimated', {}).get('completion', 0)}; escalations {b.get('escalations', 0)}; {b.get('seconds', 0)}s; "
+                         f"stop {[t.get('stop_class') for t in turns]}; roles {roles_line}")
+    return "\n".join(lines)
+
+
+def _save(report: Dict[str, Any]) -> Path:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUT_DIR / f"{report['mode']}_{time.strftime('%Y%m%d_%H%M%S')}.json"
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    return path
+
+
+def main(argv: Optional[List[str]] = None) -> int:
+    _utf8()
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    for name in ("plan", "free", "paid"):
+        p = sub.add_parser(name)
+        p.add_argument("--databook", required=(name != "plan"), default="")
+        p.add_argument("--base-run", default="")
+        p.add_argument("--max-calls", type=int, default=90)
+        p.add_argument("--max-tokens", type=int, default=600000)
+        p.add_argument("--max-cost", type=float, default=0.0)
+        if name == "free":
+            p.add_argument("--no-deep", action="store_true", help="baseline search by identity hash only (skip the fingerprint proof)")
+        if name == "paid":
+            p.add_argument("--i-accept-paid-calls", action="store_true")
+    pr = sub.add_parser("probe")
+    pr.add_argument("--send", action="store_true", help="PAID: one small real call per role")
+    args = ap.parse_args(argv)
+    return {"plan": cmd_plan, "probe": cmd_probe, "free": cmd_free, "paid": cmd_paid}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

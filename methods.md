@@ -223,11 +223,14 @@ wording the pattern list does not recognise is not screened at all; citing a not
 ## 5. Tools and the controller
 
 `fdd_utils/agent/tools.py` wraps existing capabilities: `inspect_sources`,
-`get_account_evidence`, `compute_analysis`, `trace_claim`, `validate_candidate`,
-`numerical_summary`, `export_candidate`, `refresh_sources`, `diff_sources`,
-`read_deck`, `update_deck`. A result is `ok` only when the thing asked for
-happened. A failed validation, an exception, a stale source and bad arguments
-are all `ok: false` with a code. Every result carries the source version.
+`get_account_evidence`, `get_account_components`, `compute_analysis`,
+`trace_claim`, `validate_candidate`, `numerical_summary`, `export_candidate`,
+`refresh_sources`, `diff_sources`, `read_deck`, `update_deck`, the reading
+tools of 5.3 and `explain_mapping`. A result is `ok` only when the thing asked
+for happened. A failed validation, an exception, a stale source and bad
+arguments are all `ok: false` with a code. Every result carries the source
+version. No tool changes a source figure or a mapping; the code-map lookups of
+5.5 are callable but not listed in the controller's prompt.
 
 `fdd_utils/agent/controller.py` is one loop. The model replies with a tool call,
 an answer, `done`, or a question for the user. Code enforces: citations only to
@@ -237,7 +240,9 @@ unresolved, questions to the user only when sources are ambiguous or in
 conflict, a `done` with export accepted only on a successful export of the
 current draft against the current sources (a blocked export, an export of an
 earlier draft, or one made against older sources does not count), and budgets (steps, estimated tokens, seconds, steps without
-progress, answers sent back) that end the run with a report.
+progress, answers sent back) that end the run with a report. When an answer cites
+refs that exist but whose evidence was not read, the controller fetches that
+evidence itself (a free tool call) before the next model call.
 
 - **Verified offline**: `test_agent_tools.py`, `test_agent_controller.py`
   (scripted policies; one policy takes three different tool paths in three
@@ -262,8 +267,20 @@ verified claims with no model call; a request to change the wording goes to the
 model as an edit with the evidence already gathered.
 
 The thread lives in memory. If the user asks for a session file it is written
-as one JSON file with mode 0600, only to a path git does not track. It holds the
-workbook's figures and commentary, never a prompt, a key or the config.
+as one JSON file with mode 0600 (POSIX; Windows has no such bits and the file
+takes its folder's permissions), only to a path git does not track. It holds the
+source binding and load parameters (including manual mapping overrides), the
+turns, the evidence consulted, the derived figures, the drafts with the user's
+decisions, the deck state (the deck last read with its conflicts, the last
+export, the last update and whether it was complete) and the books of 5.2. It
+never holds a prompt, a key or the config.
+
+Manual mapping overrides are the user's: the CLI's `/override`, `--mapping-override`
+and the app's existing override control set them; no tool can. They are part of
+the source binding, so changing one changes the source version and every draft
+is rebound as below. `/base-run` binds a legacy run as the base commentary; the
+run is checked against the workbook and an export refuses one that does not
+describe it.
 
 A draft rests on more than the figures it quotes. When the workbook is saved,
 the session reads it again and decides per draft in three layers:
@@ -275,12 +292,23 @@ the session reads it again and decides per draft in three layers:
 2. Every sentence is verified again against the new reading.
 3. The rest of what it rests on, recorded when it was written: every other
    figure of the periods it is about, what each check came out as, what each
-   period permits, the remarks that apply, the period list. If any of it moved
-   the draft is kept, acceptance is withdrawn, and the changes are named.
-   Accepting again acknowledges them; the event keeps the list.
+   period permits, the remarks that apply, the period list, and where the
+   account is read from (the tab, the unit the tab is printed in, how the tab
+   was chosen and any manual override). If any of it moved the draft is kept,
+   acceptance is withdrawn, and the changes are named. Accepting again
+   acknowledges them; the event keeps the list.
 
 A session file saved without that record cannot show the account did not move,
 and says so when it is opened against other bytes.
+
+Exports and updates. An export needs a base run (the legacy commentary of every
+other account); without one it is refused with the first-generation path: the
+legacy command that writes the whole entity, then `/base-run`. A deck of a few
+accounts is never presented as the report. An update of a returned deck writes
+a copy and is `complete` only when nothing was left: a paragraph a person edited
+whose figures moved (a conflict, never overwritten), an account that runs across
+paragraphs (needs the deck re-packed), an edited table or an unlocated paragraph
+makes it partial, listed with the next step.
 
 **Verified offline**: `test_workspace.py` (each layer, with a negative control
 that fails without layer 3) and, on a real workbook with its paired run,
@@ -295,7 +323,13 @@ one loop. Python still computes and verifies. A configured second model
 `escalate_after` consecutive steps the first model failed with the evidence it
 had. The default is `single`.
 
-What a failure asks for next is fixed per code, in `routing.CLASS`:
+What a failure asks for next starts from its code, in `routing.CLASS`, and is
+then settled in context (`routing.effective_classes`): evidence that exists but
+was not read is fetched (by the controller, as above), never escalated; evidence
+the tools were asked for and the workbook does not hold becomes `absent` (name
+it as unresolved; never escalated); a ref that exists in no account is a
+rewrite (the model invented it); a code that keeps coming back after its hint
+once the evidence was read is a rewrite. Each code's own class:
 
 | class | meaning | goes to the second model? |
 |---|---|---|
@@ -308,6 +342,16 @@ What a failure asks for next is fixed per code, in `routing.CLASS`:
 
 A test scans the verifier, the tools and the controller for every code they can
 raise and fails on one that has no class.
+
+Task kinds listed in `agent.escalate_tasks` (`cross_account`,
+`adjustment_bridge`, matched on the request's words) start the turn on the second
+model, counted as an escalation within the same caps. Each role's provider,
+model, thinking, reasoning effort and `max_output` come from `agent.models`; an
+explicit `--model` or the app's selection overrides the primary. A role whose
+provider is not configured would make the client fall back to another provider;
+the agent refuses that unless `agent.allow_provider_fallback` is true. The
+agent's calls carry their own client identity (`fdd_agent`), so the ledger's
+`client_agent` is no longer `subagent_4` and its `stage` is `agent_<role>`.
 
 The second model is handed a task state (goal, the latest draft with the
 verifier's objections, one line per cited figure, the tools already used, the
@@ -324,28 +368,55 @@ response cache served. A cap applies to the provider's number where one was
 reported and to the estimate where not. Retries made inside the provider SDK
 are not visible to this code and are listed as unmeasured. A cost cap needs
 `price_in` / `price_out` on the model's `available_models` entry; a model
-without them has no cost and nothing is borrowed from another provider.
+without them has no cost and nothing is borrowed from another provider; the
+prices are as written in config and not checked against a bill.
 
-Thinking is set per role (`off`, `on`, or an effort level). Only provider
-branches that send the parameter act on it (`local`: `allow_thinking`;
-`workbench`: `reasoning_effort`). On the others the call record says "not sent
-by this provider branch". The agent's ledger lines are labelled `agent_primary`
-and `agent_escalation`, not Validator, and carry reasoning tokens where the
-provider reports them.
+Before each call the estimated input and the call's whole output allowance are
+reserved against the caps. The provider's count of the input can differ from the
+estimate, so a token cap is a stop before the next call, not a hard limit. Each
+record keeps the configured model id and the id the provider says answered, the
+output allowance, and why the call was made again (after a failed call, a
+discarded reply or a gate rejection). Reasoning tokens are shown and not added:
+OpenAI-compatible usage counts them inside completion. Only a call that reports
+more reasoning than completion has them added, once.
 
-**Verified offline**: `test_routing.py`, with scripted models. **Not verified**:
-whether a second model does better, what the company gateway accepts as a
-thinking parameter, and what it reports as usage. Both need a paid probe.
+Thinking is set per role (`off`, `on`, or an effort level). Provider branches
+that send the parameter act on it (`local`: `allow_thinking`; `workbench`:
+`reasoning_effort`). The `dashscope` and `deepseek` branches send a body only
+when their provider block declares its shape (`thinking_extra_body`), and the
+record then says the gateway's support is unverified. On the others the call
+record says "not sent by this provider branch". The agent's ledger lines are
+labelled `agent_primary` and `agent_escalation`, carry the reported model id,
+and carry reasoning tokens where the provider reports them.
+`fdd_utils/agent/probe.py` shows what each role would send (the client's own
+request code with the network call replaced by a recorder; header values and the
+address are not shown) and, only with `--send`, makes one tiny real call per role.
+
+**Verified offline**: `test_routing.py` and `test_agent_workflow.py`, with
+scripted models (Flash-only, Pro-only and Flash→Pro on the same request, task
+kinds, the books, the preview). **Not verified**: whether a second model does
+better, what the company gateway accepts as a thinking parameter, and what it
+reports as usage. They need the company-side acceptance below.
 
 ### 5.3 Investigation tools
 
-`read_source_block`, `search_notes`, `cross_account_evidence` and
-`adjustment_evidence` return location, source version, what was and was not
-covered, and an error state. Text they retrieve is context; a cause may cite a
-searched remark only as an inference. `cross_account_evidence` lists the
-relationships that passed (support) and, apart, those that were looked for and
-did not tie, with the test, what was compared, and why. A failed check is never
-citable and a sentence resting on one stays unverified.
+`read_source_block`, `search_notes`, `cross_account_evidence`,
+`adjustment_evidence`, `get_account_components` and `explain_mapping` return
+location, source version, what was and was not covered, and an error state.
+Text they retrieve is context; a cause may cite a searched remark only as an
+inference. `cross_account_evidence` lists the relationships that passed
+(support) and, apart, those that were looked for and did not tie, with the test,
+what was compared, and why. A failed check is never citable and a sentence
+resting on one stays unverified.
+
+`read_source_block` finds a fact's figure on its row by value, because the
+extractor records the row and not the column: the cells it names are candidates
+(`figure_provenance.exact` is false), and when several hold the figure the
+result says `ambiguous` and picks none. `get_account_components` pages through
+every detail line, including the ones the evidence view leaves out, and its refs
+become citable. `explain_mapping` shows the resolver's own record for an
+account's tab (score, alias, the Financials comparison, the ranked candidates,
+whether it was ambiguous, override issues) and changes nothing.
 
 ### 5.4 Baseline material
 
@@ -381,6 +452,24 @@ names. **Verified offline**: `test_text_transfer.py`, `test_databook_dump.py`
 rebuild), and a round trip of the four local workbooks (every sheet equal as pandas
 reads it, every account's fingerprint equal). Those four hold no indentation, bold or
 number formats at all, so the style path has only been exercised on a synthetic file.
+
+### 5.4b Company-side acceptance
+
+`ad-hoc/workbench/agent_acceptance.py` is the one entry. `plan` prints the
+configurations from `agent.models` (flash_only, pro_only, routing), what each
+role would send, the caps per configuration, the stop conditions and the
+legacy command for a whole-entity comparison (not run). `probe` shows the
+requests; `probe --send` makes one tiny paid call per role. `free` runs the
+baseline search (identity hash and fingerprint proof reported apart; with no
+matching run the new architecture is still tested and no historical regression
+is claimed), the offline gate, the real-workbook flows with scripted models, and
+the three configurations with scripted stand-ins on a copy of the workbook.
+`paid` runs the same three tasks (investigate and follow up; rewrite and export;
+the same controlled change to one cell, then a rewrite) for each configuration,
+each under its own caps; it refuses to start when a role would fall back to
+another provider, when no base run is given, or without
+`--i-accept-paid-calls`. A task is compared only with itself; a task's tokens are
+never compared with a whole entity's.
 
 ### 5.5 The code map
 
