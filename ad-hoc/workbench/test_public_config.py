@@ -124,7 +124,8 @@ class PrivateAttribution(unittest.TestCase):
             (True, {}, "资料来源：管理层信息；独立分析"),
         ]:
             with self.subTest(chinese=chinese, private=bool(labels)):
-                generator = PowerPointGenerator("unused-template")
+                with patch("fdd_utils.pptx.generation._load_pptx_settings", return_value={}):
+                    generator = PowerPointGenerator("unused-template")
                 generator.pptx_settings["source_labels"] = labels
                 presentation = Presentation()
                 slide = presentation.slides.add_slide(presentation.slide_layouts[6])
