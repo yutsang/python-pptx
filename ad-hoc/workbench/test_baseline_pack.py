@@ -429,6 +429,27 @@ class Pack(unittest.TestCase):
         B.check_out_path(B.ROOT / "for_test" / "baseline-pack")
         B.check_out_path(Path(tempfile.mkdtemp()))
 
+    def test_where_git_cannot_answer_only_for_test_is_accepted(self):
+        """In a copied or downloaded tree `git check-ignore` exits 128: no answer, so fall back to the documented ignored folder."""
+        import subprocess
+        from unittest import mock
+
+        def git_says(code):
+            return mock.patch.object(B.subprocess, "run", return_value=subprocess.CompletedProcess([], code))
+        with git_says(128):
+            B.check_out_path(B.ROOT / "for_test" / "baseline-pack")
+            with self.assertRaises(SystemExit):
+                B.check_out_path(B.ROOT / "notes_for_me")
+        with git_says(1):
+            with self.assertRaises(SystemExit):
+                B.check_out_path(B.ROOT / "for_test" / "baseline-pack")              # git's word wins over the folder rule
+        with git_says(0):
+            B.check_out_path(B.ROOT / "notes_for_me")
+        with mock.patch.object(B.subprocess, "run", side_effect=FileNotFoundError("git")):
+            B.check_out_path(B.ROOT / "for_test" / "baseline-pack")
+            with self.assertRaises(SystemExit):
+                B.check_out_path(B.ROOT / "notes_for_me")
+
 
 def World_with_url():
     w = World()

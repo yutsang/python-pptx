@@ -165,10 +165,14 @@ def check_out_path(path: Path) -> None:
     except ValueError:
         return
     probe = target / "MANIFEST.json"
+    under_for_test = str(target).startswith(str(ROOT / "for_test"))
     try:
-        ignored = subprocess.run(["git", "check-ignore", "-q", str(probe)], cwd=str(ROOT), capture_output=True, timeout=10).returncode == 0
+        # 0 = ignored, 1 = not ignored; any other code (128 in a copied or downloaded tree that is not a git clone) is no answer from git,
+        # and then only the documented ignored folder, for_test/, is accepted.
+        code = subprocess.run(["git", "check-ignore", "-q", str(probe)], cwd=str(ROOT), capture_output=True, timeout=10).returncode
+        ignored = (code == 0) if code in (0, 1) else under_for_test
     except Exception:                                           # noqa: BLE001
-        ignored = False
+        ignored = under_for_test
     if not ignored:
         raise SystemExit(f"{path} is inside the repo and not git-ignored. A pack holds a client's figures: use for_test/<name> (ignored) or a path outside the repo.")
 
