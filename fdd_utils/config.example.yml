@@ -89,6 +89,9 @@ dashscope:
   region_override: ""
   chat_model: "dashscope_qwen3.7-max"
   max_workers: 4
+  # Only if the gateway's documentation names its thinking switch: the body sent with the agent's thinking / reasoning_effort
+  # per role. Unverified until `python ad-hoc/workbench/agent_acceptance.py probe --send` shows the gateway accepts it. Shape:
+  # thinking_extra_body: {"on": {"enable_thinking": true}, "off": {"enable_thinking": false}}
   available_models:
     - id: "dashscope_qwen3.7-max"
       kind: chat
@@ -236,11 +239,19 @@ agent:
   max_session_seconds: 0
   max_session_escalations: 0
   max_session_cost: 0      # yuan; needs price_in / price_out (yuan per million tokens) on every model in use in its available_models entry
-  models:                  # "" = the model chosen in the app, or --model / --model-name
-    primary:    {provider: "", model: "", thinking: ""}
-    escalation: {provider: "", model: "", thinking: ""}   # e.g. provider: dashscope, model: dashscope_deepseek-v4-pro-0813
-  # thinking: "" (nothing requested), off, on, or low / medium / high. Only provider branches that send the parameter act on it
-  # (local: allow_thinking; workbench: reasoning_effort); on the others the record says "not sent by this provider branch".
+  # Task kinds that START on the escalation model, within max_escalations / max_session_escalations (routing only):
+  # cross_account, adjustment_bridge. Empty = every turn starts on primary and escalates only on repeated capability failures.
+  escalate_tasks: []
+  # AIClient answers from another configured provider when the requested one is not configured. The agent refuses that
+  # (figures and the bill would go somewhere nobody chose) unless this is true.
+  allow_provider_fallback: false
+  models:                  # provider "" = agent.models decides nothing; then --model / the app's selection, else local
+    primary:    {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Flash model id
+    escalation: {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Pro model id
+  # thinking: "" (nothing requested), off, on, or low / medium / high; reasoning_effort: low / medium / high (wins over an effort in
+  # thinking). Provider branches: local sends allow_thinking; workbench sends reasoning_effort; dashscope / deepseek send a body ONLY
+  # when their provider block declares thinking_extra_body (see dashscope below), recorded as unverified until a probe shows the
+  # gateway acts on it. On any other branch the record says "not sent by this provider branch". max_output caps each call's output.
 
 logging:
   suppress_http_logs: true

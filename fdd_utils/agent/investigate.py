@@ -1,9 +1,11 @@
-"""The four reading tools an investigation needs beyond the evidence contract.
+"""The reading tools an investigation needs beyond the evidence contract.
 
     read_source_block      the original cells around a fact, as the workbook holds them
     search_notes           visible sheets' remarks that mention something
     cross_account_evidence what other accounts the numbers tie this account to (and how many tests did not tie)
     adjustment_evidence    why a period's total is not the tab's: the entries, the gap, what is unexplained
+    account_components     every detail line of an account, a page at a time (the evidence view shows the largest few)
+    explain_mapping        why an account was read from the tab it was, the other candidates, and whether it was ambiguous
 
 Each result names where it came from (file, sheet, cell range), the source version it was read at, and what it
 does NOT cover (`limits`). None of them returns a summary the model wrote: cells are cells, hits are the text of
@@ -158,6 +160,14 @@ def read_source_block(session: SourceSession, account: str = "", ref: str = "", 
             if matched:
                 reach = max(_col_number(_address(m["cell"])[0]) for m in matched)
                 max_cols = max(max_cols, min(reach + 1, MAX_BLOCK_COLS))
+        provenance = None
+        if located["value"] is not None:
+            # Found by value, so only candidates: the extractor records a fact's row, not its column. One cell is still a candidate
+            # (the same figure could sit elsewhere off the row); several are ambiguous, and none of them is picked as THE cell.
+            provenance = {"exact": False, "status": "not_found" if not matched else ("one_candidate" if len(matched) == 1 else "ambiguous"),
+                          "candidates": [m["cell"] for m in matched],
+                          "why": "the extractor records the row a figure came from, not the column; cells holding the same figure on that row "
+                                 "are candidate positions, and with several none is chosen"}
         top = []
         for r_index, cells in enumerate(ws.iter_rows(min_row=1, max_row=4, max_col=max_cols, values_only=True), 1):
             text = " | ".join(str(_plain(c)) for c in cells if c not in (None, ""))
@@ -174,7 +184,7 @@ def read_source_block(session: SourceSession, account: str = "", ref: str = "", 
     span = f"A{first}:{_col_letter(max_cols)}{max(first, last)}"
     return {
         "location": f"{sheet}!{span}", "sheet": sheet, "first_row": first, "last_row": last, "highlight_row": located["highlight"],
-        "figure_found_in": matched or None,
+        "figure_found_in": matched or None, "figure_provenance": provenance,
         "found_by": located["how"] or "sheet and row", "rows": [r for r in rows if r["row"] <= max(first, last)], "sheet_top": top,
         "source": _source_stamp(session, path),
         "limits": {"max_rows": MAX_BLOCK_ROWS, "max_cols": MAX_BLOCK_COLS, "columns_read": max_cols, "truncated_rows": truncated,
@@ -420,4 +430,94 @@ def adjustment_evidence(session: SourceSession, account: str) -> Dict[str, Any]:
             "an adjustment entry is text found in the workbook; the amounts in it are read from the text and may be in another unit",
             "entries_add_up_to_difference is null when an entry carries no single amount; nothing is guessed",
             "a gap with no entry means no adjustment note was found on the visible sheets, not that none exists"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# account_components: every detail line, a page at a time
+# ---------------------------------------------------------------------------
+
+MAX_COMPONENT_PAGE = 50
+
+
+def account_components(session: SourceSession, account: str, period: str = "", offset: int = 0, limit: int = 20) -> Dict[str, Any]:
+    """The account's detail lines (F refs) in pages. get_account_evidence shows the largest few per period and counts the rest
+    (components_not_shown); this is where the rest are, so a claim about a smaller line can cite it."""
+    key = _account(session, account)
+    contract = session.contracts[key]
+    if period and period not in contract.periods:
+        raise _tool_error("NOT_FOUND", f"{key} has no period {period!r}", {"periods": contract.periods})
+    order = {p: i for i, p in enumerate(contract.periods)}
+    lines = [f for f in contract.facts if f.get("role") == ec.ROLE_COMPONENT and (not period or f.get("period") == period)]
+    lines.sort(key=lambda f: (-order.get(f.get("period"), -1), -abs(float(f.get("value") or 0.0)), str(f.get("ref"))))
+    limit = max(1, min(int(limit or 20), MAX_COMPONENT_PAGE))
+    offset = max(0, int(offset or 0))
+    page = lines[offset:offset + limit]
+    if offset and not page:
+        raise _tool_error("NOT_FOUND", f"offset {offset} is past the last of {len(lines)} line(s)", {"total_components": len(lines)})
+    return {
+        "account": key, "period": period or None, "total_components": len(lines), "offset": offset, "returned": len(page),
+        "next_offset": offset + limit if offset + limit < len(lines) else None,
+        "components": [{"ref": f["ref"], "period": f.get("period"), "basis": f.get("basis"), "line": f.get("line"),
+                        "yuan": round(float(f.get("value") or 0.0), 2), "wan": round(float(f.get("value") or 0.0) / 1e4, 2),
+                        "sheet": f.get("sheet"), "row": (int(f["row"]) + 1) if isinstance(f.get("row"), (int, float)) else None}
+                       for f in page],
+        "source": _source_stamp(session, session.workbook_path or ""),
+        "limits": {"order": "latest period first, then by size", "page_max": MAX_COMPONENT_PAGE,
+                   "values": "as the extractor read them, in yuan; rows are 1-based sheet rows; the column is not recorded",
+                   "scope": "the account's own detail lines; hidden sheets are never read"},
+    }
+
+
+# ---------------------------------------------------------------------------
+# explain_mapping: why this tab, which others, how sure
+# ---------------------------------------------------------------------------
+
+_CANDIDATE_FIELDS = ("sheet_name", "score", "matched_alias", "exact_alias_match", "below_floor", "floor_missed_by", "sheet_kind",
+                     "entity_scope", "financial_avg_pct_diff", "financial_match_dates", "resolution_method")
+
+
+def explain_mapping(session: SourceSession, account: str) -> Dict[str, Any]:
+    """How the account's tab was chosen: the resolver's own record (score, alias, the Financials comparison), the candidates it
+    ranked, whether it called the choice ambiguous, and any manual override. It changes nothing: a mapping is changed only by the
+    user (mapping overrides), never by a tool or the model."""
+    resolution = session.resolution or {}
+    resolved_all = resolution.get("resolved") or {}
+    key = session.resolve_account(str(account or ""))
+    if key is None and str(account or "") in resolved_all:
+        key = str(account)
+    if key is None:
+        key = _account(session, account)                     # raises UNKNOWN_ACCOUNT with the choices
+    resolved = resolved_all.get(key) or {}
+    overrides = dict((session.load_params or {}).get("mapping_overrides") or {})
+    ambiguous = key in (resolution.get("ambiguities") or {})
+    ranked = (resolution.get("ambiguities") or {}).get(key) or (resolution.get("candidate_map") or {}).get(key) or []
+    states = sheet_states(session.workbook_path) if session.workbook_path else None
+    candidates = []
+    for c in ranked[:6]:
+        item = {k: c.get(k) for k in _CANDIDATE_FIELDS if c.get(k) not in (None, "", [])}
+        if states is not None and c.get("sheet_name") in states:
+            item["sheet_state"] = states[c["sheet_name"]]
+        candidates.append(item)
+    scores = [float(c.get("score") or 0.0) for c in ranked[:2]]
+    selection = None
+    if session.selection is not None:
+        decision = session.selection.by_key().get(key)
+        if decision is not None:
+            selection = {"admitted": bool(decision.admitted), "reason": getattr(decision, "reason", None)}
+    return {
+        "account": key, "sheet": resolved.get("sheet_name"), "method": resolved.get("resolution_method"), "score": resolved.get("score"),
+        "matched_alias": resolved.get("matched_alias"), "exact_alias_match": resolved.get("exact_alias_match"),
+        "financials_comparison": {k: resolved.get(k) for k in ("financial_avg_pct_diff", "financial_dates_compared", "financial_match_dates",
+                                                                 "financial_values_available") if resolved.get(k) is not None} or None,
+        "override": {"applied": key in overrides, "sheet": overrides.get(key)},
+        "ambiguous": ambiguous, "runner_up_gap": round(scores[0] - scores[1], 2) if len(scores) == 2 else None,
+        "candidates": candidates, "candidates_total": len(ranked),
+        "override_issues": [i for i in resolution.get("override_issues") or [] if i.get("mapping_key") == key],
+        "unresolved_sheets": [u.get("sheet_name") for u in (resolution.get("unresolved_sheets") or [])][:12],
+        "selection": selection,
+        "source": _source_stamp(session, session.workbook_path or ""),
+        "limits": {"decides": "nothing: only the user changes a mapping (mapping overrides); propose one under 'unresolved' or ask",
+                   "scores": "the resolver's deterministic ranking (aliases, sheet kind, Financials agreement); a high score is not proof",
+                   "scope": "visible sheets; a hidden candidate is shown with its sheet_state and is never used"},
     }

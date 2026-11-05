@@ -102,6 +102,23 @@ class Panel(unittest.TestCase):
         at.button(key="agent_report").click().run()
         at.button(key="agent_export").click().run()
         self.assertTrue(any("NO_BASE_COMMENTARY" in e.value for e in at.error), [e.value for e in at.error])
+        # the refusal says how to get a whole first deck: the legacy command, then binding the session to that run
+        self.assertTrue(any("--run-ai --export-pptx" in c.value for c in at.code), [c.value for c in at.code])
+        self.assertTrue(any("/base-run" in c.value for c in at.code))
+
+    def test_overrides_a_partial_update_and_a_doubtful_base_run_are_shown(self):
+        os.environ["FDD_AGENT"] = "1"
+        self.work.source.load_params = dict(self.work.source.load_params or {}, mapping_overrides={"应收账款": "AR"})
+        self.work.source.base_run_check = {"status": "edited_since", "reasons": ["account data differs"]}
+        self.work.deck = {"last_update": {"complete": False, "unfinished": [{"action": "conflict"}], "next_steps": ["decide the conflict"]}}
+        at = self.run_app()
+        at.button(key="agent_start").click().run()
+        self.assertFalse(at.exception, at.exception)
+        captions = " ".join(c.value for c in at.caption)
+        warnings = " ".join(w.value for w in at.warning)
+        self.assertIn("应收账款 → AR", captions)
+        self.assertIn("edited_since", warnings)
+        self.assertIn("PARTIAL", warnings)
 
     def test_a_draft_that_no_longer_stands_says_why_and_cannot_be_accepted(self):
         os.environ["FDD_AGENT"] = "1"

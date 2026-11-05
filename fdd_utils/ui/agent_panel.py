@@ -23,15 +23,18 @@ EXPORT_KEY = "agent_last_export"
 
 
 def _open_work(session_state: Any):
-    """A WorkSession over what the app has loaded: the same workbook, entity, Financials source and base run."""
+    """A WorkSession over what the app has loaded: the same workbook, entity, Financials source, base run and the manual mapping
+    overrides set in the app. agent.models in config.yml chooses the models when it is set; otherwise the sidebar's model."""
+    from ..agent.flag import role_config
     from ..agent.workspace import WorkSession
     rollup = session_state.get("rollup_temp_path") if session_state.get("rollup_sheet") else None
+    configured = bool(role_config(None, "primary").get("provider"))
     return WorkSession.open(
         session_state.get("temp_path"), entity=session_state.get("entity_name") or "",
         sheet=None if rollup else session_state.get("selected_sheet"),
         financials_from=rollup, financials_sheet=session_state.get("rollup_sheet") if rollup else None,
-        base_run=session_state.get("last_run_folder"),
-        model_type=session_state.get("model_type", "local"), model_name=session_state.get("model_name"),
+        base_run=session_state.get("last_run_folder"), mapping_overrides=dict(session_state.get("mapping_overrides") or {}) or None,
+        model_type="" if configured else session_state.get("model_type", "local"), model_name=None if configured else session_state.get("model_name"),
         limits=agent_limits(), policy=agent_policy())
 
 
@@ -121,6 +124,9 @@ def _show_export(result: Optional[Dict[str, Any]]) -> None:
                                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation", key="agent_download")
     elif error:
         st.error(f"[{error['code']}] {error['message']}")
+        for step in ((error.get("first_generation") or {}).get("steps") or []):
+            st.caption(f"{step['what']}:")
+            st.code(step["command"], language="bash")
         if data.get("path"):
             st.caption(f"A draft was still written: {os.path.basename(data['path'])}")
     for reason in ((data.get("delivery") or {}).get("findings") or [])[:6]:
@@ -151,6 +157,15 @@ def render_agent_panel(session_state: Any, factory: Optional[Callable[[Any], Any
                 st.rerun()
             return
         status = work.status()
+        if status.get("mapping_overrides"):
+            st.caption("Manual mapping overrides in force (set in the app, read with the sources): "
+                       + ", ".join(f"{k} → {v}" for k, v in status["mapping_overrides"].items()))
+        if status.get("base_run_check") and status["base_run_check"] not in ("verified",):
+            st.warning(f"The base run's check against this workbook: {status['base_run_check']}. An export is refused when it does not describe the workbook.")
+        last_update = (work.deck or {}).get("last_update")
+        if last_update and not last_update.get("complete"):
+            st.warning(f"The last deck update was PARTIAL: {len(last_update.get('unfinished') or [])} item(s) left as returned. "
+                       + " ".join(last_update.get("next_steps") or []))
         st.caption(f"Session {status['id']} · source version {status['source_version']} · base run {status['base_run'] or 'none'} · "
                    f"model calls {status['model_calls']}" + (f" of {status['max_model_calls']}" if status["max_model_calls"] else "")
                    + f" · tokens charged {status['budget']['charged_tokens']:,}"

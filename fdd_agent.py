@@ -138,9 +138,11 @@ def _work(args):
     if getattr(args, "thinking", None):
         extra["thinking"] = args.thinking
     escalation = parse_role(args.escalation_model) if getattr(args, "escalation_model", None) else None
+    overrides = dict(x.split("=", 1) for x in (getattr(args, "mapping_override", None) or []) if "=" in x) or None
     work = WorkSession.open(
         args.databook, session_path=getattr(args, "session", None), entity=args.entity or "", sheet=args.sheet,
         financials_from=args.financials_from, financials_sheet=args.financials_sheet, base_run=getattr(args, "base_run", None),
+        mapping_overrides=overrides,
         model=model, budget=agent_budget(), limits=agent_limits(max_model_calls=getattr(args, "max_model_calls", None)),
         policy=agent_policy(mode=getattr(args, "routing", None)), escalation=escalation, **extra)
     if work.opening_notice:
@@ -202,6 +204,8 @@ def _print_turn(turn, as_json: bool = False) -> int:
 def _print_export(result: dict) -> None:
     if result.get("ok") is False and result.get("error") and not result.get("data"):
         print(f"  EXPORT REFUSED [{result['error']['code']}]: {result['error']['message']}")
+        for step in ((result["error"].get("first_generation") or {}).get("steps") or []):
+            print(f"    - {step['what']}\n      {step['command']}")
         return
     data = result.get("data") or {}
     err = result.get("error")
@@ -236,6 +240,7 @@ def _print_candidates(views: list, unresolved: list) -> None:
 def cmd_chat(args) -> int:
     if not _gate(args):
         return 2
+    from fdd_utils.agent import tools as T
     from fdd_utils.agent.workspace import classify_request
     work = _work(args)
     interactive = sys.stdin.isatty()
@@ -243,7 +248,9 @@ def cmd_chat(args) -> int:
     print(f"session {st['id']}  {st['workbook']}  source version {st['source_version']}  base run: {st['base_run'] or 'none (export needs one)'}")
     print("free text asks (or, if it says 'put that in the report', makes a draft); /help for commands.")
     help_text = ("/ask Q   /edit [@ACCOUNT] INSTRUCTION   /report [REQUEST]   /candidates   /unresolved   /accept [ACCOUNT]   /unaccept ACCOUNT\n"
-                 "/export [PATH]   /refresh   /deck PATH   /update PATH [OUT]   /status   /save [PATH]   /quit")
+                 "/export [PATH]   /refresh   /deck PATH   /update PATH [OUT]   /status   /save [PATH]   /quit\n"
+                 "/mapping ACCOUNT   /override ACCOUNT SHEET   /clear-override ACCOUNT   /overrides   (a mapping is yours to change; the model cannot)\n"
+                 "/components ACCOUNT [PERIOD] [OFFSET]   /base-run RUN_ID   /first-deck   /books")
     while True:
         try:
             line = input("> " if interactive else "").strip()
@@ -296,6 +303,41 @@ def cmd_chat(args) -> int:
                 print(_deck_text(r["data"], True) if r.get("ok") else json.dumps(r.get("error"), ensure_ascii=False))
             elif cmd == "status":
                 print(json.dumps(work.status(), ensure_ascii=False, indent=1, default=str))
+            elif cmd == "mapping":
+                r = T.call_tool(work.source, "explain_mapping", {"account": rest})
+                print(json.dumps(r.data if r.ok else r.error, ensure_ascii=False, indent=1, default=str))
+            elif cmd == "override":
+                account, _, sheet = rest.partition(" ")
+                if not account or not sheet.strip():
+                    print("  usage: /override ACCOUNT SHEET")
+                else:
+                    r = work.set_mapping_override(account, sheet.strip())
+                    print("  read again with the override: " + (work._effects_line(r.get("candidate_effects")) if r.get("ok") else str(r.get("error"))))
+            elif cmd == "clear-override":
+                r = work.clear_mapping_override(rest)
+                print("  read again without it: " + (work._effects_line(r.get("candidate_effects")) if r.get("ok") else str(r.get("error"))))
+            elif cmd == "overrides":
+                print(json.dumps(work.mapping_overrides, ensure_ascii=False))
+            elif cmd == "components":
+                parts = rest.split()
+                args_ = {"account": parts[0] if parts else ""}
+                if len(parts) > 1:
+                    args_["period"] = parts[1]
+                if len(parts) > 2:
+                    args_["offset"] = int(parts[2])
+                r = T.call_tool(work.source, "get_account_components", args_)
+                print(json.dumps(r.data if r.ok else r.error, ensure_ascii=False, indent=1, default=str))
+            elif cmd == "base-run":
+                r = work.set_base_run(rest)
+                check = r.get("base_run_check") or {}
+                print(f"  base run bound: check {check.get('status')}" + (f" -- {'; '.join(check.get('reasons') or [])[:300]}" if check.get("reasons") else ""))
+            elif cmd == "first-deck":
+                plan = work.first_generation_plan()
+                print("  " + plan["why"])
+                for step in plan["steps"]:
+                    print(f"  - {step['what']}\n    {step['command']}")
+            elif cmd == "books":
+                print(json.dumps(work.shared.summary(), ensure_ascii=False, indent=1, default=str))
             elif cmd == "save":
                 print("  saved to", work.save(rest or None))
             else:
@@ -462,10 +504,10 @@ def cmd_deck(args) -> int:
 
 def _deck_text(data, updated: bool) -> str:
     if updated:
-        lines = [f"updated copy: {data['out_path']}   applied {len(data['applied'])}, left for a person {data['waiting_for_a_person']}"]
-        lines += [f"  skipped {s.get('element')}: {s.get('action') or ''} {s.get('reason') or ''}" for s in data["skipped"]]
-        if data.get("needs_candidates"):
-            lines.append("  accounts that need a validated candidate first: " + ", ".join(data["needs_candidates"]))
+        lines = [f"updated copy: {data['out_path']}   {'COMPLETE' if data.get('complete') else 'PARTIAL'}   applied {len(data['applied'])}, "
+                 f"left for a person {data['waiting_for_a_person']}   (the returned deck itself was not written)"]
+        lines += [f"  unfinished {u.get('element') or u.get('account')}: {u.get('action')} {u.get('reason') or ''}" for u in data.get("unfinished") or []]
+        lines += [f"  next: {step}" for step in data.get("next_steps") or []]
         return "\n".join(lines)
     lines = [f"mode: {data['mode']}   history: {data['history']}   source moved: {data.get('source_moved')}", data.get("note") or ""]
     for action in data.get("actions") or []:
@@ -511,6 +553,8 @@ def main(argv=None) -> int:
         p.add_argument("--session", default=None, required=required, metavar="FILE",
                        help="keep the thread in this file (figures and commentary: a path git does not track)")
         p.add_argument("--base-run", default=None)
+        p.add_argument("--mapping-override", action="append", default=None, metavar="ACCOUNT=SHEET",
+                       help="read ACCOUNT from SHEET (yours to set; repeatable; kept in the session file)")
 
     s = sub.add_parser("summary"); common(s); s.set_defaults(fn=cmd_summary)
     a = sub.add_parser("ask"); common(a); model_args(a); a.add_argument("question"); session_arg(a); a.set_defaults(fn=cmd_ask)

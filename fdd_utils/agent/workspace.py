@@ -41,8 +41,8 @@ from ..ai import claims as cl
 from . import routing as R
 from . import tools as T
 from .controller import AgentController, AgentRun, Budget, Issue, Memory
-from .session import (Candidate, SourceSession, _fact_label, capture_cite_ids, capture_context, claims_digest, context_changes,
-                      replay_derived)
+from .session import (Candidate, SourceSession, _fact_label, account_profile, capture_cite_ids, capture_context, claims_digest,
+                      context_changes, replay_derived)
 
 SESSION_VERSION = 1
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -116,7 +116,7 @@ def _sentences(text: str) -> List[str]:
 
 
 class WorkSession:
-    def __init__(self, source: SourceSession, *, model: Optional[Callable[..., Dict[str, Any]]] = None, model_type: str = "local",
+    def __init__(self, source: SourceSession, *, model: Optional[Callable[..., Dict[str, Any]]] = None, model_type: str = "",
                  model_name: Optional[str] = None, budget: Optional[Budget] = None, path: Optional[str] = None,
                  max_model_calls: Optional[int] = None, session_id: str = "", policy: Optional[R.Policy] = None,
                  limits: Optional[R.Limits] = None, escalation: Any = None, thinking: str = "", config: Optional[Dict[str, Any]] = None) -> None:
@@ -143,6 +143,8 @@ class WorkSession:
         self.shared = R.SharedBudget(limits)
         #: set when the session was resumed against sources that had moved since it was saved
         self.opening_notice: Dict[str, Any] = {}
+        #: the deck this work is about: the one last read, the last export and the last update, with what is still unfinished
+        self.deck: Dict[str, Any] = {}
         if self.path:
             self._check_path(self.path)
 
@@ -172,7 +174,7 @@ class WorkSession:
     @classmethod
     def open(cls, workbook: str = "", *, session_path: Optional[str] = None, resume: bool = True, entity: str = "",
              sheet: Optional[str] = None, financials_from: Optional[str] = None, financials_sheet: Optional[str] = None,
-             base_run: Optional[str] = None, **kwargs: Any) -> "WorkSession":
+             base_run: Optional[str] = None, mapping_overrides: Optional[Dict[str, str]] = None, **kwargs: Any) -> "WorkSession":
         """Start a session on a workbook, or pick one up from its file. Resuming reads the sources again; a
         session saved against other bytes than the workbook now holds says so in `opening_notice`."""
         saved = None
@@ -185,15 +187,17 @@ class WorkSession:
         if workbook:
             params["workbook"] = workbook
         for key, value in (("entity", entity), ("sheet", sheet), ("financials_from", financials_from),
-                           ("financials_sheet", financials_sheet), ("base_run", base_run)):
+                           ("financials_sheet", financials_sheet), ("base_run", base_run), ("mapping_overrides", mapping_overrides)):
             if value:
                 params[key] = value
         if not params.get("workbook"):
             raise ValueError("give a workbook (or a session file that names one)")
-        source = SourceSession.load(**{k: params.get(k) for k in ("workbook", "entity", "sheet", "financials_from", "financials_sheet", "base_run")
+        source = SourceSession.load(**{k: params.get(k) for k in ("workbook", "entity", "sheet", "financials_from", "financials_sheet", "base_run",
+                                                                  "mapping_overrides")
                                        if k == "workbook" or params.get(k) is not None})
         model = (saved or {}).get("model") or {}
-        kwargs.setdefault("model_type", model.get("type") or "local")
+        # "" lets agent.models.primary decide (a hard-coded "local" here used to override the configured first model)
+        kwargs.setdefault("model_type", model.get("type") or "")
         kwargs.setdefault("model_name", model.get("name"))
         work = cls(source, path=session_path, **kwargs)
         if saved:
@@ -208,13 +212,21 @@ class WorkSession:
         from . import flag as F
         from .controller import AIClientModel
         provider, model, thinking = selection.get("provider") or "", selection.get("model") or "", selection.get("thinking") or ""
-        key = (role, provider, model, thinking)
+        effort, max_output = selection.get("reasoning_effort") or "", selection.get("max_output")
+        key = (role, provider, model, thinking, effort, max_output)
         if key not in self._clients:
             self._clients[key] = AIClientModel(model_type=provider, model_name=model or None, language=self.source.language,
-                                               thinking=thinking, ledger_stage=f"agent_{role}")
+                                               thinking=thinking, ledger_stage=f"agent_{role}", reasoning_effort=effort, max_output=max_output)
         call = self._clients[key]
-        return R.RoleSpec(role, call, provider=provider, model=call.chat_model or model, thinking=thinking,
-                          thinking_applied=call.thinking_applied, price=F.price_for(self.config, provider, model))
+        if call.provider_fallback and not bool((F._agent_block(self.config).get("allow_provider_fallback"))):
+            # AIClient quietly answers from another configured provider when the requested one is not configured. For the agent
+            # that would send the workbook's figures, and the bill, somewhere nobody chose: refuse unless config allows it.
+            raise ValueError(f"the {role} model asks for provider '{provider}', which is not configured here; the client would fall back to "
+                             f"'{call.provider}'. Configure '{provider}' (or set agent.models.{role}), or set agent.allow_provider_fallback: true")
+        return R.RoleSpec(role, call, provider=call.provider, model=call.chat_model or model, thinking=thinking or effort,
+                          thinking_applied=call.thinking_applied, price=F.price_for(self.config, call.provider, model),
+                          max_output=max_output, thinking_unverified=call.thinking_unverified,
+                          provider_requested=provider if call.provider_fallback else "")
 
     def _router(self) -> R.RoutedModel:
         """The callable the controller calls, over this session's books. Built each turn (the policy and the model may have
@@ -226,8 +238,13 @@ class WorkSession:
                           if callable(self.escalation) else None)
         else:
             configured = F.role_config(self.config, "primary")
-            primary = self._spec(R.ROLE_PRIMARY, {"provider": self.model_type or configured["provider"], "model": self.model_name or configured["model"],
-                                                  "thinking": self.thinking or configured["thinking"]})
+            # an explicit choice (CLI --model, the app's selection) wins; otherwise agent.models.primary; otherwise local
+            explicit = bool(self.model_type)
+            primary = self._spec(R.ROLE_PRIMARY, {"provider": self.model_type or configured["provider"] or "local",
+                                                  "model": self.model_name or (configured["model"] if not explicit or self.model_type == configured["provider"] else ""),
+                                                  "thinking": self.thinking or configured["thinking"],
+                                                  "reasoning_effort": configured["reasoning_effort"] if not self.thinking else "",
+                                                  "max_output": configured["max_output"]})
             escalation = None
             if self.policy.mode == "escalate":
                 choice = self.escalation if isinstance(self.escalation, dict) else F.role_config(self.config, "escalation")
@@ -451,12 +468,66 @@ class WorkSession:
 
     # -- export and decks --------------------------------------------------------------------------------
 
+    def first_generation_plan(self) -> Dict[str, Any]:
+        """How to get a full first deck when there is no base run: the legacy pipeline writes every account (and a run this session
+        can then be bound to). The agent path does not write a whole entity from nothing yet, and a deck of a few accounts is not one."""
+        p = self.source.load_params or {}
+        workbook = p.get("workbook") or self.source.workbook_path
+        legacy = ["python", "inspect_databook.py", workbook, "--run-ai", "--export-pptx"]
+        for flag, key in (("--entity", "entity"), ("--sheet", "sheet"), ("--financials-from", "financials_from"), ("--financials-sheet", "financials_sheet")):
+            if p.get(key):
+                legacy += [flag, str(p[key])]
+        return {"why": "no base run: the agent path writes and checks single accounts; a whole entity's first draft comes from the legacy pipeline",
+                "steps": [{"what": "write the whole entity with the legacy pipeline (real model calls; the run's tokens are in usage.jsonl)",
+                           "command": " ".join(f'"{x}"' if " " in str(x) else str(x) for x in legacy)},
+                          {"what": "bind this session to that run (the run must be shown to describe this workbook: identity or every account's fingerprint)",
+                           "command": "in the session: /base-run <RUN_ID>   (or open it again with --base-run <RUN_ID>)"}],
+                "not_offered": "a deck holding only the accounts edited here, presented as the report: it would leave every other account out"}
+
+    def set_base_run(self, run: str) -> Dict[str, Any]:
+        """Bind the session to a base run (a legacy run of the whole entity) and read the sources again. The run is checked against the
+        workbook (check_base_run); the result is returned and recorded, and an export refuses a run that does not describe it."""
+        self.source.load_params = dict(self.source.load_params or {}, base_run=run)
+        result = self._reload("base_run", {"run": run})
+        result["base_run_check"] = self.source.base_run_check
+        return result
+
+    @property
+    def mapping_overrides(self) -> Dict[str, str]:
+        return dict((self.source.load_params or {}).get("mapping_overrides") or {})
+
+    def set_mapping_override(self, account: str, sheet: str) -> Dict[str, Any]:
+        """The USER says which tab an account is read from. Only this method (the CLI's /override, the panel) changes a mapping; no tool
+        does, so the model cannot. The sources are read again with it, the source version changes, and every draft is rebound."""
+        overrides = self.mapping_overrides
+        overrides[str(account)] = str(sheet)
+        self.source.load_params = dict(self.source.load_params or {}, mapping_overrides=overrides)
+        return self._reload("mapping_override", {"account": account, "sheet": sheet, "by": "user"})
+
+    def clear_mapping_override(self, account: str) -> Dict[str, Any]:
+        overrides = self.mapping_overrides
+        removed = overrides.pop(str(account), None)
+        self.source.load_params = dict(self.source.load_params or {}, mapping_overrides=overrides)
+        return self._reload("mapping_override_cleared", {"account": account, "was": removed, "by": "user"})
+
+    def _reload(self, why: str, detail: Dict[str, Any]) -> Dict[str, Any]:
+        result = self.refresh()
+        self.events.append({"at": _now(), "type": why, **detail, "ok": bool(result.get("ok")), "source_version": self.source.source_version})
+        self._autosave()
+        return result
+
     def export(self, out_path: str = "", accounts: Optional[List[str]] = None) -> Dict[str, Any]:
         self.ensure_fresh()
         if not self.source.base_results:
             return {"ok": False, "error": {"code": "NO_BASE_COMMENTARY",
                     "message": "this session has no base run: a deck made now would hold only the edited accounts. "
-                               "Start the session with a base run (--base-run) so the other accounts keep their commentary."}}
+                               "Write the whole entity first, then bind this session to that run (first_generation below).",
+                    "first_generation": self.first_generation_plan()}}
+        check = self.source.base_run_check or {}
+        if check.get("status") in ("mismatch",):
+            return {"ok": False, "error": {"code": "BASE_RUN_MISMATCH",
+                    "message": "the base run does not describe this workbook: " + "; ".join(check.get("reasons") or [])[:400],
+                    "first_generation": self.first_generation_plan()}}
         chosen = accounts or [a for a, c in self.source.candidates.items() if c.accepted and c.validated
                               and c.source_version == self.source.source_version]
         if not chosen:
@@ -465,12 +536,27 @@ class WorkSession:
         result = T.call_tool(self.source, "export_candidate", {"accounts": chosen, "out_path": out_path})
         self.events.append({"at": _now(), "type": "export", "accounts": chosen, "ok": result.ok, "error": (result.error or {}).get("code"),
                             "path": (result.data or {}).get("path")})
+        data = result.data or {}
+        self.deck["last_export"] = {"at": _now(), "ok": result.ok, "path": data.get("path"), "accounts": chosen,
+                                    "touched_slides": data.get("touched_slide_numbers"), "delivery": (data.get("delivery") or {}).get("status"),
+                                    "error": (result.error or {}).get("code"), "source_version": self.source.source_version}
+        if result.ok and data.get("path"):
+            self.deck["current"] = data.get("path")
         self._autosave()
         return result.to_dict()
 
     def read_deck(self, path: str) -> Dict[str, Any]:
         self.ensure_fresh()
-        return T.call_tool(self.source, "read_deck", {"path": path}).to_dict()
+        result = T.call_tool(self.source, "read_deck", {"path": path})
+        data = result.data or {}
+        actions = data.get("actions") or []
+        self.deck.update(current=path, read={
+            "at": _now(), "ok": result.ok, "mode": data.get("mode"), "source_moved": data.get("source_moved"), "summary": data.get("summary"),
+            "conflicts": [{k: a.get(k) for k in ("element", "action", "reason")} for a in actions
+                          if a.get("action") in ("conflict", "inspect_and_relink", "table_edited")][:40],
+            "source_version": self.source.source_version, "error": (result.error or {}).get("code")})
+        self._autosave()
+        return result.to_dict()
 
     def update_deck(self, path: str, out_path: str = "") -> Dict[str, Any]:
         """Update a returned deck from the drafts the user accepted (and only those)."""
@@ -482,6 +568,13 @@ class WorkSession:
         finally:
             self.source.candidates = everything
         self.events.append({"at": _now(), "type": "update_deck", "ok": result.ok, "error": (result.error or {}).get("code")})
+        data = result.data or {}
+        self.deck["last_update"] = {"at": _now(), "ok": result.ok, "deck": path, "out_path": data.get("out_path"),
+                                    "complete": bool(data.get("complete")), "applied": len(data.get("applied") or []),
+                                    "unfinished": (data.get("unfinished") or [])[:40], "next_steps": data.get("next_steps") or [],
+                                    "error": (result.error or {}).get("code"), "source_version": self.source.source_version}
+        if result.ok and data.get("out_path"):
+            self.deck["current"] = data.get("out_path")
         self._autosave()
         return result.to_dict()
 
@@ -574,11 +667,12 @@ class WorkSession:
             candidate.invalid_reason = "checked again against the new sources: " + ", ".join(codes)
             candidate.accepted = False
             return {**effect, "status": "invalidated", "reasons": [candidate.invalid_reason]}
-        changes = context_changes(contract, candidate.context)
+        profile = account_profile(self.source, key)
+        changes = context_changes(contract, candidate.context, profile_now=profile)
         candidate.claims, candidate.outcome = claims, outcome
         candidate.source_version, candidate.claims_digest = self.source.source_version, claims_digest(claims)
         candidate.cite_ids, candidate.carried, candidate.invalid_reason = capture_cite_ids(contract, claims), True, ""
-        candidate.context, candidate.context_changes = capture_context(contract, claims, candidate.cite_ids), changes
+        candidate.context, candidate.context_changes = capture_context(contract, claims, candidate.cite_ids, profile), changes
         if changes:
             if candidate.accepted:
                 self.events.append({"at": _now(), "type": "acceptance_withdrawn", "account": key, "by": "source_change", "reasons": changes})
@@ -624,6 +718,9 @@ class WorkSession:
                 "usage": dict(self.usage_total), "budget": self.shared.summary(), "routing": self.policy.mode,
                 "candidates": {v["account"]: v["status"] for v in views},
                 "accounts_consulted": list(self.memory.consulted), "open_issues": len([i for i in self.memory.issues.values() if not i.resolved]),
+                "mapping_overrides": self.mapping_overrides, "base_run_check": (self.source.base_run_check or {}).get("status"),
+                "deck": {k: self.deck.get(k) for k in ("current",) if self.deck.get(k)} | (
+                    {"last_update_complete": self.deck["last_update"].get("complete")} if self.deck.get("last_update") else {}),
                 "session_file": self.path or None}
 
     # -- persistence --------------------------------------------------------------------------------------------
@@ -668,7 +765,7 @@ class WorkSession:
             "exports": [{k: e.get(k) for k in ("path", "ok", "source_version", "touched_slide_numbers", "candidates")} | {"delivery": (e.get("delivery") or {}).get("status")}
                         for e in self.source.exports],
             "events": self.events[-200:], "usage": self.usage_total, "model_calls": self.model_calls, "max_model_calls": self.max_model_calls,
-            "budget": self.shared.to_dict(), "routing": self.policy.mode,
+            "budget": self.shared.to_dict(), "routing": self.policy.mode, "deck": self.deck,
         }
 
     @staticmethod
@@ -697,6 +794,7 @@ class WorkSession:
         self.id, self.created = data.get("id") or self.id, data.get("created") or self.created
         self.turns = [Turn.from_dict(t) for t in data.get("turns") or []]
         self.events = list(data.get("events") or [])
+        self.deck = dict(data.get("deck") or {})
         if data.get("budget"):
             self.shared.restore(data["budget"])
         if self.max_model_calls is None:
@@ -738,7 +836,7 @@ class WorkSession:
                 contract = self.source.contracts.get(c.account)
                 if not c.context and contract is not None:
                     # the sources are the ones the file was saved against, so what they hold now is what the draft was written against
-                    c.context = capture_context(contract, c.claims, c.cite_ids)
+                    c.context = capture_context(contract, c.claims, c.cite_ids, account_profile(self.source, c.account))
                 outcome = cl.verify_candidate(c.claims, self.source.contracts, default_account=c.account)
                 if outcome["ok"] != bool(c.outcome.get("ok")) and not c.invalid_reason:
                     c.invalid_reason = "the draft verified differently when the session was reopened"

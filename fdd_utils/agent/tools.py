@@ -25,7 +25,7 @@ from ..ai import claims as cl
 from ..ai import evidence_contract as ec
 from ..delivery import Finding, banner, decide_delivery, labelled_path
 from . import investigate as I
-from .session import Candidate, SourceSession, capture_cite_ids, capture_context, claims_digest
+from .session import account_profile, Candidate, SourceSession, capture_cite_ids, capture_context, claims_digest
 from .summary import build_numerical_summary
 
 
@@ -60,6 +60,8 @@ class Tool:
     args: Dict[str, Dict[str, Any]]            # arg -> {"type": str, "required": bool, "help": str}
     fn: Callable[..., Dict[str, Any]]
     reads_evidence: bool = True
+    #: listed in the controller's prompt; False keeps a tool callable (CLI, call_tool) without costing every step its description
+    in_prompt: bool = True
 
 
 _TYPES = {"str": str, "list": list, "dict": dict, "int": int, "bool": bool}
@@ -197,7 +199,7 @@ def validate_candidate(session: SourceSession, account: str, claims: List[Dict[s
     outcome = cl.verify_candidate(stamped, session.contracts, default_account=key)
     cite_ids = capture_cite_ids(session.contracts[key], stamped)
     session.candidates[key] = Candidate(key, stamped, outcome, session.source_version, claims_digest(stamped), cite_ids=cite_ids,
-                                        context=capture_context(session.contracts[key], stamped, cite_ids))
+                                        context=capture_context(session.contracts[key], stamped, cite_ids, account_profile(session, key)))
     legacy = {key: cl.to_legacy_result(key, stamped, outcome),
               "__run_health__": {"zero_successful_calls": False, "accounts_on_fallback_bullet": [], "accounts_on_passthrough": [],
                                  "accounts_on_error_text": [], "accounts_without_prompt": []}}
@@ -303,6 +305,25 @@ def update_deck(session: SourceSession, path: str, out_path: str = "") -> Dict[s
            "touched_slides": result.get("touched_slides"), "layout": layout, "waiting_for_a_person": len(waiting),
            "needs_candidates": sorted({by_id[a["element"]]["account"] for a in report["actions"]
                                        if a["action"] == "auto_update" and a["element"] not in texts})}
+    # Complete only when nothing was left: a skipped paragraph (a conflict with a person's edit, an account that runs across
+    # paragraphs and needs the deck re-packed, a paragraph that could not be found), an edited table or a relink case means the
+    # update is PARTIAL. The original deck is never written to; the copy says what it did and what it did not.
+    unfinished = [{"element": x.get("element"), "account": (by_id.get(x.get("element")) or {}).get("account"),
+                   "action": x.get("action") or "skipped", "reason": x.get("reason")} for x in result["skipped"]]
+    unfinished += [{"element": a["element"], "account": (by_id.get(a["element"]) or {}).get("account"), "action": a["action"], "reason": a.get("reason")}
+                   for a in report["actions"] if a["action"] in ("table_edited",) or (a["action"] == "inspect_and_relink" and a["element"] not in by_id)]
+    unfinished += [{"element": None, "account": acct, "action": "needs_candidate", "reason": "its cited facts changed and no validated, accepted draft replaces it"}
+                   for acct in out["needs_candidates"]]
+    steps = []
+    if any(x["action"] == "conflict" for x in unfinished):
+        steps.append("conflicts: a person edited a paragraph whose figures changed; decide between their text and a new draft, then update again")
+    if any("reflow_required" in str(x.get("reason")) for x in unfinished):
+        steps.append("accounts that run across paragraphs or slides need the deck re-packed: export a fresh deck from the base run with the accepted drafts")
+    if any(x["action"] == "needs_candidate" for x in unfinished):
+        steps.append("draft, validate and accept the accounts listed as needs_candidate, then update again")
+    if any(x["action"] in ("inspect_and_relink", "table_edited") for x in unfinished):
+        steps.append("relink or check by hand the paragraphs and tables listed; they were left exactly as returned")
+    out.update(complete=not unfinished, unfinished=unfinished, next_steps=steps, original_kept=path)
     if layout["problems"]:
         raise ToolError("LAYOUT_PROBLEM", f"{len(layout['problems'])} layout problem(s) on the updated slides", out)
     return out
@@ -382,16 +403,25 @@ _TOOLS += [
     Tool("adjustment_evidence", "Per period: the tab's total, the Financials total, the one the deck uses, the difference, the adjustment entries (N refs) "
          "behind it, whether they add up, and whether the difference has no explanation on the visible sheets.",
          {"account": {"type": "str", "required": True, "help": ""}}, I.adjustment_evidence),
+    Tool("get_account_components", "An account's detail lines (F refs) a page at a time, including those get_account_evidence left out (components_not_shown); "
+         "each with period, basis, line, value, sheet and row.",
+         {"account": {"type": "str", "required": True, "help": ""},
+          "period": {"type": "str", "required": False, "help": "ISO date; default every period"},
+          "offset": {"type": "int", "required": False, "help": "default 0"},
+          "limit": {"type": "int", "required": False, "help": "default 20, at most 50"}}, I.account_components),
+    Tool("explain_mapping", "Why an account was read from its tab: the resolver's score and alias, the Financials comparison, the other candidates, "
+         "whether the choice was ambiguous, and any manual override. Changes nothing; only the user changes a mapping.",
+         {"account": {"type": "str", "required": True, "help": ""}}, I.explain_mapping),
     Tool("find_capability", "Look up code that already exists (wrapping, character counts, packing, verification, formatting) by what it does. Returns signature, "
          "what it touches, tests, callers and how many warning/measurement comments it carries. Use it before writing anything new.",
          {"query": {"type": "str", "required": True, "help": "English words, e.g. 'characters per line wrap width'"},
-          "k": {"type": "int", "required": False, "help": "default 8, at most 20"}}, find_capability, reads_evidence=False),
+          "k": {"type": "int", "required": False, "help": "default 8, at most 20"}}, find_capability, reads_evidence=False, in_prompt=False),
     Tool("explain_capability", "One existing function, method or class in detail: docstring, the comments that record why it is that way, who calls it, "
          "what it calls and the tests that mention it; the source only if source_lines is set.",
          {"name": {"type": "str", "required": True, "help": "full name from find_capability, or an unambiguous short name"},
-          "source_lines": {"type": "int", "required": False, "help": "lines of source to include, default 0, at most 120"}}, explain_capability, reads_evidence=False),
+          "source_lines": {"type": "int", "required": False, "help": "lines of source to include, default 0, at most 120"}}, explain_capability, reads_evidence=False, in_prompt=False),
     Tool("code_overview", "The modules of the code, one line each (a package prefix narrows it).",
-         {"package": {"type": "str", "required": False, "help": "e.g. 'fdd_utils/pptx'"}}, code_overview, reads_evidence=False),
+         {"package": {"type": "str", "required": False, "help": "e.g. 'fdd_utils/pptx'"}}, code_overview, reads_evidence=False, in_prompt=False),
 ]
 TOOLS: Dict[str, Tool] = {t.name: t for t in _TOOLS}
 
@@ -403,6 +433,8 @@ def register_tool(tool: Tool) -> None:
 def describe_tools() -> str:
     lines = []
     for tool in TOOLS.values():
+        if not tool.in_prompt:
+            continue
         args = ", ".join(f"{a}{'' if spec.get('required') else '?'}: {spec['type']}" for a, spec in tool.args.items())
         lines.append(f"  - {tool.name}({args}): {tool.help}")
     return "\n".join(lines)

@@ -128,16 +128,31 @@ def _period_state(contract: ec.EvidenceContract, period: str, permissions: Dict[
             "checks": dict(matrix.get(period) or {}), "permissions": permissions.get(period), "notes": notes}
 
 
-def capture_context(contract: ec.EvidenceContract, claims: List[Dict[str, Any]], cite_ids: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
+def account_profile(session: Any, key: str) -> Dict[str, Any]:
+    """Where an account's figures come from: the tab, the unit the tab is printed in (the multiplier to yuan), how the resolver chose
+    the tab and any manual override. A draft can keep every figure while the account is read from another tab or another unit."""
+    df = (getattr(session, "dfs", None) or {}).get(key)
+    attrs = getattr(df, "attrs", None) or {}
+    resolved = ((getattr(session, "resolution", None) or {}).get("resolved") or {}).get(key) or {}
+    overrides = (getattr(session, "load_params", None) or {}).get("mapping_overrides") or {}
+    return {"sheet": attrs.get("source_sheet_name") or resolved.get("sheet_name"), "multiplier": attrs.get("source_multiplier"),
+            "mapping_method": resolved.get("resolution_method"), "override": overrides.get(key)}
+
+
+def capture_context(contract: ec.EvidenceContract, claims: List[Dict[str, Any]], cite_ids: Dict[str, Dict[str, Any]],
+                    profile: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Everything about the account in the periods a draft touches, not only the figures it quotes: every other line
     of the period (a composition claim rests on the whole set, a total on its parts), what each check came out as,
     what each period permits, the remarks that apply, and which period is the latest. A paragraph can keep every
     figure it cites while the thing it says about them stops being true; this is how that is noticed."""
     from ..pptx import lineage as L
     permissions, matrix = L.permission_view(contract), contract.status_matrix()
-    return {"periods": list(contract.periods), "latest_period": contract.periods[-1] if contract.periods else None,
-            "annualization_sha": _sha16(contract.annualization or {}),
-            "by_period": {p: _period_state(contract, p, permissions, matrix) for p in touched_periods(contract, claims, cite_ids)}}
+    out = {"periods": list(contract.periods), "latest_period": contract.periods[-1] if contract.periods else None,
+           "annualization_sha": _sha16(contract.annualization or {}),
+           "by_period": {p: _period_state(contract, p, permissions, matrix) for p in touched_periods(contract, claims, cite_ids)}}
+    if profile is not None:
+        out["source"] = dict(profile)
+    return out
 
 
 def _fact_label(contract: ec.EvidenceContract, fact_id: str) -> str:
@@ -147,14 +162,30 @@ def _fact_label(contract: ec.EvidenceContract, fact_id: str) -> str:
     return " ".join(x for x in (str(item.get("line") or item.get("role") or ""), f"[{item.get('basis')}]" if item.get("basis") else "") if x)
 
 
-def context_changes(contract: ec.EvidenceContract, context: Dict[str, Any], *, limit: int = 8) -> List[str]:
+def _profile_changes(before: Optional[Dict[str, Any]], now: Optional[Dict[str, Any]]) -> List[str]:
+    if not before or not now:
+        return []
+    out = []
+    if (before.get("sheet") or None) != (now.get("sheet") or None):
+        out.append(f"the account is now read from tab '{now.get('sheet')}', not '{before.get('sheet')}'")
+    if before.get("multiplier") != now.get("multiplier"):
+        out.append(f"the unit its tab is printed in changed (x{before.get('multiplier')} -> x{now.get('multiplier')} to yuan)")
+    if (before.get("override") or None) != (now.get("override") or None):
+        out.append(f"its manual mapping override changed ({before.get('override') or 'none'} -> {now.get('override') or 'none'})")
+    elif (before.get("mapping_method") or None) != (now.get("mapping_method") or None):
+        out.append(f"the way its tab was chosen changed ({before.get('mapping_method')} -> {now.get('mapping_method')})")
+    return out
+
+
+def context_changes(contract: ec.EvidenceContract, context: Dict[str, Any], *, limit: int = 8,
+                    profile_now: Optional[Dict[str, Any]] = None) -> List[str]:
     """What differs, in words, between the account as a draft was written against it and the account now. Empty when
     nothing the draft could rest on moved. `context` empty means it was never recorded: that is reported, not skipped."""
     if not context or "by_period" not in context:
         return ["what this draft rests on was not recorded when it was written, so a change in the account cannot be ruled out"]
     from ..pptx import lineage as L
     permissions, matrix = L.permission_view(contract), contract.status_matrix()
-    out: List[str] = []
+    out: List[str] = _profile_changes(context.get("source"), profile_now)
     if list(context.get("periods") or []) != list(contract.periods):
         added = [p for p in contract.periods if p not in (context.get("periods") or [])]
         gone = [p for p in context.get("periods") or [] if p not in contract.periods]
@@ -321,7 +352,7 @@ class SourceSession:
     @classmethod
     def load(
         cls, workbook: str, *, entity: str = "", sheet: Optional[str] = None, financials_from: Optional[str] = None,
-        financials_sheet: Optional[str] = None, base_run: Optional[str] = None,
+        financials_sheet: Optional[str] = None, base_run: Optional[str] = None, mapping_overrides: Optional[Dict[str, str]] = None,
     ) -> "SourceSession":
         """Read the workbook (and Financials), settle which accounts are in scope,
         and build every account's contract. Deterministic; no model call."""
@@ -330,9 +361,11 @@ class SourceSession:
 
         fin_sheet = financials_sheet if financials_from else (sheet or find_financials_sheet(workbook))
         refuse_hidden(financials_from or workbook, fin_sheet)   # raises HiddenSheetError
+        overrides = {str(k): str(v) for k, v in (mapping_overrides or {}).items() if k and v}
         extracted = batch_extract_entity_data(
             temp_path=workbook, entity_name=entity or "", selected_sheet=(None if financials_from else fin_sheet),
-            financials_from=financials_from, financials_sheet=(financials_sheet if financials_from else None))
+            financials_from=financials_from, financials_sheet=(financials_sheet if financials_from else None),
+            mapping_overrides=overrides or None)
         if extracted.get("status") != "ok":
             raise RuntimeError(extracted.get("error") or "the workbook could not be read")
         internal = extracted["_internal"]
@@ -343,6 +376,7 @@ class SourceSession:
             financials_sheet=financials_sheet or fin_sheet, language=str(state.get("language") or ""),
             model_type="", model_name=None, accounts=list(dfs))
         binding = ec.SourceBinding.from_identity(identity, statement_source=str(bs_is.get("statement_source") or ""))
+        binding.mapping = _sha16(sorted(overrides.items())) if overrides else ""
         digest = (state.get("resolution") or {}).get("workbook_digest")
         fin: Dict[str, Dict[str, float]] = {}
         for statement in ("balance_sheet", "income_statement"):
@@ -375,7 +409,7 @@ class SourceSession:
             base_summaries=base_summaries, financials_by_key=fin, base_run_check=base_check,
             reconciliation=internal.get("reconciliation"), resolution=internal.get("resolution"))
         session.load_params = {"workbook": workbook, "entity": entity, "sheet": sheet, "financials_from": financials_from,
-                               "financials_sheet": financials_sheet, "base_run": base_run}
+                               "financials_sheet": financials_sheet, "base_run": base_run, "mapping_overrides": overrides}
         return session
 
     def snapshot(self) -> Dict[str, Dict[str, Any]]:
@@ -397,8 +431,11 @@ class SourceSession:
         before = self.snapshot()
         fresh = SourceSession.load(**self.load_params)
         for name in ("binding", "dfs", "contracts", "selection", "bs_is_results", "mappings", "language", "digest",
-                     "reconciliation", "resolution", "financials_by_key", "base_run_check"):
+                     "reconciliation", "resolution", "financials_by_key", "base_run_check", "load_params"):
             setattr(self, name, getattr(fresh, name))
+        if fresh.base_results is not None:                  # a base run was (re)bound by load_params; otherwise the current one stays
+            for name in ("base_results", "base_run_folder", "base_summaries"):
+                setattr(self, name, getattr(fresh, name))
         self.text_cache = {}
         self.baseline = before
         return before

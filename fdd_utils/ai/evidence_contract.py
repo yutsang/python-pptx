@@ -93,13 +93,17 @@ class SourceBinding:
     unit: str = "yuan"
     currency: str = "CNY"
     parser_version: str = PARSER_VERSION
+    #: a digest of the manual mapping overrides the accounts were read with ("" when none, which leaves every earlier version as it was)
+    mapping: str = ""
 
     @property
     def source_version(self) -> str:
-        """Changes when any input the figures were read from changes."""
-        blob = "|".join(str(x or "") for x in (
-            self.workbook_sha256, self.financials_sha256, self.financials_sheet, self.entity, self.sheet,
-            self.statement_source, self.parser_version))
+        """Changes when any input the figures were read from changes (a manual mapping override is one)."""
+        parts = [self.workbook_sha256, self.financials_sha256, self.financials_sheet, self.entity, self.sheet,
+                 self.statement_source, self.parser_version]
+        if self.mapping:
+            parts.append(f"mapping={self.mapping}")
+        blob = "|".join(str(x or "") for x in parts)
         return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
 
     def to_dict(self) -> Dict[str, Any]:
