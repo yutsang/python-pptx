@@ -431,8 +431,9 @@ def build_plan(args: argparse.Namespace, *, config: Optional[Dict[str, Any]] = N
                             "different copy of the file (re-saved, rebuilt from a text export, a demo copy) cannot stand in for it")
     if chosen is None:
         need("the archived run for this databook", "the commentary, the evidence and the fingerprints that say which workbook it describes",
-             "on the machine that ran the AI pass: python ad-hoc/workbench/list_archived_runs.py --healthy --min-accounts 20 , then give "
-             "--run <RUN_ID>; or copy that run's folder from fdd_utils/logs/ to this machine's fdd_utils/logs/")
+             "to see what each archived run can prove about this file: add --explain-runs (writes nothing). On the machine that ran the AI pass: "
+             "python ad-hoc/workbench/list_archived_runs.py --healthy --min-accounts 20 , then give --run <RUN_ID>; or copy that run's folder "
+             "from fdd_utils/logs/ to this machine's fdd_utils/logs/")
         return plan
     identity = identity or read_json(chosen / "run_identity.json")
     plan["run"] = {"folder": str(chosen), "id": chosen.name}
@@ -659,6 +660,51 @@ def verify_pack(pack: Path, *, config: Optional[Dict[str, Any]] = None) -> Dict[
 # printing (no file, entity or account names unless --names)
 # ---------------------------------------------------------------------------------------------------------------------------
 
+def explain_runs(databook: Path, logs_dir: Path, limit: int = 60) -> Tuple[List[str], Dict[str, int]]:
+    """Why no run was paired: one line per archived run (newest first) saying what it can prove about this databook. Reads metadata only:
+    no extraction, no model, and no file, entity or account name is printed. It pairs nothing; a run it lists as provable still has to
+    pass the per-account proof when named with --run."""
+    db_sha = sha256_file(databook)
+    marker = rebuilt_marker(databook)
+    search_sha = (marker or {}).get("source_sha256") or db_sha
+    counts = {"these_bytes": 0, "other_bytes_same_name": 0, "other_bytes": 0, "no_identity_fingerprinted": 0, "no_identity_no_fingerprints": 0}
+    runs = sorted(list_runs(logs_dir), reverse=True)
+    lines: List[str] = []
+    for folder in runs[:limit]:
+        ident = read_json(folder / "run_identity.json")
+        try:
+            accounts = [k for k in load_results(folder) if not str(k).startswith("__")]
+        except Exception:                                       # noqa: BLE001
+            accounts = []
+        try:
+            from fdd_utils.run_identity import load_run
+            prints = {k: v for k, v in ((load_run(folder) or {}).get("fingerprints") or {}).items() if v}
+        except Exception:                                       # noqa: BLE001
+            prints = {}
+        have = len([k for k in accounts if k in prints])
+        if ident and ident.get("workbook_sha256") == search_sha:
+            tag, key = "identity names THESE bytes", "these_bytes"
+        elif ident:
+            same_name = ident.get("workbook") == databook.name
+            tag = f"identity names other bytes ({str(ident.get('workbook_sha256') or '?')[:8]}), " + ("same file name" if same_name else "another file name")
+            key = "other_bytes_same_name" if same_name else "other_bytes"
+        elif accounts and have == len(accounts):
+            tag, key = "no identity file, every account fingerprinted", "no_identity_fingerprinted"
+        else:
+            tag, key = "no identity file, accounts without a fingerprint", "no_identity_no_fingerprints"
+        counts[key] += 1
+        lines.append(f"  {folder.name}  accounts {len(accounts):>3}  fingerprints {have:>3}/{len(accounts):<3}  {tag}")
+    head = [f"This databook: sha256 {db_sha[:8]}" + (f" (a rebuild; runs are looked up under {search_sha[:8]})" if marker else "") + f"; {len(runs)} archived run(s), "
+            f"{len(lines)} shown, newest first"]
+    tail = ["",
+            f"  identity names these bytes ........................ {counts['these_bytes']}",
+            f"  identity names other bytes, same file name ........ {counts['other_bytes_same_name']}   (this file changed after those runs; the file they were made from is the one needed)",
+            f"  identity names other bytes, another file name ..... {counts['other_bytes']}",
+            f"  no identity file, every account fingerprinted ..... {counts['no_identity_fingerprinted']}   (can be tried: --run <RUN_ID>; the per-account proof decides)",
+            f"  no identity file, fingerprints missing ............ {counts['no_identity_no_fingerprints']}   (nothing ties these to any workbook)"]
+    return head + lines + tail, counts
+
+
 def render(plan: Dict[str, Any], *, names: bool = False) -> List[str]:
     lines = [f"baseline: {plan['status'].upper().replace('_', ' ')}"]
     db = plan.get("databook")
@@ -719,6 +765,7 @@ def make_parser() -> argparse.ArgumentParser:
     ap.add_argument("--allow-urls", action="store_true", help="do not refuse on an https address (after looking at what the hits are); keys and config values are still refused")
     ap.add_argument("--names", action="store_true", help="print file names (the default prints none)")
     ap.add_argument("--verify", default=None, metavar="PACK", help="check a pack that was written earlier")
+    ap.add_argument("--explain-runs", action="store_true", help="list every archived run and what it can prove about --databook (metadata only; writes nothing)")
     ap.add_argument("--json", default=None, help="write the plan (with real names) to this local path")
     return ap
 
@@ -736,6 +783,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0 if result["ok"] else 2
     if not args.databook:
         ap.error("--databook is required (or --verify PACK)")
+    if args.explain_runs:
+        if not Path(args.databook).is_file():
+            ap.error("the databook file was not found")
+        for line in explain_runs(Path(args.databook), Path(args.logs_dir))[0]:
+            print(line)
+        return 0
     plan = build_plan(args)
     for line in render(plan, names=args.names):
         print(line)

@@ -630,5 +630,45 @@ class RunKind(unittest.TestCase):
         self.assertEqual(B.run_kind(stub.run, []), "stub-like")
 
 
+class ExplainRuns(unittest.TestCase):
+    """Why no run was paired: what each archived run can prove about the databook, without printing any name."""
+
+    def test_a_run_whose_identity_names_these_bytes_is_listed_as_such(self):
+        w = World()
+        lines, counts = B.explain_runs(w.book, w.logs)
+        self.assertEqual(counts["these_bytes"], 1)
+        self.assertTrue(any("identity names THESE bytes" in l and "fingerprints   3/3" in l for l in lines), lines)
+
+    def test_a_file_saved_again_after_the_run_shows_as_other_bytes_under_the_same_name(self):
+        w = World()
+        w.book.write_bytes(b"the same file name, saved again with other bytes")
+        lines, counts = B.explain_runs(w.book, w.logs)
+        self.assertEqual((counts["these_bytes"], counts["other_bytes_same_name"]), (0, 1))
+        self.assertTrue(any("other bytes" in l and "same file name" in l for l in lines), lines)
+
+    def test_runs_without_an_identity_file_are_split_by_whether_every_account_has_a_fingerprint(self):
+        w = World(identity=False)
+        self.assertEqual(B.explain_runs(w.book, w.logs)[1]["no_identity_fingerprinted"], 1)
+        (w.run / "checkpoint.jsonl").write_text('{"mapping_key": "AR"}\n', encoding="utf-8")                      # no fingerprint left
+        self.assertEqual(B.explain_runs(w.book, w.logs)[1]["no_identity_no_fingerprints"], 1)
+
+    def test_nothing_in_the_listing_names_the_file_the_entity_or_an_account(self):
+        w = World()
+        text = "\n".join(B.explain_runs(w.book, w.logs)[0])
+        for name in ("ClientNameDatabook", "ClientEntity", "AR", "应收"):
+            self.assertNotIn(name, text.replace("accounts", ""))
+
+    def test_the_command_lists_and_writes_nothing(self):
+        import contextlib
+        w = World()
+        before = sorted(p.name for p in w.tmp.iterdir())
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = B.main(["--databook", str(w.book), "--logs-dir", str(w.logs), "--explain-runs"])
+        self.assertEqual(rc, 0)
+        self.assertIn("identity names THESE bytes", buf.getvalue())
+        self.assertEqual(sorted(p.name for p in w.tmp.iterdir()), before)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
