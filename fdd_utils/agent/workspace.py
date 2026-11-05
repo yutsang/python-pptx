@@ -636,10 +636,14 @@ class WorkSession:
             target.relative_to(REPO_ROOT)
         except ValueError:
             return                                              # outside the repo: nothing to commit by accident
+        under_output = str(target).startswith(str(REPO_ROOT / "fdd_utils" / "output"))
         try:
-            ignored = subprocess.run(["git", "check-ignore", "-q", str(target)], cwd=str(REPO_ROOT), capture_output=True, timeout=10).returncode == 0
+            # git's answer counts only when it is an answer: 0 = ignored, 1 = not ignored. Any other code (128 in a folder that is not a git
+            # clone, e.g. a copied or downloaded tree) means git could not say, and that must not turn the output folder into a refusal.
+            code = subprocess.run(["git", "check-ignore", "-q", str(target)], cwd=str(REPO_ROOT), capture_output=True, timeout=10).returncode
+            ignored = (code == 0) if code in (0, 1) else under_output
         except Exception:                                       # noqa: BLE001
-            ignored = str(target).startswith(str(REPO_ROOT / "fdd_utils" / "output"))
+            ignored = under_output
         if not ignored:
             raise ValueError(f"{path} is inside the repo and not git-ignored. A session file holds figures and commentary from the workbook: "
                              f"use a path under fdd_utils/output/ (ignored) or outside the repo.")

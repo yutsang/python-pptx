@@ -232,6 +232,29 @@ class Persistence(unittest.TestCase):
         W.WorkSession(self.fresh_load(), path=os.path.join(self.tmp, "ok.json"))              # outside the repo
         W.WorkSession(self.fresh_load(), path=str(W.REPO_ROOT / "fdd_utils" / "output" / "agent_sessions" / "x.json"))   # ignored
 
+    def test_where_git_cannot_answer_only_the_output_folder_is_accepted(self):
+        """A copied or downloaded tree is not a git clone: `git check-ignore` exits 128 there. That is no answer, so fall back to the folder rule."""
+        import subprocess
+        from unittest import mock
+        inside = str(W.REPO_ROOT / "fdd_utils" / "output" / "agent_sessions" / "x.json")
+        outside = str(W.REPO_ROOT / "notes_for_me.json")
+
+        def git_says(code):
+            return mock.patch.object(W.subprocess, "run", return_value=subprocess.CompletedProcess([], code))
+        with git_says(128):
+            W.WorkSession._check_path(inside)
+            with self.assertRaisesRegex(ValueError, "not git-ignored"):
+                W.WorkSession._check_path(outside)
+        with git_says(0):
+            W.WorkSession._check_path(outside)                                   # git itself says it is ignored
+        with git_says(1):
+            with self.assertRaisesRegex(ValueError, "not git-ignored"):
+                W.WorkSession._check_path(inside)                                # git says it would be tracked: its word wins over the folder rule
+        with mock.patch.object(W.subprocess, "run", side_effect=FileNotFoundError("git")):
+            W.WorkSession._check_path(inside)                                    # no git installed at all
+            with self.assertRaisesRegex(ValueError, "not git-ignored"):
+                W.WorkSession._check_path(outside)
+
     def test_reopening_after_the_workbook_changed_decides_each_draft_by_what_it_cites(self):
         path = os.path.join(self.tmp, "s.json")
         work = W.WorkSession(self.fresh_load(), model=answer_policy(), path=path, budget=C.Budget(max_steps=6))
