@@ -598,8 +598,10 @@ class AgentController:
     # -- what a tool result changes ----------------------------------------------------------------
 
     def _signature(self) -> Tuple:
+        # Only a draft that VERIFIED moves the work on. A rejected draft is a new attempt, not progress: counted as progress, a model
+        # rewriting one failing sentence again and again (each a different digest) never reached the escalation rule in edit mode.
         return (len(self.seen_refs), sum(i.resolved for i in self.issues.values()), len(self.issues), len(self.consulted),
-                tuple(sorted((a, c.claims_digest, c.validated) for a, c in self.session.candidates.items())),
+                tuple(sorted((a, c.claims_digest) for a, c in self.session.candidates.items() if c.validated)),
                 len(self.session.exports))
 
     def _absorb(self, name: str, args: Dict[str, Any], result: T.ToolResult) -> None:

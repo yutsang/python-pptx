@@ -63,9 +63,16 @@ def _config() -> Dict[str, Any]:
     return FDDConfig().config or {}
 
 
+#: --flash / --pro on the command line (provider::model), so the models already configured for the app can be used without editing config.yml
+_OVERRIDES: Dict[str, Dict[str, Any]] = {}
+
+
 def roles(cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     from fdd_utils.agent import flag as F
-    return {"primary": F.role_config(cfg, "primary"), "escalation": F.role_config(cfg, "escalation")}
+    out = {"primary": F.role_config(cfg, "primary"), "escalation": F.role_config(cfg, "escalation")}
+    for role, sel in _OVERRIDES.items():
+        out[role] = dict(out[role], provider=sel["provider"], model=sel["model"])
+    return out
 
 
 def configurations(cfg: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
@@ -165,7 +172,9 @@ def run_configuration(name: str, setup: Dict[str, Any], databook: str, base_run:
     from flow_helpers import bump_cached_values
     copy = workdir / f"{name}.xlsx"
     shutil.copyfile(databook, copy)
-    kwargs: Dict[str, Any] = {"budget": C.Budget(max_steps=10), "limits": limits, "policy": R.Policy(mode=setup["routing"])}
+    from fdd_utils.agent.flag import agent_budget
+    # the per-turn limits the product runs with (agent.max_steps, max_tokens, max_seconds ... in config.yml), so a turn ends as it would in use
+    kwargs: Dict[str, Any] = {"budget": agent_budget(), "limits": limits, "policy": R.Policy(mode=setup["routing"])}
     if scripted is not None:
         kwargs.update(model=scripted["primary"], escalation=scripted.get("escalation"), model_name=f"scripted-{name}")
     else:
@@ -224,6 +233,53 @@ def run_configuration(name: str, setup: Dict[str, Any], databook: str, base_run:
     return result
 
 
+def run_entity(name: str, setup: Dict[str, Any], databook: str, base_run: str, workdir: Path, limits: Any,
+               scripted: Optional[Dict[str, Any]] = None, on_open=None) -> Dict[str, Any]:
+    """Every account the base run commented on, rewritten from its evidence by the agent, one edit per account, on a fresh copy and a
+    fresh session (nothing remembered from the other tasks), then one deck exported. This is the agent's whole-entity cost with the
+    base run's text as the starting point; it is NOT a from-zero generation, and the legacy run it is compared with wrote from zero."""
+    from fdd_utils.agent import routing as R
+    from fdd_utils.agent.flag import agent_budget
+    from fdd_utils.agent.workspace import WorkSession
+    copy = workdir / f"{name}_entity.xlsx"
+    shutil.copyfile(databook, copy)
+    kwargs: Dict[str, Any] = {"budget": agent_budget(), "limits": limits, "policy": R.Policy(mode=setup["routing"])}
+    if scripted is not None:
+        kwargs.update(model=scripted["primary"], escalation=scripted.get("escalation"), model_name=f"scripted-{name}")
+    else:
+        kwargs.update(model_type=setup["primary"]["provider"], model_name=setup["primary"].get("model") or None,
+                      thinking=setup["primary"].get("thinking") or "", escalation=setup.get("escalation"))
+    work = WorkSession.open(str(copy), base_run=base_run or None, **kwargs)
+    if on_open is not None:
+        on_open(work)
+    source, books = work.source, work.shared
+    ordered = sorted(source.contracts)
+    accounts = [k for k in (source.base_results or {}) if k in source.contracts and not str(k).startswith("__")] or \
+               [k for k in ordered if source.in_scope(k)]
+    started_all, start_all, per = time.perf_counter(), books.calls, []
+    stopped = ""
+    for key in accounts:
+        start, started = books.calls, time.perf_counter()
+        try:
+            turn = work.edit(f"根据工作簿中的证据，重写{key}的报告段落", key, accept=True)
+            brief = _turn_brief(turn)
+        except R.BudgetExhausted as exc:
+            stopped = f"budget: {exc}"
+            break
+        except Exception as exc:                                       # noqa: BLE001
+            brief = {"ok": False, "stop_class": "error", "error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+        d = _books_delta(books, start)
+        per.append({"account_index": ordered.index(key), "ok": bool(brief.get("ok")), "stop_class": brief.get("stop_class"),
+                    "calls": d["calls"], "charged_tokens": d["charged_tokens"], "provider": d["provider_reported"], "estimated": d["estimated"],
+                    "escalations": d["escalations"], "seconds": round(time.perf_counter() - started, 2), "error": brief.get("error")})
+    exported = work.export(out_path=str(workdir / f"{name}_entity.pptx")) if not stopped else {"ok": False}
+    total = _books_delta(books, start_all)
+    return {"configuration": name, "routing": setup["routing"], "accounts": len(accounts), "done": len(per),
+            "ok": sum(1 for p in per if p["ok"]), "stopped": stopped, "books": total, "per_account": per,
+            "wall_seconds": round(time.perf_counter() - started_all, 1), "export_ok": bool(exported.get("ok")),
+            "export_error": (exported.get("error") or {}).get("code"), "base_run_check": (source.base_run_check or {}).get("status")}
+
+
 # ---------------------------------------------------------------------------------------------------------------------------
 # scripted stand-ins (free mode): they read the evidence and answer from it, so the plumbing and the books run on real frames
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -259,12 +315,19 @@ def scripted_models(get_source, wrong_first: bool = False) -> Tuple[Any, Any]:
     def policy(system, user, results, bad=False):
         source = get_source()
         names = [n for n, _ in results]
-        key = next((a for a in sorted(source.contracts, key=len, reverse=True) if a in user), None) or next(iter(source.contracts))
-        if "get_account_evidence" not in names and "TASK STATE" not in user and "fetched for you" not in user:
+        # the account this turn is about: named in the request line (an edit also carries "[account: X; ...]"); the earlier turns the
+        # prompt quotes name other accounts and must not be read as this one
+        request = next((line for line in user.splitlines() if line.startswith("REQUEST:")), user)
+        names = sorted(source.contracts, key=len, reverse=True)
+        key = next((a for a in names if f"[account: {a};" in user), None) or next((a for a in names if a in request), None) \
+            or next((a for a in names if a in user), None) or next(iter(source.contracts))
+        # read the transcript itself: a large evidence result is cut to its size limit in the prompt and no longer parses as JSON
+        if "get_account_evidence" not in names and "TOOL get_account_evidence(" not in user and "TASK STATE" not in user \
+                and "fetched for you" not in user:
             return {"tool": "get_account_evidence", "args": {"account": key}}
         if "EDIT MODE" in system:
-            validated = [r for n, r in results if n == "validate_candidate"]
-            if validated and validated[-1].get("ok"):
+            at = user.rfind("TOOL validate_candidate(")
+            if at >= 0 and any(mark in user[at:at + 600] for mark in ('"ok": true', "ok=True")):
                 return {"done": {"account": key, "export": False, "summary": "scripted"}}
             return {"tool": "validate_candidate", "args": {"account": key, "claims": claims_for(source, key, bad)}}
         return {"answer": {"claims": claims_for(source, key, bad), "unresolved": [f"{key}：变动原因未能在工作簿中核实"]}}
@@ -283,10 +346,10 @@ def scripted_models(get_source, wrong_first: bool = False) -> Tuple[Any, Any]:
 # ---------------------------------------------------------------------------------------------------------------------------
 
 def _caps(args: argparse.Namespace) -> Dict[str, Any]:
-    per = {"max_calls": max(1, int(args.max_calls) // len(CONFIGS)), "max_tokens": max(1, int(args.max_tokens) // len(CONFIGS)),
-           "max_cost": (float(args.max_cost) / len(CONFIGS)) if args.max_cost else None}
-    return {"total": {"max_calls": int(args.max_calls), "max_tokens": int(args.max_tokens), "max_cost": float(args.max_cost) or None},
-            "per_configuration": per}
+    """0 (the default) is no cap: the run spends what the work takes, and the books say what that was."""
+    total = {"max_calls": int(args.max_calls) or None, "max_tokens": int(args.max_tokens) or None, "max_cost": float(args.max_cost) or None}
+    per = {k: (None if v is None else (max(1, v // len(CONFIGS)) if isinstance(v, int) else v / len(CONFIGS))) for k, v in total.items()}
+    return {"total": total, "per_configuration": per}
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -302,7 +365,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
     problems = preflight(cfg, previews)
     print("  configurations: flash_only (primary), pro_only (escalation model alone), routing (primary -> escalation on the code's rule)")
     print(f"  tasks per configuration: {', '.join(TASKS)} ({TURNS_PER_CONFIG} turns at most); all on the same account of a copy of the workbook")
-    print(f"  caps: total {caps['total']}; each configuration {caps['per_configuration']} (a configuration stops at its cap; the others still run)")
+    if any(v is not None for v in caps["total"].values()):
+        print(f"  caps: total {caps['total']}; each configuration {caps['per_configuration']} (a configuration stops at its cap; the others still run)")
+    else:
+        print("  caps: none (the run spends what the work takes); each turn still ends at the product's own per-turn limits (agent.max_steps ...)")
+    print("  --entity adds: every account the base run commented on, rewritten by the agent on a fresh copy, then one deck "
+          f"(configurations: {getattr(args, 'entity_configs', 'routing')})")
     print("  stop conditions: a cap (calls, tokens, cost) -> that configuration stops; a provider error on its first call -> everything stops")
     print("  first full entity (NOT run here; legacy pipeline, compare like with like):")
     r = roles(cfg)
@@ -375,6 +443,13 @@ def cmd_free(args: argparse.Namespace) -> int:
                                               scripted={"primary": primary, "escalation": escalation},
                                               on_open=lambda work: holder.__setitem__("source", work.source))
         report["scripted_configurations"] = results
+        if args.entity:
+            primary_fn, good_fn = scripted_models(lambda: holder["source"], wrong_first=True)
+            setup = configurations(_config_or_empty())["routing"]
+            report["entity"] = {"routing": run_entity("routing", setup, args.databook, base_run, workdir, Limits(),
+                                                      scripted={"primary": Scripted(primary_fn, "scripted-entity-primary"),
+                                                                "escalation": Scripted(good_fn, "scripted-entity-escalation")},
+                                                      on_open=lambda work: holder.__setitem__("source", work.source))}
         for name, res in results.items():
             line = [f"{t}: {'ran' if e.get('ran') else (e.get('stopped') or e.get('error'))}, calls {e['books']['calls']}, "
                     f"est {e['books']['estimated']['prompt']}+{e['books']['estimated']['completion']}"
@@ -383,6 +458,8 @@ def cmd_free(args: argparse.Namespace) -> int:
                   (f"; escalations {res['books']['escalations']}" if res.get("books") else ""))
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+    if report.get("entity"):
+        print("\n".join(summary_text({"entity": report["entity"]}).splitlines()[1:]))
     report["seconds"] = round(time.perf_counter() - started, 1)
     path = _save(report)
     print(f"  ({report['seconds']}s, no model call; full report: {path.relative_to(ROOT)})")
@@ -415,7 +492,8 @@ def cmd_paid(args: argparse.Namespace) -> int:
     per = caps["per_configuration"]
     report: Dict[str, Any] = {"mode": "paid", "caps": caps, "previews": previews, "configurations": {}}
     workdir = Path(tempfile.mkdtemp(prefix="agent_paid_"))
-    print(f"PAID ACCEPTANCE: {len(CONFIGS)} configurations x {len(TASKS)} tasks; caps {caps['total']}")
+    print(f"PAID ACCEPTANCE: {len(CONFIGS)} configurations x {len(TASKS)} tasks" + (" + the whole entity" if args.entity else "")
+          + f"; caps {caps['total'] if any(v is not None for v in caps['total'].values()) else 'none'}", flush=True)
     try:
         for name, setup in configurations(cfg).items():
             limits = Limits(max_calls=per["max_calls"], max_tokens=per["max_tokens"], max_cost=per["max_cost"])
@@ -427,6 +505,15 @@ def cmd_paid(args: argparse.Namespace) -> int:
                 report["stopped"] = f"{name}: every call of its first task failed at the provider; nothing further was run"
                 print("  " + report["stopped"])
                 break
+            print(f"  {name}: done", flush=True)
+        if args.entity and not report.get("stopped"):
+            wanted = CONFIGS if args.entity_configs == "all" else [c.strip() for c in args.entity_configs.split(",") if c.strip()]
+            report["entity"] = {}
+            for name, setup in configurations(cfg).items():
+                if name in wanted:
+                    limits = Limits(max_calls=per["max_calls"], max_tokens=per["max_tokens"], max_cost=per["max_cost"])
+                    report["entity"][name] = run_entity(name, setup, args.databook, args.base_run, workdir, limits)
+                    print(f"  entity {name}: done", flush=True)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
     path = _save(report)
@@ -453,6 +540,24 @@ def summary_text(report: Dict[str, Any]) -> str:
                          f"(reasoning {pr.get('reasoning', 0)}, cache {pr.get('cached_prompt', 0)}); est {b.get('estimated', {}).get('prompt', 0)}+"
                          f"{b.get('estimated', {}).get('completion', 0)}; escalations {b.get('escalations', 0)}; {b.get('seconds', 0)}s; "
                          f"stop {[t.get('stop_class') for t in turns]}; roles {roles_line}")
+    entity = report.get("entity") or {}
+    if entity:
+        lines.append("  entity (every account rewritten from its evidence, the base run's text as the start; not a from-zero generation):")
+        for name, res in entity.items():
+            b = res.get("books") or {}
+            pr = b.get("provider_reported") or {}
+            per = [p for p in res.get("per_account") or [] if p.get("calls")]
+            avg = round(sum(p["charged_tokens"] for p in per) / len(per)) if per else 0
+            roles_line = ", ".join(f"{r}:{v['calls']}c/{v['charged_tokens']}t" for r, v in (b.get("by_role") or {}).items())
+            stops: Dict[str, int] = {}
+            for p in res.get("per_account") or []:
+                stops[str(p.get("stop_class"))] = stops.get(str(p.get("stop_class")), 0) + 1
+            lines.append(f"    {name:10s} accounts {res.get('done')}/{res.get('accounts')} ok {res.get('ok')}; calls {b.get('calls', 0)} "
+                         f"(failed {b.get('failed_calls', 0)}, retries {sum((b.get('retries') or {}).values())}); charged {b.get('charged_tokens', 0)} "
+                         f"= provider {pr.get('prompt', 0)}+{pr.get('completion', 0)} (reasoning {pr.get('reasoning', 0)}, cache {pr.get('cached_prompt', 0)}); "
+                         f"per account avg {avg}; escalations {b.get('escalations', 0)}; {res.get('wall_seconds')}s; "
+                         f"deck {'ok' if res.get('export_ok') else res.get('export_error')}; stops {stops}; roles {roles_line}"
+                         + (f"; STOPPED {res['stopped']}" if res.get("stopped") else ""))
     return "\n".join(lines)
 
 
@@ -471,16 +576,28 @@ def main(argv: Optional[List[str]] = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--databook", required=(name != "plan"), default="")
         p.add_argument("--base-run", default="")
-        p.add_argument("--max-calls", type=int, default=90)
-        p.add_argument("--max-tokens", type=int, default=600000)
-        p.add_argument("--max-cost", type=float, default=0.0)
+        p.add_argument("--max-calls", type=int, default=0, help="0 (default) = no cap")
+        p.add_argument("--max-tokens", type=int, default=0, help="0 (default) = no cap")
+        p.add_argument("--max-cost", type=float, default=0.0, help="0 (default) = no cap; needs prices in config")
+        p.add_argument("--flash", default="", metavar="PROVIDER::MODEL", help="the first model (default: agent.models.primary)")
+        p.add_argument("--pro", default="", metavar="PROVIDER::MODEL", help="the escalation model (default: agent.models.escalation)")
+        p.add_argument("--entity", action="store_true", help="also rewrite every account the base run commented on (the whole-entity cost)")
+        p.add_argument("--entity-configs", default="routing", help="which configurations run --entity: routing (default), all, or a comma list")
         if name == "free":
             p.add_argument("--no-deep", action="store_true", help="baseline search by identity hash only (skip the fingerprint proof)")
         if name == "paid":
             p.add_argument("--i-accept-paid-calls", action="store_true")
     pr = sub.add_parser("probe")
     pr.add_argument("--send", action="store_true", help="PAID: one small real call per role")
+    pr.add_argument("--flash", default="", metavar="PROVIDER::MODEL")
+    pr.add_argument("--pro", default="", metavar="PROVIDER::MODEL")
     args = ap.parse_args(argv)
+    from fdd_utils.agent.flag import parse_role
+    _OVERRIDES.clear()
+    if getattr(args, "flash", ""):
+        _OVERRIDES["primary"] = parse_role(args.flash)
+    if getattr(args, "pro", ""):
+        _OVERRIDES["escalation"] = parse_role(args.pro)
     return {"plan": cmd_plan, "probe": cmd_probe, "free": cmd_free, "paid": cmd_paid}[args.cmd](args)
 
 

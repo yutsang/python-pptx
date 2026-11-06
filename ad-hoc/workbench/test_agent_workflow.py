@@ -140,6 +140,35 @@ class Configurations(unittest.TestCase):
         self.assertEqual(turns["routing"].report["routing"]["escalations"][0]["reason"], "capability")
 
 
+    def test_in_edit_mode_failed_validations_are_not_progress_and_repeated_ones_escalate(self):
+        attempts = {"n": 0}
+
+        def wrong_each_time(user, results):
+            view = evidence_of(results)
+            if view is None and "TOOL get_account_evidence(" not in user:
+                return tool("get_account_evidence", account=ACCOUNT)
+            view = view or cl.evidence_view(self._source.contracts[ACCOUNT])
+            attempts["n"] += 1
+            amount = 150.0 + attempts["n"]                                   # a different wrong figure each time: a new digest, still wrong
+            return tool("validate_candidate", account=ACCOUNT, claims=[{"account": ACCOUNT, "kind": "amount", "periods": [P2],
+                        "cites": [total_ref(view, P2)], "text": f"2025年12月31日应收账款余额{amount:.1f}万元"}])
+
+        def fixes_it(user, results):
+            names = [n for n, _ in results]
+            view = cl.evidence_view(self._source.contracts[ACCOUNT])
+            if "validate_candidate" in names and any(r.get("ok") for n, r in results if n == "validate_candidate"):
+                return {"done": {"account": ACCOUNT, "export": False, "summary": "fixed"}}
+            return tool("validate_candidate", account=ACCOUNT, claims=[{"account": ACCOUNT, "kind": "amount", "periods": [P2],
+                        "cites": [total_ref(view, P2)], "text": "2025年12月31日应收账款余额130.0万元"}])
+        work = self._work(Policy(wrong_each_time), escalation=Policy(fixes_it), mode="escalate")
+        self._source = work.source
+        turn = work.edit("重写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        routing = turn.report["routing"]
+        self.assertEqual([e["reason"] for e in routing["escalations"]], ["capability"])
+        self.assertEqual(attempts["n"], 2)                                   # two rejected drafts, then the second model
+
+
 # -- the dry-run request preview and the thinking body ---------------------------------------------------------------------------
 
 class Preview(unittest.TestCase):

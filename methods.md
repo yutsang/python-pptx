@@ -465,11 +465,21 @@ matching run the new architecture is still tested and no historical regression
 is claimed), the offline gate, the real-workbook flows with scripted models, and
 the three configurations with scripted stand-ins on a copy of the workbook.
 `paid` runs the same three tasks (investigate and follow up; rewrite and export;
-the same controlled change to one cell, then a rewrite) for each configuration,
-each under its own caps; it refuses to start when a role would fall back to
-another provider, when no base run is given, or without
-`--i-accept-paid-calls`. A task is compared only with itself; a task's tokens are
-never compared with a whole entity's.
+the same controlled change to one cell, then a rewrite) for each configuration.
+There is no cap unless one is given (`--max-calls`, `--max-tokens`, `--max-cost`);
+each turn still ends at the product's own per-turn limits. `--flash` and `--pro`
+(`provider::model`) name the models without editing config.yml. `--entity` adds
+the whole-entity cost: every account the base run commented on, rewritten by the
+agent on a fresh copy and a fresh session, then one deck (routing only by
+default). That starts from the base run's text, so it is not a from-zero
+generation. `paid` refuses to start when a role would fall back to another
+provider, when no base run is given, or without `--i-accept-paid-calls`. A task
+is compared only with itself; a task's tokens are never compared with a whole
+entity's.
+
+A failed validation is not progress: only a draft that verified changes the
+controller's progress signature, so a model that keeps rewriting a failing
+sentence in edit mode reaches the escalation rule (it never did before).
 
 ### 5.5 The code map
 
