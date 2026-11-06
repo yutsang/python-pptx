@@ -272,11 +272,14 @@ def run_entity(name: str, setup: Dict[str, Any], databook: str, base_run: str, w
         per.append({"account_index": ordered.index(key), "ok": bool(brief.get("ok")), "stop_class": brief.get("stop_class"),
                     "calls": d["calls"], "charged_tokens": d["charged_tokens"], "provider": d["provider_reported"], "estimated": d["estimated"],
                     "escalations": d["escalations"], "seconds": round(time.perf_counter() - started, 2), "error": brief.get("error")})
-    exported = work.export(out_path=str(workdir / f"{name}_entity.pptx")) if not stopped else {"ok": False}
+    OUT_DIR.mkdir(parents=True, exist_ok=True)                       # kept (git-ignored) so the deck can be opened and judged
+    deck_path = OUT_DIR / f"entity_{name}_{time.strftime('%Y%m%d_%H%M%S')}.pptx"
+    exported = work.export(out_path=str(deck_path)) if not stopped else {"ok": False}
     total = _books_delta(books, start_all)
     return {"configuration": name, "routing": setup["routing"], "accounts": len(accounts), "done": len(per),
             "ok": sum(1 for p in per if p["ok"]), "stopped": stopped, "books": total, "per_account": per,
             "wall_seconds": round(time.perf_counter() - started_all, 1), "export_ok": bool(exported.get("ok")),
+            "deck": str(deck_path.relative_to(ROOT)) if exported.get("ok") else None,
             "export_error": (exported.get("error") or {}).get("code"), "base_run_check": (source.base_run_check or {}).get("status")}
 
 
@@ -556,7 +559,7 @@ def summary_text(report: Dict[str, Any]) -> str:
                          f"(failed {b.get('failed_calls', 0)}, retries {sum((b.get('retries') or {}).values())}); charged {b.get('charged_tokens', 0)} "
                          f"= provider {pr.get('prompt', 0)}+{pr.get('completion', 0)} (reasoning {pr.get('reasoning', 0)}, cache {pr.get('cached_prompt', 0)}); "
                          f"per account avg {avg}; escalations {b.get('escalations', 0)}; {res.get('wall_seconds')}s; "
-                         f"deck {'ok' if res.get('export_ok') else res.get('export_error')}; stops {stops}; roles {roles_line}"
+                         f"deck {res.get('deck') if res.get('export_ok') else res.get('export_error')}; stops {stops}; roles {roles_line}"
                          + (f"; STOPPED {res['stopped']}" if res.get("stopped") else ""))
     return "\n".join(lines)
 
