@@ -49,6 +49,15 @@ TASKS = ("investigate", "rewrite", "update")
 TURNS_PER_CONFIG = 5                       # investigate 2 + rewrite 1 + update 1, and one spare for a refusal
 
 
+def progress(iterable, desc: str, total: Optional[int] = None):
+    """A tqdm bar on stderr for every long loop here (configurations, tasks, accounts); a plain pass-through without tqdm."""
+    try:
+        from tqdm import tqdm
+        return tqdm(iterable, desc=desc, total=total, file=sys.stderr, dynamic_ncols=True, leave=True)
+    except Exception:                                                   # noqa: BLE001
+        return iterable
+
+
 def _utf8() -> None:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -224,7 +233,7 @@ def run_configuration(name: str, setup: Dict[str, Any], databook: str, base_run:
         t = work.edit(f"工作簿已更新，请根据最新数据重写{key}的段落", key, accept=True)
         return [_turn_brief(t) | {"cells_changed": len(bumped), "draft_after_change": effects}]
 
-    for label, fn in (("investigate", investigate), ("rewrite", rewrite), ("update", update)):
+    for label, fn in progress((("investigate", investigate), ("rewrite", rewrite), ("update", update)), desc=f"{name} tasks", total=3):
         if any(not e.get("ran") and str(e.get("stopped", "")).startswith("budget") for e in result["tasks"].values()):
             result["tasks"][label] = {"ran": False, "stopped": "an earlier task reached this configuration's cap"}
             continue
@@ -258,7 +267,8 @@ def run_entity(name: str, setup: Dict[str, Any], databook: str, base_run: str, w
                [k for k in ordered if source.in_scope(k)]
     started_all, start_all, per = time.perf_counter(), books.calls, []
     stopped = ""
-    for key in accounts:
+    bar = progress(accounts, desc=f"entity {name}", total=len(accounts))
+    for key in bar:
         start, started = books.calls, time.perf_counter()
         try:
             turn = work.edit(f"根据工作簿中的证据，重写{key}的报告段落", key, accept=True)
@@ -271,15 +281,22 @@ def run_entity(name: str, setup: Dict[str, Any], databook: str, base_run: str, w
         d = _books_delta(books, start)
         per.append({"account_index": ordered.index(key), "ok": bool(brief.get("ok")), "stop_class": brief.get("stop_class"),
                     "calls": d["calls"], "charged_tokens": d["charged_tokens"], "provider": d["provider_reported"], "estimated": d["estimated"],
-                    "escalations": d["escalations"], "seconds": round(time.perf_counter() - started, 2), "error": brief.get("error")})
+                    "escalations": d["escalations"], "seconds": round(time.perf_counter() - started, 2), "error": brief.get("error"),
+                    "verification": brief.get("verification"), "unresolved": brief.get("unresolved")})
+        if hasattr(bar, "set_postfix"):
+            bar.set_postfix(tokens=books.charged_tokens, ok=sum(1 for p in per if p["ok"]))
     OUT_DIR.mkdir(parents=True, exist_ok=True)                       # kept (git-ignored) so the deck can be opened and judged
     deck_path = OUT_DIR / f"entity_{name}_{time.strftime('%Y%m%d_%H%M%S')}.pptx"
     exported = work.export(out_path=str(deck_path)) if not stopped else {"ok": False}
     total = _books_delta(books, start_all)
+    # the session (drafts, verdicts, unresolved items) and the deck are kept, git-ignored, so the quality can be judged afterwards
+    session_file = work.save(str(OUT_DIR / f"entity_{name}_{time.strftime('%Y%m%d_%H%M%S')}.agent-session.json"))
+    written = (exported.get("data") or {}).get("path")
     return {"configuration": name, "routing": setup["routing"], "accounts": len(accounts), "done": len(per),
             "ok": sum(1 for p in per if p["ok"]), "stopped": stopped, "books": total, "per_account": per,
             "wall_seconds": round(time.perf_counter() - started_all, 1), "export_ok": bool(exported.get("ok")),
-            "deck": str(deck_path.relative_to(ROOT)) if exported.get("ok") else None,
+            "deck": str(Path(written).resolve().relative_to(ROOT)) if written else None, "session_file": str(Path(session_file).relative_to(ROOT)),
+            "delivery": ((exported.get("data") or {}).get("delivery") or {}).get("findings"),
             "export_error": (exported.get("error") or {}).get("code"), "base_run_check": (source.base_run_check or {}).get("status")}
 
 
@@ -463,6 +480,8 @@ def cmd_free(args: argparse.Namespace) -> int:
         shutil.rmtree(workdir, ignore_errors=True)
     if report.get("entity"):
         print("\n".join(summary_text({"entity": report["entity"]}).splitlines()[1:]))
+        dumped = quality_dump(report["entity"]["routing"], args.databook, base_run)
+        print(f"  quality dump (scripted text, for checking the dump itself): {dumped['path']}; {dumped['line']}")
     report["seconds"] = round(time.perf_counter() - started, 1)
     path = _save(report)
     print(f"  ({report['seconds']}s, no model call; full report: {path.relative_to(ROOT)})")
@@ -498,7 +517,7 @@ def cmd_paid(args: argparse.Namespace) -> int:
     print(f"PAID ACCEPTANCE: {len(CONFIGS)} configurations x {len(TASKS)} tasks" + (" + the whole entity" if args.entity else "")
           + f"; caps {caps['total'] if any(v is not None for v in caps['total'].values()) else 'none'}", flush=True)
     try:
-        for name, setup in configurations(cfg).items():
+        for name, setup in progress(list(configurations(cfg).items()), desc="configurations"):
             limits = Limits(max_calls=per["max_calls"], max_tokens=per["max_tokens"], max_cost=per["max_cost"])
             res = run_configuration(name, setup, args.databook, args.base_run, workdir, limits)
             report["configurations"][name] = res
@@ -522,6 +541,10 @@ def cmd_paid(args: argparse.Namespace) -> int:
     path = _save(report)
     print(summary_text(report))
     print(f"full report (local, git-ignored): {path.relative_to(ROOT)}")
+    for name, res in (report.get("entity") or {}).items():
+        dumped = quality_dump(res, args.databook, args.base_run)
+        print(f"quality dump for entity {name} (local, git-ignored; holds the commentary): {dumped['path']}")
+        print("  " + dumped["line"])
     return 0
 
 
@@ -564,6 +587,108 @@ def summary_text(report: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_NUM = __import__("re").compile(r"\d[\d,]*\.?\d*")
+
+
+def _numbers(text: str) -> set:
+    return {n.replace(",", "").rstrip(".") for n in _NUM.findall(text or "") if len(n.replace(",", "")) >= 2}
+
+
+def _deck_texts(deck: str) -> Tuple[Dict[str, str], Dict[str, List[Dict[str, Any]]]]:
+    """{account: the text on the slides}, {account: the claims behind it} from the deck's own lineage (no model, no extraction)."""
+    from fdd_utils.pptx import lineage as L
+    public, internal = L.read_manifest(deck) or {}, L.read_internal(deck) or {}
+    texts: Dict[str, List[str]] = {}
+    claims: Dict[str, List[Dict[str, Any]]] = {}
+    for e in public.get("elements") or []:
+        inner = (internal.get("elements") or {}).get(e["id"]) or {}
+        texts.setdefault(e["account"], []).append(str(inner.get("text") or ""))
+        claims.setdefault(e["account"], []).extend(inner.get("claims") or [])
+    return {a: " ".join(t for t in parts if t) for a, parts in texts.items()}, claims
+
+
+def quality_dump(entity: Dict[str, Any], databook: str, base_run: str, deck: str = "") -> Dict[str, Any]:
+    """Side by side, per account: what the legacy run wrote, what the agent wrote, the claims and how they verified, and the plain
+    measures (length, figures the legacy text quotes that the agent text does not). Written to a git-ignored markdown file for a
+    person (or the reviewer) to read; the printed line carries numbers only."""
+    from fdd_utils.agent.session import SourceSession
+    from fdd_utils.financial_common import get_pipeline_result_text
+    source = SourceSession.load(databook, base_run=base_run or None)
+    ordered = sorted(source.contracts)
+    deck = deck or str(ROOT / entity["deck"]) if (deck or entity.get("deck")) else ""
+    agent_text, claims = _deck_texts(deck) if deck and os.path.exists(deck) else ({}, {})
+    sess = {}
+    if entity.get("session_file") and (ROOT / entity["session_file"]).exists():
+        sess = json.loads((ROOT / entity["session_file"]).read_text(encoding="utf-8")).get("candidates") or {}
+    rows, sections, dropped_total, legacy_chars, agent_chars, with_text = [], [], 0, 0, 0, 0
+    for p in entity.get("per_account") or []:
+        key = ordered[p["account_index"]] if p["account_index"] < len(ordered) else f"#{p['account_index']}"
+        legacy = str(get_pipeline_result_text((source.base_results or {}).get(key)) or "")
+        cand = sess.get(key) or {}
+        mine = " ".join(c.get("text", "") for c in cand.get("claims") or []) if cand else ""
+        on_deck = agent_text.get(key, "")
+        written = mine or (on_deck if p.get("ok") else "")
+        with_text += 1 if written else 0
+        missing = sorted(_numbers(legacy) - _numbers(written)) if written else []
+        dropped_total += len(missing)
+        legacy_chars, agent_chars = legacy_chars + len(legacy), agent_chars + len(written)
+        verdicts = (cand.get("outcome") or {}).get("verdicts") or []
+        counts = {v: sum(1 for x in verdicts if x.get("verdict") == v) for v in ("verified", "verified_inference", "unverified", "failed")}
+        rows.append(f"| {p['account_index']} | {key} | {p.get('stop_class')} | {p['calls']} | {p['charged_tokens']} | {p['escalations']} | "
+                    f"{len(legacy)} | {len(written)} | {len(cand.get('claims') or claims.get(key) or [])} | "
+                    f"{counts['verified']}/{counts['verified_inference']}/{counts['unverified']}/{counts['failed']} | {len(missing)} |")
+        sections.append(f"### {key}  ({p.get('stop_class')}; {p['calls']} calls, {p['charged_tokens']} tokens)\n\n"
+                        f"**legacy run**\n\n{legacy or '(none)'}\n\n**agent**\n\n"
+                        f"{written or ('(accepted, but its text is on no slide of the deck)' if p.get('ok') else '(nothing accepted; the deck keeps the legacy text)')}\n\n"
+                        + ("**claims**\n\n" + "\n".join(f"- [{c.get('kind')}] {c.get('text')}  (cites {', '.join(c.get('cites') or [])}"
+                                                            f"{'; inference' if c.get('inference') else ''})" for c in (cand.get("claims") or claims.get(key) or []))
+                           + "\n\n" if (cand.get("claims") or claims.get(key)) else "")
+                        + (f"figures in the legacy text the agent text does not have: {', '.join(missing[:20])}\n\n" if missing else "")
+                        + (f"unresolved: {p.get('unresolved')}\n\n" if p.get("unresolved") else ""))
+    delivery = entity.get("delivery") or []
+    if not delivery and deck:
+        side = Path(deck + ".delivery.json")
+        if side.exists():
+            delivery = (json.loads(side.read_text(encoding="utf-8")) or {}).get("findings") or []
+    head = [f"# Agent quality dump -- entity {entity.get('configuration')}", "",
+            f"accounts {entity.get('done')}/{entity.get('accounts')}, ok {entity.get('ok')}; charged {entity.get('books', {}).get('charged_tokens')} tokens; "
+            f"deck {Path(deck).name if deck else (entity.get('deck') or entity.get('export_error'))}", "",
+            "## Why the deck is not deliverable" if delivery else "## Delivery", ""]
+    head += [f"- [{f.get('severity')}] {f.get('code')} {f.get('account') or ''}: {f.get('message')}" for f in delivery] or ["- nothing blocks it"]
+    head += ["", "## Per account", "", "| # | account | stop | calls | tokens | esc | legacy chars | agent chars | claims | verified/inference/unverified/failed | legacy figures missing |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"] + rows + ["", "## Side by side", ""]
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    path = OUT_DIR / f"quality_{entity.get('configuration')}_{time.strftime('%Y%m%d_%H%M%S')}.md"
+    path.write_text("\n".join(head) + "\n".join(sections), encoding="utf-8")
+    codes: Dict[str, int] = {}
+    for f in delivery:
+        codes[str(f.get("code"))] = codes.get(str(f.get("code")), 0) + 1
+    line = (f"accounts {len(rows)}; legacy chars {legacy_chars}, agent chars {agent_chars} "
+            f"({round(100 * agent_chars / legacy_chars) if legacy_chars else 0}%); legacy figures missing from the agent text {dropped_total}; "
+            f"delivery findings {codes or 'none'}; agent text found for {with_text} account(s)")
+    return {"path": str(path.relative_to(ROOT)), "line": line}
+
+
+def cmd_dump(args: argparse.Namespace) -> int:
+    """The quality dump for a paid run already made (nothing is sent): the report names the accounts, the deck holds what was written."""
+    report = json.loads(Path(args.report).read_text(encoding="utf-8"))
+    entity = (report.get("entity") or {}).get(args.configuration)
+    if not entity:
+        print(f"the report has no entity run for {args.configuration}")
+        return 2
+    deck = args.deck
+    if not deck and not entity.get("deck"):
+        # the deck is written before the report is saved: take the newest entity deck from before the report
+        stamp = Path(args.report).stem.split("_", 1)[-1][:15]
+        found = sorted(p for p in OUT_DIR.glob(f"entity_{args.configuration}_*.pptx") if p.stem.split("_", 2)[-1][:15] <= stamp)
+        deck = str(found[-1]) if found else ""
+        print(f"deck: {Path(deck).name if deck else 'none found (pass --deck)'}")
+    dumped = quality_dump(entity, args.databook, args.base_run, deck)
+    print(f"quality dump (local, git-ignored; holds the commentary): {dumped['path']}")
+    print("  " + dumped["line"])
+    return 0
+
+
 def _save(report: Dict[str, Any]) -> Path:
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / f"{report['mode']}_{time.strftime('%Y%m%d_%H%M%S')}.json"
@@ -590,6 +715,12 @@ def main(argv: Optional[List[str]] = None) -> int:
             p.add_argument("--no-deep", action="store_true", help="baseline search by identity hash only (skip the fingerprint proof)")
         if name == "paid":
             p.add_argument("--i-accept-paid-calls", action="store_true")
+    du = sub.add_parser("dump", help="the side-by-side quality dump of a paid run already made (nothing is sent)")
+    du.add_argument("--report", required=True)
+    du.add_argument("--databook", required=True)
+    du.add_argument("--base-run", default="")
+    du.add_argument("--deck", default="")
+    du.add_argument("--configuration", default="routing")
     pr = sub.add_parser("probe")
     pr.add_argument("--send", action="store_true", help="PAID: one small real call per role")
     pr.add_argument("--flash", default="", metavar="PROVIDER::MODEL")
@@ -601,7 +732,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         _OVERRIDES["primary"] = parse_role(args.flash)
     if getattr(args, "pro", ""):
         _OVERRIDES["escalation"] = parse_role(args.pro)
-    return {"plan": cmd_plan, "probe": cmd_probe, "free": cmd_free, "paid": cmd_paid}[args.cmd](args)
+    return {"plan": cmd_plan, "probe": cmd_probe, "free": cmd_free, "paid": cmd_paid, "dump": cmd_dump}[args.cmd](args)
 
 
 if __name__ == "__main__":

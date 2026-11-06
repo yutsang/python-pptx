@@ -477,6 +477,15 @@ provider, when no base run is given, or without `--i-accept-paid-calls`. A task
 is compared only with itself; a task's tokens are never compared with a whole
 entity's.
 
+Every long loop shows a tqdm bar (configurations, tasks, and the accounts of
+`--entity` with the tokens charged so far). `--entity` keeps its session file
+and its deck under `fdd_utils/output/agent_acceptance/` (git-ignored) and writes
+a quality dump there: per account the legacy run's text beside the agent's, the
+claims and how they verified, the figures the legacy text quotes that the agent
+text does not, and why the deck is not deliverable. `dump --report <paid json>`
+writes the same for a run already made, from its deck's lineage (nothing is
+sent).
+
 A failed validation is not progress: only a draft that verified changes the
 controller's progress signature, so a model that keeps rewriting a failing
 sentence in edit mode reaches the escalation rule (it never did before).
