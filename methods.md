@@ -147,7 +147,17 @@ What "checked" means here has four parts.
   belongs to the other cited period fails, which catches two figures swapped
   between periods. An amount with no period in the sentence, when the claim
   declares several, is `unverified`, and a candidate with an unverified claim is
-  not accepted.
+  not accepted. When one written figure equals both a balance and a movement, an
+  amount the sentence writes as a change ("较上年减少100万元") is read as the
+  movement and any other amount as the balance, so a fall to nil is not mistaken
+  for the prior balance written under the later period, and that balance written
+  under the later period still fails.
+- **Amount signs.** Amounts are compared as magnitudes, because prose writes a
+  fall as 减少 with no sign. A sign the sentence does write ("-130万元", "负130万元",
+  "+70万元") is held to the cited figure: the opposite sign fails (`SIGN_ERROR`).
+  On a detail line it is left for a person (`SIGN_UNCLEAR`), because a deduction
+  can be shown either way round. A dash after a figure or inside a date is not a
+  minus.
 - **Percentages.** A percentage is also bound to the line the sentence names and
   to the kind of ratio the words say, a share of the total, a change between
   periods, or a difference of two shares in percentage points, so a share written
@@ -369,7 +379,11 @@ reported and to the estimate where not. Retries made inside the provider SDK
 are not visible to this code and are listed as unmeasured. A cost cap needs
 `price_in` / `price_out` on the model's `available_models` entry; a model
 without them has no cost and nothing is borrowed from another provider; the
-prices are as written in config and not checked against a bill.
+prices are as written in config and not checked against a bill. Input the
+provider reports as cached is part of the input count. It is priced at
+`price_cached_in` when the entry has one and otherwise at the full `price_in`;
+the books say which, so a figure priced without a cache discount is not read as
+the bill.
 
 Before each call the estimated input and the call's whole output allowance are
 reserved against the caps. The provider's count of the input can differ from the
@@ -466,8 +480,11 @@ is claimed), the offline gate, the real-workbook flows with scripted models, and
 the three configurations with scripted stand-ins on a copy of the workbook.
 `paid` runs the same three tasks (investigate and follow up; rewrite and export;
 the same controlled change to one cell, then a rewrite) for each configuration.
-There is no cap unless one is given (`--max-calls`, `--max-tokens`, `--max-cost`);
-each turn still ends at the product's own per-turn limits. `--flash` and `--pro`
+There is no cap unless one is given (`--max-calls`, `--max-tokens`, `--max-cost`).
+A cap that is given is one ceiling over the whole command: each run (each
+configuration's tasks, then each entity) gets an even share of what is left,
+rounded up and never more than is left, and a run that finds nothing left is not
+started. Each turn still ends at the product's own per-turn limits. `--flash` and `--pro`
 (`provider::model`) name the models without editing config.yml. `--entity` adds
 the whole-entity cost: every account the base run commented on, rewritten by the
 agent on a fresh copy and a fresh session, then one deck (routing only by

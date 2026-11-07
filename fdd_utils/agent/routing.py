@@ -49,7 +49,7 @@ CLASS: Dict[str, str] = {
     "WRONG_PERIOD": REWRITE, "WRONG_LINE": REWRITE, "WRONG_OPERATION": REWRITE, "WRONG_BASIS": REWRITE,
     "WRONG_ACCOUNT": REWRITE, "NO_CONTRACT": REWRITE, "SIGN_ERROR": REWRITE, "UNIT_ERROR": REWRITE,
     "AMOUNT_UNMATCHED": REWRITE, "AMOUNT_ELSEWHERE": REWRITE, "AMOUNT_UNCITED": REWRITE,
-    "PERCENT_UNMATCHED": REWRITE, "PERCENT_ZERO_DENOMINATOR": REWRITE, "PERCENT_SIGN_UNSTATED": REWRITE,
+    "PERCENT_UNMATCHED": REWRITE, "PERCENT_ZERO_DENOMINATOR": REWRITE, "PERCENT_SIGN_UNSTATED": REWRITE, "SIGN_UNCLEAR": REWRITE,
     "LINE_UNBOUND": REWRITE, "LINE_NOT_CITED": REWRITE, "PERIOD_UNBOUND": REWRITE, "PERIODS_UNDECLARED": REWRITE,
     "DIRECTION_UNBOUND": REWRITE, "DIRECTION_UNSUPPORTED": REWRITE,
     # the permissions say what may be stated; the sentence states more. Say only what is permitted, and name the rest
@@ -273,6 +273,8 @@ class CallRecord:
     after: str = ""
     #: the provider reported more reasoning tokens than completion tokens, so they cannot be part of completion: added to `charged`
     reasoning_separate: bool = False
+    #: the cached part of the input was priced at the configured price_cached_in (False: at the full price_in, or nothing cached)
+    cache_discounted: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return dict(self.__dict__)
@@ -338,7 +340,7 @@ class SharedBudget:
             row = by_role.setdefault(r.role, {"calls": 0, "failed": 0, "model": r.model, "provider": r.provider, "charged_tokens": 0,
                                               "prompt_provider": 0, "completion_provider": 0, "prompt_est": 0, "completion_est": 0,
                                               "cached_prompt": 0, "reasoning": 0, "thinking": r.thinking, "models_reported": [],
-                                              "retries": 0, "seconds": 0.0})
+                                              "retries": 0, "seconds": 0.0, "cost": None})
             if r.model_reported and r.model_reported not in row["models_reported"]:
                 row["models_reported"].append(r.model_reported)
             row["retries"] += 1 if r.after else 0
@@ -352,6 +354,8 @@ class SharedBudget:
             row["completion_est"] += r.completion_est
             row["cached_prompt"] += _int(r.cached_prompt)
             row["reasoning"] += _int(r.reasoning)
+            if r.cost is not None:
+                row["cost"] = round((row["cost"] or 0.0) + r.cost, 6)
         return {
             "calls": self.calls, "failed_calls": sum(not r.ok for r in self.records),
             "replies_discarded": sum(r.ok and not r.reply_used for r in self.records),
@@ -369,6 +373,7 @@ class SharedBudget:
                                "saved_completion": sum(_int(r.saved_completion) for r in self.records)},
             "cost": self.cost, "cost_basis": "prices from config (yuan per million tokens), provider-reported tokens where reported",
             "price_source": "config.yml available_models price_in / price_out, as written there; not checked against a provider bill",
+            "cached_input_pricing": self._cached_pricing(reported),
             "reasoning_basis": ("reasoning tokens are shown, not added: OpenAI-compatible usage counts them inside completion. "
                                 f"{sum(r.reasoning_separate for r in self.records)} call(s) reported more reasoning than completion and had it added once"),
             "retries": {"after_failed_call": sum(r.after == "failed" for r in self.records),
@@ -379,6 +384,18 @@ class SharedBudget:
             "unmeasured": ["retries made inside the provider SDK or gateway are not visible here"],
             "by_role": by_role, "limits": self.limits.to_dict(),
         }
+
+    @staticmethod
+    def _cached_pricing(reported: List[CallRecord]) -> str:
+        cached = [r for r in reported if _int(r.cached_prompt)]
+        if not cached:
+            return "no input was reported as cached"
+        discounted = sum(r.cache_discounted for r in cached)
+        if discounted == len(cached):
+            return "cached input priced at price_cached_in from config"
+        full = sum(_int(r.cached_prompt) for r in cached if not r.cache_discounted)
+        return (f"{full:,} cached input tokens priced at the full price_in (no price_cached_in in config for that model); "
+                "if the provider bills cached input lower, the real charge is lower than this figure")
 
     # -- the gate before a call ------------------------------------------------------------------------------------------------
     def check(self, prompt_est: int, reserve_tokens: int, price: Optional[Tuple[float, float]]) -> None:
@@ -437,6 +454,8 @@ class RoleSpec:
     thinking: str = ""
     thinking_applied: bool = False
     price: Optional[Tuple[float, float]] = None        # yuan per million tokens, in / out, from config; None = unknown
+    #: yuan per million for input the provider reports as cached (price_cached_in); None = priced at the full input price
+    price_cached: Optional[float] = None
     #: the most output a call of this role may ask for (agent.models.<role>.max_output); None: the step's own allowance
     max_output: Optional[int] = None
     #: a thinking parameter is sent only because config declares its shape; no probe has shown the gateway acts on it
@@ -581,7 +600,13 @@ class RoutedModel:
             tout = record.completion_provider if record.usage_source == "provider" else record.completion_est
             if record.reasoning_separate:
                 tout = _int(tout) + _int(record.reasoning)
-            record.cost = round((_int(tin) * spec.price[0] + _int(tout) * spec.price[1]) / 1e6, 6)
+            cached = min(_int(record.cached_prompt), _int(tin)) if record.usage_source == "provider" else 0
+            if cached and spec.price_cached is not None:
+                record.cache_discounted = True
+                cost_in = (_int(tin) - cached) * spec.price[0] + cached * spec.price_cached
+            else:
+                cost_in = _int(tin) * spec.price[0]
+            record.cost = round((cost_in + _int(tout) * spec.price[1]) / 1e6, 6)
         self.budget.add(record)
         return {**reply, "role": spec.role, "model": spec.model, "call_n": record.n}
 

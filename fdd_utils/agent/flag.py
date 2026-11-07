@@ -113,3 +113,13 @@ def price_for(config: Optional[Dict[str, Any]], provider: str, model: str):
         if isinstance(entry, dict) and str(entry.get("id")) == str(model) and entry.get("price_in") is not None:
             return (float(entry["price_in"]), float(entry.get("price_out") or 0.0))
     return None
+
+
+def cached_price_for(config: Optional[Dict[str, Any]], provider: str, model: str) -> Optional[float]:
+    """price_cached_in (yuan per million) for input the provider reports as served from its prompt cache, or None. Only what the
+    entry says: with none, cached input is priced at the full price_in and the books say so; no discount is assumed."""
+    block = _config(config).get(provider)
+    for entry in (block.get("available_models") or []) if isinstance(block, dict) else []:
+        if isinstance(entry, dict) and str(entry.get("id")) == str(model) and entry.get("price_cached_in") is not None:
+            return float(entry["price_cached_in"])
+    return None

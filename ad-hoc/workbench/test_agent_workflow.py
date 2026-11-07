@@ -464,5 +464,74 @@ class Relabelling(unittest.TestCase):
             self.assertEqual(outcome["failed"] + outcome["unverified"], 1, variant)
 
 
+class AcceptanceAllowance(unittest.TestCase):
+    """A cap declared on the paid acceptance command is ONE ceiling over the whole command. A review (2026-11-06) found the
+    entity runs opened with fresh caps of their own: a declared 90 calls allowed 120 with the routing entity, 180 with all."""
+
+    TOTAL = {"max_calls": 90, "max_tokens": 900_000, "max_cost": 9.0}
+
+    @staticmethod
+    def drain(total, runs, spend=lambda share: share):
+        import agent_acceptance as A
+        al, given = A.Allowance(total, runs), []
+        for i in range(runs):
+            share = al.next(f"run{i}")
+            given.append(share)
+            if share is not None:
+                used = spend(share)
+                al.charge({"calls": used["max_calls"] or 0, "charged_tokens": used["max_tokens"] or 0, "cost": used["max_cost"]})
+        return al, given
+
+    def test_runs_that_each_spend_their_whole_share_stay_within_the_total(self):
+        for runs in (3, 4, 6):                      # the three task runs; + the routing entity; + every entity
+            al, given = self.drain(self.TOTAL, runs)
+            self.assertLessEqual(al.spent["max_calls"], 90, runs)
+            self.assertLessEqual(al.spent["max_tokens"], 900_000, runs)
+            self.assertLessEqual(al.spent["max_cost"], 9.0 + 1e-9, runs)
+            self.assertTrue(all(g is not None for g in given), runs)
+
+    def test_a_cap_below_the_number_of_runs_leaves_the_last_runs_unstarted(self):
+        al, given = self.drain({"max_calls": 2, "max_tokens": None, "max_cost": None}, 3)
+        self.assertEqual([g and g["max_calls"] for g in given], [1, 1, None])
+        self.assertEqual(al.spent["max_calls"], 2)
+        self.assertIn("used up", al.report()["runs"][-1]["not_started"])
+
+    def test_token_and_cost_totals_run_out_like_calls(self):
+        al, given = self.drain({"max_calls": None, "max_tokens": 1000, "max_cost": None}, 3, spend=lambda s: {**s, "max_tokens": 1000})
+        self.assertEqual(given[1:], [None, None])
+        al, given = self.drain({"max_calls": None, "max_tokens": None, "max_cost": 1.0}, 3, spend=lambda s: {**s, "max_cost": 1.0})
+        self.assertEqual(given[1:], [None, None])
+
+    def test_what_a_run_leaves_passes_to_the_runs_after_it(self):
+        al, given = self.drain({"max_calls": 90, "max_tokens": None, "max_cost": None}, 4, spend=lambda s: {**s, "max_calls": 0})
+        self.assertEqual([g["max_calls"] for g in given], [23, 30, 45, 90])
+
+    def test_no_declared_cap_is_no_cap(self):
+        al, given = self.drain({"max_calls": None, "max_tokens": None, "max_cost": None}, 6)
+        self.assertTrue(all(g == {"max_calls": None, "max_tokens": None, "max_cost": None} for g in given))
+
+    def test_the_paid_command_hands_out_caps_that_add_up_to_no_more_than_the_total(self):
+        import agent_acceptance as A
+        seen = []
+
+        def spend_all(name, setup, databook, base_run, workdir, limits, **_):
+            seen.append((name, limits))
+            return {"books": {"calls": limits.max_calls, "charged_tokens": limits.max_tokens, "cost": None}}
+        setups = {n: {"routing": "off", "primary": {"provider": "x"}} for n in A.CONFIGS}
+        for entity_configs, runs in (("routing", 4), ("all", 6)):
+            seen.clear()
+            args = SimpleNamespace(databook="book.xlsx", base_run="run_x", i_accept_paid_calls=True, entity=True,
+                                   entity_configs=entity_configs, max_calls=90, max_tokens=900_000, max_cost=0.0)
+            with mock.patch.object(A, "_config", return_value={}), mock.patch.object(A, "preview_roles", return_value={}), \
+                    mock.patch.object(A, "preflight", return_value=[]), mock.patch.object(A, "configurations", return_value=setups), \
+                    mock.patch.object(A, "run_configuration", side_effect=spend_all), mock.patch.object(A, "run_entity", side_effect=spend_all), \
+                    mock.patch.object(A, "_save", return_value=A.ROOT / "x.json"), mock.patch.object(A, "summary_text", return_value=""), \
+                    mock.patch.object(A, "quality_dump", return_value={"path": "", "line": ""}), mock.patch("builtins.print"):
+                self.assertEqual(A.cmd_paid(args), 0)
+            self.assertEqual(len(seen), runs, entity_configs)
+            self.assertLessEqual(sum(l.max_calls for _n, l in seen), 90, entity_configs)
+            self.assertLessEqual(sum(l.max_tokens for _n, l in seen), 900_000, entity_configs)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

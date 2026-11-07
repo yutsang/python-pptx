@@ -366,10 +366,58 @@ def scripted_models(get_source, wrong_first: bool = False) -> Tuple[Any, Any]:
 # ---------------------------------------------------------------------------------------------------------------------------
 
 def _caps(args: argparse.Namespace) -> Dict[str, Any]:
-    """0 (the default) is no cap: the run spends what the work takes, and the books say what that was."""
+    """0 (the default) is no cap: the run spends what the work takes, and the books say what that was. A cap that IS declared
+    is one ceiling over the whole command (see Allowance), not a figure each run gets afresh."""
     total = {"max_calls": int(args.max_calls) or None, "max_tokens": int(args.max_tokens) or None, "max_cost": float(args.max_cost) or None}
-    per = {k: (None if v is None else (max(1, v // len(CONFIGS)) if isinstance(v, int) else v / len(CONFIGS))) for k, v in total.items()}
-    return {"total": total, "per_configuration": per}
+    return {"total": total, "rule": "one ceiling over the whole command: each run draws an even share of what is left, rounded up "
+                                    "and never more than is left; what a run leaves passes to the runs after it"}
+
+
+class Allowance:
+    """The declared total, shared by every run of one command (each configuration's tasks, then each entity). Each run is
+    opened with its own Limits, so its books stay its own, but the Limits it gets are cut from what the runs before it left:
+    the runs together cannot pass the total (a single call can still pass a token cap by the gap between its estimated and
+    its counted input; the books say so). Before this the entity runs got fresh caps of their own, so a declared 90 calls
+    allowed 120 with the routing entity and 180 with all three."""
+
+    KEYS = ("max_calls", "max_tokens", "max_cost")
+
+    def __init__(self, total: Dict[str, Any], runs: int):
+        self.total = {k: total.get(k) for k in self.KEYS}
+        self.runs_left = max(1, int(runs))
+        self.spent: Dict[str, float] = {"max_calls": 0, "max_tokens": 0, "max_cost": 0.0}
+        self.given: List[Dict[str, Any]] = []
+
+    def next(self, label: str) -> Optional[Dict[str, Any]]:
+        """The caps for the next run, or None when a declared cap has nothing left (the run is then not started)."""
+        share: Dict[str, Any] = {}
+        for key in self.KEYS:
+            cap = self.total[key]
+            if cap is None:
+                share[key] = None
+                continue
+            left = cap - self.spent[key]
+            if left <= 0 or (key == "max_calls" and left < 1):
+                self.given.append({"run": label, "not_started": f"{key} total {cap} is used up"})
+                self.runs_left = max(1, self.runs_left - 1)
+                return None
+            share[key] = min(left, -(-int(left) // self.runs_left)) if key != "max_cost" else left / self.runs_left
+        self.runs_left = max(1, self.runs_left - 1)
+        self.given.append({"run": label, "caps": dict(share)})
+        return share
+
+    def charge(self, books: Optional[Dict[str, Any]]) -> None:
+        books = books or {}
+        self.spent["max_calls"] += int(books.get("calls") or 0)
+        self.spent["max_tokens"] += int(books.get("charged_tokens") or 0)
+        self.spent["max_cost"] += float(books.get("cost") or 0.0)
+        if self.given:
+            self.given[-1]["spent"] = {"calls": int(books.get("calls") or 0), "charged_tokens": int(books.get("charged_tokens") or 0),
+                                       "cost": books.get("cost")}
+
+    def report(self) -> Dict[str, Any]:
+        return {"total": self.total, "spent": {"calls": self.spent["max_calls"], "charged_tokens": self.spent["max_tokens"],
+                                               "cost": round(self.spent["max_cost"], 4)}, "runs": self.given}
 
 
 def cmd_plan(args: argparse.Namespace) -> int:
@@ -386,7 +434,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     print("  configurations: flash_only (primary), pro_only (escalation model alone), routing (primary -> escalation on the code's rule)")
     print(f"  tasks per configuration: {', '.join(TASKS)} ({TURNS_PER_CONFIG} turns at most); all on the same account of a copy of the workbook")
     if any(v is not None for v in caps["total"].values()):
-        print(f"  caps: total {caps['total']}; each configuration {caps['per_configuration']} (a configuration stops at its cap; the others still run)")
+        print(f"  caps: total {caps['total']} over the whole command, task runs and entity runs together ({caps['rule']})")
     else:
         print("  caps: none (the run spends what the work takes); each turn still ends at the product's own per-turn limits (agent.max_steps ...)")
     print("  --entity adds: every account the base run commented on, rewritten by the agent on a fresh copy, then one deck "
@@ -511,15 +559,22 @@ def cmd_paid(args: argparse.Namespace) -> int:
         return 2
     from fdd_utils.agent.routing import Limits
     caps = _caps(args)
-    per = caps["per_configuration"]
+    wanted = (CONFIGS if args.entity_configs == "all" else [c.strip() for c in args.entity_configs.split(",") if c.strip()]) \
+        if args.entity else []
+    allowance = Allowance(caps["total"], len(CONFIGS) + len([c for c in wanted if c in CONFIGS]))
     report: Dict[str, Any] = {"mode": "paid", "caps": caps, "previews": previews, "configurations": {}}
     workdir = Path(tempfile.mkdtemp(prefix="agent_paid_"))
     print(f"PAID ACCEPTANCE: {len(CONFIGS)} configurations x {len(TASKS)} tasks" + (" + the whole entity" if args.entity else "")
           + f"; caps {caps['total'] if any(v is not None for v in caps['total'].values()) else 'none'}", flush=True)
     try:
         for name, setup in progress(list(configurations(cfg).items()), desc="configurations"):
-            limits = Limits(max_calls=per["max_calls"], max_tokens=per["max_tokens"], max_cost=per["max_cost"])
-            res = run_configuration(name, setup, args.databook, args.base_run, workdir, limits)
+            share = allowance.next(f"{name} tasks")
+            if share is None:
+                report["configurations"][name] = {"configuration": name, "not_started": allowance.given[-1]["not_started"]}
+                print(f"  {name}: not started ({allowance.given[-1]['not_started']})", flush=True)
+                continue
+            res = run_configuration(name, setup, args.databook, args.base_run, workdir, Limits(**share))
+            allowance.charge(res.get("books"))
             report["configurations"][name] = res
             first = (res.get("tasks") or {}).get("investigate") or {}
             books = first.get("books") or {}
@@ -529,15 +584,19 @@ def cmd_paid(args: argparse.Namespace) -> int:
                 break
             print(f"  {name}: done", flush=True)
         if args.entity and not report.get("stopped"):
-            wanted = CONFIGS if args.entity_configs == "all" else [c.strip() for c in args.entity_configs.split(",") if c.strip()]
             report["entity"] = {}
             for name, setup in configurations(cfg).items():
                 if name in wanted:
-                    limits = Limits(max_calls=per["max_calls"], max_tokens=per["max_tokens"], max_cost=per["max_cost"])
-                    report["entity"][name] = run_entity(name, setup, args.databook, args.base_run, workdir, limits)
+                    share = allowance.next(f"{name} entity")
+                    if share is None:
+                        print(f"  entity {name}: not started ({allowance.given[-1]['not_started']})", flush=True)
+                        continue
+                    report["entity"][name] = run_entity(name, setup, args.databook, args.base_run, workdir, Limits(**share))
+                    allowance.charge(report["entity"][name].get("books"))
                     print(f"  entity {name}: done", flush=True)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
+        report["allowance"] = allowance.report()
     path = _save(report)
     print(summary_text(report))
     print(f"full report (local, git-ignored): {path.relative_to(ROOT)}")
@@ -546,6 +605,20 @@ def cmd_paid(args: argparse.Namespace) -> int:
         print(f"quality dump for entity {name} (local, git-ignored; holds the commentary): {dumped['path']}")
         print("  " + dumped["line"])
     return 0
+
+
+def _cost_text(books: Dict[str, Any]) -> str:
+    """The configured-price figure, never called a bill, with how cached input was priced."""
+    if books.get("cost") is None:
+        return "cost unknown (no price in config)"
+    cached = str(books.get("cached_input_pricing") or "")
+    note = "cached input at full price" if "full price_in" in cached else ("cached input at price_cached_in" if "price_cached_in" in cached else "")
+    return f"cost {books['cost']:.4f} yuan at config prices" + (f" ({note})" if note else "")
+
+
+def _role_text(role: str, v: Dict[str, Any]) -> str:
+    cost = "" if v.get("cost") is None else f"/{v['cost']:.4f}yuan"
+    return f"{role}:{v['calls']}c/in {v.get('prompt_provider', 0)} (cached {v.get('cached_prompt', 0)}) out {v.get('completion_provider', 0)}{cost}"
 
 
 def summary_text(report: Dict[str, Any]) -> str:
@@ -564,8 +637,12 @@ def summary_text(report: Dict[str, Any]) -> str:
                          f"ok {sum(1 for t in turns if t.get('ok'))}/{len(turns)}; calls {b.get('calls', 0)} (failed {b.get('failed_calls', 0)}, "
                          f"retries {sum((b.get('retries') or {}).values())}); provider {pr.get('prompt', 0)}+{pr.get('completion', 0)} "
                          f"(reasoning {pr.get('reasoning', 0)}, cache {pr.get('cached_prompt', 0)}); est {b.get('estimated', {}).get('prompt', 0)}+"
-                         f"{b.get('estimated', {}).get('completion', 0)}; escalations {b.get('escalations', 0)}; {b.get('seconds', 0)}s; "
+                         f"{b.get('estimated', {}).get('completion', 0)}; {_cost_text(b)}; escalations {b.get('escalations', 0)}; {b.get('seconds', 0)}s; "
                          f"stop {[t.get('stop_class') for t in turns]}; roles {roles_line}")
+    al = report.get("allowance") or {}
+    if any(v is not None for v in (al.get("total") or {}).values()):
+        lines.append(f"  declared total {al['total']} over the whole command; spent {al.get('spent')}; "
+                     + "; ".join(f"{g['run']}: {g.get('not_started') or g.get('caps')}" for g in al.get("runs") or []))
     entity = report.get("entity") or {}
     if entity:
         lines.append("  entity (every account rewritten from its evidence, the base run's text as the start; not a from-zero generation):")
@@ -574,13 +651,15 @@ def summary_text(report: Dict[str, Any]) -> str:
             pr = b.get("provider_reported") or {}
             per = [p for p in res.get("per_account") or [] if p.get("calls")]
             avg = round(sum(p["charged_tokens"] for p in per) / len(per)) if per else 0
-            roles_line = ", ".join(f"{r}:{v['calls']}c/{v['charged_tokens']}t" for r, v in (b.get("by_role") or {}).items())
+            roles_line = ", ".join(_role_text(r, v) for r, v in (b.get("by_role") or {}).items())
             stops: Dict[str, int] = {}
             for p in res.get("per_account") or []:
                 stops[str(p.get("stop_class"))] = stops.get(str(p.get("stop_class")), 0) + 1
             lines.append(f"    {name:10s} accounts {res.get('done')}/{res.get('accounts')} ok {res.get('ok')}; calls {b.get('calls', 0)} "
-                         f"(failed {b.get('failed_calls', 0)}, retries {sum((b.get('retries') or {}).values())}); charged {b.get('charged_tokens', 0)} "
-                         f"= provider {pr.get('prompt', 0)}+{pr.get('completion', 0)} (reasoning {pr.get('reasoning', 0)}, cache {pr.get('cached_prompt', 0)}); "
+                         f"(failed {b.get('failed_calls', 0)}, retries {sum((b.get('retries') or {}).values())}); "
+                         f"provider-reported in {pr.get('prompt', 0)} (of which cached {pr.get('cached_prompt', 0)}) out {pr.get('completion', 0)} "
+                         f"(reasoning {pr.get('reasoning', 0)}); {_cost_text(b)}; "
+                         f"{b.get('calls_without_provider_usage', 0)} call(s) without provider usage; charged (cap figure) {b.get('charged_tokens', 0)}; "
                          f"per account avg {avg}; escalations {b.get('escalations', 0)}; {res.get('wall_seconds')}s; "
                          f"deck {res.get('deck') if res.get('export_ok') else res.get('export_error')}; stops {stops}; roles {roles_line}"
                          + (f"; STOPPED {res['stopped']}" if res.get("stopped") else ""))

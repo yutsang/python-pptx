@@ -275,9 +275,31 @@ def text_amounts(text: str) -> List[Dict[str, Any]]:
     for value, start, end in extract_amount_spans(work):
         spans.append({"value": float(value), "written": work[start:end], "start": start, "end": end})
     spans.sort(key=lambda s: s["start"])
+    plain = str(text or "").replace("，", ",")
     for s in spans:
         s["tolerance"] = max(display_half_ulp(s["written"]), 0.5)
+        s["sign"] = _written_sign(plain, s["start"])
     return spans
+
+
+def _written_sign(text: str, start: int) -> str:
+    """'-' / '+' / '': the sign written right before an amount ("-130万元", "负130万元", "+70万元"). A dash that follows a
+    figure is a range or a date ("100-130万元", "2025-12-31"), not a minus."""
+    i = start - 1
+    while i >= 0 and text[i] == " ":
+        i -= 1
+    if i < 0:
+        return ""
+    if text[i] == "负":
+        return "-"
+    if text[i] not in "-−－+＋":
+        return ""
+    j = i - 1
+    while j >= 0 and text[j] == " ":
+        j -= 1
+    if j >= 0 and (text[j].isdigit() or text[j] in "%％"):
+        return ""
+    return "+" if text[i] in "+＋" else "-"
 
 
 def text_percents(text: str) -> List[Dict[str, Any]]:
@@ -301,6 +323,7 @@ def text_percents(text: str) -> List[Dict[str, Any]]:
 
 _UP = ("增加", "增长", "上升", "提高", "上涨", "增至", "升至", "新增", "扩大", "增幅", "increase", "rose", "grew", "higher")
 _DOWN = ("减少", "下降", "降低", "下滑", "减至", "降至", "缩减", "收窄", "降幅", "decrease", "fell", "declined", "lower")
+_CHANGE_CUES = ("变动", "变化", "change")
 _COMPOSITION_CUES = ("其中", "包括", "主要为", "主要是", "主要来自", "分别", "构成", "组成", "占比", "占总", "占该", "比重", "份额",
                      "of which", "including", "composed of", "share of")
 _NEUTRAL_CHANGE = ("变动", "变化", "波动", "幅度", "changed by", "change of", "variation")
@@ -754,12 +777,14 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         if len(parts) >= 2:
             allowed.append((abs(sum(p["value"] for p in parts)), {"id": "sum(" + ",".join(p["ref"] for p in parts) + ")",
                                                                  "period": period, "account": account, "line": "", "basis": BASIS_RAW,
-                                                                 "role": "sum", "ref": "sum"}, "sum_of_cited"))
+                                                                 "role": "sum", "ref": "sum", "value": sum(p["value"] for p in parts)},
+                            "sum_of_cited"))
     pairs = _consecutive_pairs(cited_facts)
     for a, b in pairs:
         allowed.append((abs(b["value"] - a["value"]), {
             "id": f"movement({a['ref']},{b['ref']})", "period": b["period"], "account": account, "basis": BASIS_DERIVED,
-            "role": "movement", "ref": "movement", "periods": [a["period"], b["period"]]}, "implicit_movement"))
+            "role": "movement", "ref": "movement", "periods": [a["period"], b["period"]], "value": b["value"] - a["value"]},
+            "implicit_movement"))
 
     # -- amounts ------------------------------------------------------------------------
     matched_sources: List[Tuple[Dict[str, Any], Dict[str, Any], str]] = []   # (span, source, how)
@@ -771,11 +796,33 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         hit = None
         if hits:
             # Two lines can carry the same figure (a loan listed by type and by bank).
-            # Prefer the one the sentence attaches the amount to.
-            named = attached_label(mask_mentions(text, period_mentions(text)), span["start"], component_labels)
-            hit = next((h for h in hits if named and h[1].get("line") == named), hits[0])
+            # Prefer the one the sentence attaches the amount to. Then a change for a figure the sentence writes as a change
+            # ("较上年减少100万元") and a balance for one it does not, under the period it is written under: a fall to nil is
+            # the size of the prior balance, and reading it as that balance put under the later period was a false WRONG_PERIOD.
+            mentions_here = period_mentions(text)
+            named = attached_label(mask_mentions(text, mentions_here), span["start"], component_labels)
+            mention = attached_period(text, span["start"], span["end"], mentions_here)
+            as_change = _has(text[max(0, span["start"] - 8):span["start"]], _UP + _DOWN + _CHANGE_CUES)
+
+            def fit(h: Tuple[float, Dict[str, Any], str]) -> Tuple[bool, bool, bool]:
+                src = h[1]
+                periods = set(src.get("periods") or ([src["period"]] if src.get("period") else []))
+                is_change = src.get("role") == "movement" or src.get("kind") == KIND_MOVEMENT
+                return (bool(named) and src.get("line") == named, as_change == is_change,
+                        mention is not None and any(mention_matches(mention, p) for p in periods))
+            hit = max(hits, key=fit)                     # max keeps the first of equals, so ties fall back to the order above
         if hit:
             matched_sources.append((span, hit[1], hit[2]))
+            # Amounts are matched as magnitudes, because prose writes a fall as "减少30万元". A sign the sentence DOES write is
+            # held to account: "-130万元" for a balance of +130万 matched before.
+            value = hit[1].get("value")
+            if span.get("sign") and value is not None and abs(value) > span["tolerance"] and (span["sign"] == "-") != (value < 0):
+                say = (f"'{span['written']}' is written as {'negative' if span['sign'] == '-' else 'positive'}, but the cited "
+                       f"{hit[1].get('ref')} is {_fmt(value)} yuan")
+                if hit[1].get("role") == ROLE_COMPONENT:     # a deduction line can be shown either way round
+                    review("SIGN_UNCLEAR", "amounts", say + "; if the line is a deduction, say so")
+                else:
+                    fail("SIGN_ERROR", "amounts", say)
             continue
         scaled = next(((v, s) for v, s, _h in allowed if v and any(
             abs(target - v * 10 ** k) <= max(span["tolerance"], abs(target) * 0.01) for k in (-4, -3, -2, -1, 1, 2, 3, 4))), None)

@@ -92,6 +92,9 @@ dashscope:
   # Only if the gateway's documentation names its thinking switch: the body sent with the agent's thinking / reasoning_effort
   # per role. Unverified until `python ad-hoc/workbench/agent_acceptance.py probe --send` shows the gateway accepts it. Shape:
   # thinking_extra_body: {"on": {"enable_thinking": true}, "off": {"enable_thinking": false}}
+  # Prices (optional, yuan per million tokens) go on each entry: price_in, price_out, and price_cached_in for input the
+  # provider reports as served from its prompt cache. Without price_cached_in, cached input is priced at the full price_in
+  # (the agent's books say so). Take it from the provider's price sheet; nothing here assumes a discount.
   available_models:
     - id: "dashscope_qwen3.7-max"
       kind: chat

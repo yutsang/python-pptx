@@ -359,6 +359,56 @@ class PeriodBinding(unittest.TestCase):
         self.assertIn("WRONG_LINE", codes(v))
 
 
+class SignAndChangeBinding(unittest.TestCase):
+    """Two gaps a source review found (2026-11-06): a fall equal to the prior balance was read as that balance put under the
+    wrong period, and a written minus sign was ignored because amounts were compared as magnitudes."""
+
+    GONE = [("甲公司", "detail", {P1: 1000000, P2: 0}), ("Total", "total", {P1: 1000000, P2: 0})]
+    NEG = [("A", "detail", {P1: -500000, P2: -700000}), ("Total", "total", {P1: -500000, P2: -700000})]
+
+    def test_a_fall_equal_to_the_prior_balance_is_the_movement_not_a_misdated_balance(self):
+        c = build(self.GONE, notes=[])
+        v = verdict("2025年末余额较上年减少100.0万元", c, [ref(c, P1), ref(c, P2)], [P1, P2], "movement")
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+
+    def test_the_prior_balance_written_as_the_later_balance_still_fails(self):
+        c = build(self.GONE, notes=[])
+        v = verdict("2025年末余额100.0万元", c, [ref(c, P1), ref(c, P2)], [P1, P2], "amount")
+        self.assertEqual(v["verdict"], "failed", v["findings"])
+        self.assertIn("WRONG_PERIOD", codes(v))
+
+    def test_the_movement_in_the_wrong_direction_still_fails(self):
+        c = build(self.GONE, notes=[])
+        v = verdict("2025年末余额较上年增加100.0万元", c, [ref(c, P1), ref(c, P2)], [P1, P2], "movement")
+        self.assertEqual(v["verdict"], "failed", v["findings"])
+
+    def test_a_minus_sign_on_a_positive_balance_fails(self):
+        c = build()
+        for text in ("截至2025年12月31日，应收账款余额-130.0万元。", "截至2025年12月31日，应收账款余额为负130.0万元。"):
+            v = verdict(text, c, [ref(c, P2)], [P2])
+            self.assertIn("SIGN_ERROR", codes(v), text)
+
+    def test_a_plus_sign_on_a_negative_balance_fails(self):
+        c = build(self.NEG, notes=[], account="未分配利润")
+        self.assertIn("SIGN_ERROR", codes(verdict("截至2025年12月31日，未分配利润余额+70.0万元。", c, [ref(c, P2)], [P2])))
+
+    def test_a_negative_balance_with_its_sign_or_as_a_magnitude_is_verified(self):
+        c = build(self.NEG, notes=[], account="未分配利润")
+        for text in ("截至2025年12月31日，未分配利润余额-70.0万元。", "截至2025年12月31日，未分配利润余额70.0万元。"):
+            self.assertEqual(verdict(text, c, [ref(c, P2)], [P2])["verdict"], "verified", text)
+
+    def test_a_minus_written_on_a_fall_is_right_and_on_a_rise_is_wrong(self):
+        c = build()                                                      # 100 -> 130
+        self.assertIn("SIGN_ERROR", codes(verdict("2025年末较2024年末变动-30.0万元", c, [ref(c, P1), ref(c, P2)], [P1, P2], "movement")))
+        c = build(self.GONE, notes=[])
+        self.assertEqual(verdict("2025年末较2024年末变动-100.0万元", c, [ref(c, P1), ref(c, P2)], [P1, P2], "movement")["verdict"],
+                         "verified")
+
+    def test_a_dash_after_a_figure_is_a_range_not_a_minus(self):
+        self.assertEqual([s["sign"] for s in cl.text_amounts("约100-130万元")], [""])
+        self.assertEqual([s["sign"] for s in cl.text_amounts("截至2025-12-31，余额130万元")], [""])
+
+
 class PercentBinding(unittest.TestCase):
     """A percentage is bound to the period, the line and the kind of ratio the sentence says, as an amount is."""
 

@@ -225,6 +225,7 @@ class WorkSession:
                              f"'{call.provider}'. Configure '{provider}' (or set agent.models.{role}), or set agent.allow_provider_fallback: true")
         return R.RoleSpec(role, call, provider=call.provider, model=call.chat_model or model, thinking=thinking or effort,
                           thinking_applied=call.thinking_applied, price=F.price_for(self.config, call.provider, model),
+                          price_cached=F.cached_price_for(self.config, call.provider, model),
                           max_output=max_output, thinking_unverified=call.thinking_unverified,
                           provider_requested=provider if call.provider_fallback else "")
 

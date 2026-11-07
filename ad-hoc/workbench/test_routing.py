@@ -455,6 +455,24 @@ class Books(unittest.TestCase):
             self.call(router, max_tokens=10)
         self.assertEqual(caught.exception.kind, "cost")
 
+    def test_cached_input_is_priced_at_full_price_unless_a_cached_price_is_configured_and_the_books_say_which(self):
+        def routed(price_cached):
+            r = R.RoutedModel(R.RoleSpec("primary", reply("x", prompt_tokens=1_000_000, completion_tokens=100_000, cached_prompt_tokens=600_000),
+                                         provider="test", model="m", price=(12.0, 24.0), price_cached=price_cached))
+            self.call(r, max_tokens=10)
+            return r.budget
+        full = routed(None)
+        self.assertEqual(full.cost, 14.4)                                                  # cached input at the full 12 yuan
+        self.assertIn("600,000 cached input tokens priced at the full price_in", full.summary()["cached_input_pricing"])
+        cheap = routed(2.4)
+        self.assertEqual(cheap.cost, round((400_000 * 12 + 600_000 * 2.4 + 100_000 * 24) / 1e6, 4))
+        self.assertEqual(cheap.summary()["cached_input_pricing"], "cached input priced at price_cached_in from config")
+        self.assertEqual(cheap.charged_tokens, full.charged_tokens, "a price changes the cost, never the token count")
+        cfg = {"dashscope": {"available_models": [{"id": "pro-id", "price_in": 12, "price_out": 24, "price_cached_in": 2.4},
+                                                  {"id": "flash-id", "price_in": 1, "price_out": 2}]}}
+        from fdd_utils.agent import flag as F
+        self.assertEqual((F.cached_price_for(cfg, "dashscope", "pro-id"), F.cached_price_for(cfg, "dashscope", "flash-id")), (2.4, None))
+
     def test_the_books_survive_a_resumed_session_so_a_cap_is_a_cap_on_the_whole_work(self):
         router = R.RoutedModel(spec("primary", reply("x", prompt_tokens=10, completion_tokens=1), "m"), budget=R.SharedBudget(R.Limits(max_calls=3)))
         self.call(router, n=2)
