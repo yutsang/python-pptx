@@ -270,7 +270,8 @@ class WorkSession:
         notice = self.ensure_fresh()
         prepare = self.prepare if self.prepare is not None else F.prepared_write(self.config)
         controller = AgentController(self.source, self._router(), budget=self.budget or _default_budget(),
-                                     language=self.source.language, memory=memory or self.memory, prepare=prepare)
+                                     language=self.source.language, memory=memory or self.memory, prepare=prepare,
+                                     seed=F.seed_facts(self.config), review=F.review_meaning(self.config))
         before = {a: c.claims_digest for a, c in self.source.candidates.items()}
         run = controller.run(request, mode=mode, account=account, export=False, turn_number=len(self.turns) + 1)
         turn = self._record(run, mode, request, before)

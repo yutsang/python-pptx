@@ -275,6 +275,9 @@ class CallRecord:
     reasoning_separate: bool = False
     #: the cached part of the input was priced at the configured price_cached_in (False: at the full price_in, or nothing cached)
     cache_discounted: bool = False
+    #: why this call was made when it is not the turn's own model at work: "review" (the stronger model reading a verified paragraph
+    #: for meaning). "" for an ordinary step, a repair or an escalated step.
+    purpose: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return dict(self.__dict__)
@@ -383,6 +386,12 @@ class SharedBudget:
                             "the caps; the provider's own count of the input can differ from the estimate, so a token cap is not a hard limit"),
             "unmeasured": ["retries made inside the provider SDK or gateway are not visible here"],
             "by_role": by_role, "limits": self.limits.to_dict(),
+            "by_purpose": {p: {"calls": sum(1 for r in self.records if r.purpose == p),
+                               "prompt_provider": sum(_int(r.prompt_provider) for r in self.records if r.purpose == p),
+                               "completion_provider": sum(_int(r.completion_provider) for r in self.records if r.purpose == p),
+                               "cost": (round(sum(r.cost for r in self.records if r.purpose == p and r.cost is not None), 6)
+                                        if any(r.purpose == p and r.cost is not None for r in self.records) else None)}
+                           for p in sorted({r.purpose for r in self.records if r.purpose})},
         }
 
     @staticmethod
@@ -549,6 +558,20 @@ class RoutedModel:
             self.budget.escalations.append(record)
             return record
         return None
+
+    def call_as(self, role: str, system: str, user: str, max_tokens: int, purpose: str) -> Dict[str, Any]:
+        """One call by a named role for a stated purpose (a review), on the same books, without moving the turn to that role: it is
+        not an escalation and does not count as one. The call is recorded with its purpose."""
+        if role not in self.roles:
+            raise KeyError(f"no {role} model configured")
+        current, before = self.role, self.budget.calls
+        self.role = role
+        try:
+            return self(system, user, max_tokens)
+        finally:
+            self.role = current
+            if self.budget.calls > before:
+                self.budget.records[-1].purpose = purpose       # a failed call keeps its purpose too
 
     def note_rejection(self) -> None:
         """The gate sent the last answer back: the next call is a retry of it, and is recorded as one."""

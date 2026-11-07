@@ -251,6 +251,11 @@ agent:
   # true (default): a paragraph for one known account is written once from evidence the controller read itself, then
   # repaired claim by claim (methods.md 5); false: the tool loop from the first step, as before 2026-11-07
   prepared_write: true
+  # Off until entity_trial.py shows they help. seed_facts: Python writes the balance and movement sentences, the model adds
+  # the rest. review_meaning: a verified paragraph with a cause, notes, a basis caveat or part-year figures is read once by
+  # the escalation model for meaning (needs agent.models.escalation); a repair that does not verify keeps the verified text.
+  seed_facts: false
+  review_meaning: false
   models:                  # provider "" = agent.models decides nothing; then --model / the app's selection, else local
     primary:    {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Flash model id
     escalation: {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Pro model id

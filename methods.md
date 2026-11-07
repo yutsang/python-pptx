@@ -152,6 +152,11 @@ What "checked" means here has four parts.
   movement and any other amount as the balance, so a fall to nil is not mistaken
   for the prior balance written under the later period, and that balance written
   under the later period still fails.
+- **Printed precision.** An amount may differ from its source by half its last
+  printed place, in the unit it was written in: 130.0万元 by 500 yuan, CNY1.3
+  million by 50,000. The English scale words (million, mn, m, K, bn) were not
+  read for this until 2026-11-07, so a rounded English figure failed as
+  unmatched; the fixed pipeline's matcher uses the same function.
 - **Amount signs.** Amounts are compared as magnitudes, because prose writes a
   fall as 减少 with no sign. A sign the sentence does write ("-130万元", "负130万元",
   "+70万元") is held to the cited figure: the opposite sign fails (`SIGN_ERROR`).
@@ -277,6 +282,20 @@ last answer was about the same account, the writer sees that answer too ("make
 it shorter" refers to it). `agent.prepared_write: false` in config.yml restores
 the loop from the first step. Tool results in the loop's prompt are compact JSON
 (no padding): the same values in about a tenth fewer characters.
+
+Two options of the prepared write are off until a paid comparison shows they
+help. `agent.seed_facts`: Python writes the latest balance (or, for an income
+statement line, the period's amount) and the movement into it in house style,
+keeps only what the verifier passes, and the model adds the rest; its sentences
+are kept claims like any verified one. A movement is written only where Python
+computed one that is permitted and not zero. `agent.review_meaning`: a verified
+paragraph that states a cause, sits on notes, carries a basis caveat or uses
+part-year figures (Python decides) is read once by the escalation model for
+meaning only, with the instruction not to re-check arithmetic. Its objections go
+back to the writer as rejected claims; if that repair does not verify, or its
+reply is unusable, the verified paragraph stands and the objections are listed
+as unresolved. A review is recorded as a call with purpose `review`; it is not an
+escalation and does not count as one.
 
 **A whole entity from zero.** `WorkSession.draft_entity()` writes every account
 the selection admitted (the fixed pipeline's own rule, decided by Python), one
@@ -545,8 +564,10 @@ sentence in edit mode reaches the escalation rule (it never did before).
 `ad-hoc/workbench/entity_trial.py` measures a whole databook written from zero,
 once per arm, on the same workbook bytes: `pro` (the stronger model writes),
 `flash` (the cheaper one writes), `mixed` (the cheaper one writes and the
-stronger repairs after `--escalate-after` rejections) and, opt-in, `loop` (the
-tool loop with no prepared write, the path the first paid acceptance measured).
+stronger repairs after `--escalate-after` rejections), `seeded` (mixed, with
+Python writing the balance and movement sentences), `reviewed` (seeded, with the
+stronger model's meaning review) and, opt-in, `loop` (the tool loop with no
+prepared write, the path the first paid acceptance measured).
 Each arm gets a fresh copy and session, drafts every in-scope account, and
 exports a first-generation deck. `plan` sends nothing; `run --scripted` runs the
 whole flow with a scripted writer, free; `run --i-accept-paid-calls` is the paid

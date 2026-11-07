@@ -12,6 +12,10 @@ Arms. The models are config.yml agent.models: primary is the cheaper one (Flash)
     pro     the stronger model writes every account
     flash   the cheaper model writes every account
     mixed   the cheaper model writes; after --escalate-after rejected drafts the stronger one repairs what was rejected
+    seeded  mixed, but Python writes the balance and movement sentences itself and the cheaper model only adds the rest
+    reviewed  seeded, and a verified paragraph with something only a reader can judge (a cause, notes, a basis caveat, part-year
+            figures; Python decides) is read once by the stronger model for meaning; the cheaper one repairs what it objects to,
+            and if that repair does not verify the verified paragraph stands with the objections listed as unresolved
     loop    (opt-in) cheaper then stronger through the tool loop, with no prepared write: the path the 2026-11-06 paid run measured,
             here to show what the prepared write changes
 
@@ -58,8 +62,8 @@ sys.path.insert(0, str(ROOT))
 import agent_acceptance as A  # noqa: E402
 
 OUT_DIR = ROOT / "fdd_utils" / "output" / "agent_trial"
-ARMS = ("pro", "flash", "mixed", "loop")
-DEFAULT_ARMS = "pro,flash,mixed"
+ARMS = ("pro", "flash", "mixed", "seeded", "reviewed", "loop")
+DEFAULT_ARMS = "pro,flash,mixed,seeded,reviewed"
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -77,8 +81,9 @@ def arm_setup(cfg: Dict[str, Any], name: str, args: argparse.Namespace) -> Dict[
         return {"primary": strong, "escalation": None, "routing": "single", "prepare": True}
     if name == "flash":
         return {"primary": cheap, "escalation": None, "routing": "single", "prepare": True}
-    if name == "mixed":
-        return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "escalate_after": int(args.escalate_after)}
+    if name in ("mixed", "seeded", "reviewed"):
+        return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "escalate_after": int(args.escalate_after),
+                "seed": name in ("seeded", "reviewed"), "review": name == "reviewed"}
     if name == "loop":
         return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": False}
     raise ValueError(f"unknown arm {name!r} (arms: {', '.join(ARMS)})")
@@ -93,6 +98,8 @@ def arm_config(cfg: Dict[str, Any], setup: Dict[str, Any]) -> Dict[str, Any]:
         models["escalation"] = {k: v for k, v in setup["escalation"].items() if v not in (None, "")}
     agent["routing"] = setup["routing"]
     agent["prepared_write"] = bool(setup["prepare"])
+    agent["seed_facts"] = bool(setup.get("seed"))
+    agent["review_meaning"] = bool(setup.get("review"))
     return out
 
 
@@ -151,6 +158,8 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                     "stop_reason": turn.stop_reason, "calls": d["calls"], "in": pr.get("prompt", 0), "cached": pr.get("cached_prompt", 0),
                     "out": pr.get("completion", 0), "charged": d["charged_tokens"], "cost": d.get("cost"), "escalations": d["escalations"],
                     "fallback": (turn.report or {}).get("prepared_fallback"), "unresolved": len(turn.unresolved or []),
+                    "seeded": ((turn.report or {}).get("prepared") or {}).get("seeded"),
+                    "review": {k: v for k, v in ((turn.report or {}).get("review") or {}).items() if k != "reasons"} or None,
                     "verification": dict(turn.verification or {}), "seconds": round(time.perf_counter() - clock[-1], 2)})
         marks.append(books.calls)
         clock.append(time.perf_counter())
@@ -179,7 +188,8 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                           "verdicts": {k: c.outcome.get(k) for k in ("verified", "inference", "failed", "unverified")},
                           "unresolved": unresolved.get(key) or []}
     books_all = A._books_delta(books, 0)
-    return {"arm": name, "routing": setup["routing"], "prepared_write": setup["prepare"],
+    return {"arm": name, "routing": setup["routing"], "prepared_write": setup["prepare"], "seed": bool(setup.get("seed")),
+            "review": bool(setup.get("review")),
             "models": {role: {"model": (sel or {}).get("model"), "provider": (sel or {}).get("provider"), "max_output": (sel or {}).get("max_output")}
                        for role, sel in (("primary", setup["primary"]), ("escalation", setup.get("escalation"))) if sel},
             "escalate_after": setup.get("escalate_after"), "accounts": len(accounts), "done": len(per), "ok": sum(p["ok"] for p in per),
@@ -234,8 +244,12 @@ class ScriptedWriter:
     def __call__(self, system: str, user: str, max_tokens: int) -> Dict[str, Any]:
         self.calls += 1
         view = _writer_view(user)
-        if view is None:
-            reply: Dict[str, Any] = {"need_evidence": "scripted writer: no EVIDENCE block"}
+        if "Judge meaning only" in system:
+            reply: Dict[str, Any] = {"objections": [], "missing": []}
+        elif "KEPT (Python wrote these" in user and "REJECTED" not in user:
+            reply = {"add": [], "unresolved": []}
+        elif view is None:
+            reply = {"need_evidence": "scripted writer: no EVIDENCE block"}
         else:
             repairing = "REJECTED" in user
             claim = _balance_claim(view, wrong_by=1.0 if (self.wrong_first and not repairing) else 0.0)
@@ -254,8 +268,8 @@ def scripted_for(name: str) -> Dict[str, Any]:
         holder: Dict[str, Any] = {}
         primary, good = A.scripted_models(lambda: holder["source"], wrong_first=True)
         return {"primary": A.Scripted(primary, "scripted-cheap"), "escalation": A.Scripted(good, "scripted-strong"), "holder": holder}
-    if name == "mixed":
-        return {"primary": ScriptedWriter("cheap", wrong_first=True), "escalation": ScriptedWriter("strong")}
+    if name in ("mixed", "seeded", "reviewed"):
+        return {"primary": ScriptedWriter("cheap", wrong_first=(name == "mixed")), "escalation": ScriptedWriter("strong")}
     return {"primary": ScriptedWriter(name)}
 
 
@@ -371,6 +385,17 @@ def summary_text(report: Dict[str, Any]) -> str:
             roles.append(f"{role} {v.get('models_reported') or v.get('model')}: {v['calls']} calls, in {v.get('prompt_provider', 0):,} "
                          f"(cached {v.get('cached_prompt', 0):,}), out {v.get('completion_provider', 0):,}, {_num(v.get('cost'))} yuan")
         lines.append("           " + " | ".join(roles))
+        rev = (b.get("by_purpose") or {}).get("review")
+        if rev:
+            outcomes: Dict[str, int] = {}
+            for p in res.get("per_account") or []:
+                o = str(((p.get("review") or {}).get("outcome") or "")).split(":")[0]
+                if o:
+                    outcomes[o] = outcomes.get(o, 0) + 1
+            lines.append(f"           of which review by the stronger model: {rev['calls']} calls, in {rev['prompt_provider']:,}, out {rev['completion_provider']:,}, "
+                         f"{_num(rev.get('cost'))} yuan; outcomes {outcomes}")
+        if res.get("seed"):
+            lines.append(f"           Python wrote {sum(int(p.get('seeded') or 0) for p in res.get('per_account') or [])} sentence(s) itself")
         if res.get("findings"):
             lines.append(f"           deck findings {res['findings']}")
         if b.get("calls_without_provider_usage"):
@@ -422,6 +447,8 @@ def quality_markdown(report: Dict[str, Any], legacy: Dict[str, str], order: List
             out.append(f"**{name}** {status}; verdicts {t['verdicts']}; calls {row.get('calls')}, tokens in {row.get('in')} out {row.get('out')}"
                        + (f", fell back to the tool loop: {row.get('fallback')}" if row.get("fallback") else "") + f" ({len(t['text'])} chars)\n")
             out.append(t["text"] or "(empty)")
+            if row.get("review"):
+                out.append(f"\n_review by the stronger model_: {row['review']}")
             if t.get("unresolved"):
                 out.append("\n_unresolved_: " + "; ".join(t["unresolved"]))
             if missing:

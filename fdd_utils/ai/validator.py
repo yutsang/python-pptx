@@ -436,6 +436,10 @@ _AMT_MILLION = re.compile(r"(?:CNY|RMB|USD|HKD|US\$|\$|人民币|人民幣)?\s*(
 #: already applies, so nothing else moves.
 _WRITTEN_UNIT_SCALE = (("亿", 1e8), ("億", 1e8), ("万", 1e4), ("萬", 1e4))
 _WRITTEN_NUMBER = re.compile(r"(\d[\d,]*)(?:\.(\d+))?")
+# The English scale words the amount parser reads (million / mn / m, K, bn). Without them "CNY1.3 million" was given a half-ulp of
+# 0.05 YUAN, so every rounded English figure failed the claim check as unmatched (found 2026-11-07, writing English balances).
+_WRITTEN_EN_SCALE = re.compile(r"\d\s*(billion|bn|million|mn|m|thousand|k)(?![a-z])", re.IGNORECASE)
+_EN_SCALE = {"billion": 1e9, "bn": 1e9, "million": 1e6, "mn": 1e6, "m": 1e6, "thousand": 1e3, "k": 1e3}
 
 
 def display_half_ulp(written: str) -> float:
@@ -449,6 +453,10 @@ def display_half_ulp(written: str) -> float:
         if token in written:
             scale = value
             break
+    else:
+        english = _WRITTEN_EN_SCALE.search(str(written))
+        if english:
+            scale = _EN_SCALE[english.group(1).lower()]
     return 0.5 * (10.0 ** -decimals) * scale
 
 

@@ -493,7 +493,7 @@ GOOD = "2025年12月31日应收账款余额130.0万元"
 
 
 class PreparedWrite(unittest.TestCase):
-    def _work(self, model, escalation=None, mode="single", extra_account=False):
+    def _work(self, model, escalation=None, mode="single", extra_account=False, config=None):
         tmp = tempfile.mkdtemp(prefix="prep_")
         book = os.path.join(tmp, "wb.xlsx")
         write_book(book)
@@ -505,7 +505,83 @@ class PreparedWrite(unittest.TestCase):
             other.binding = source.binding.to_dict()
             source.contracts[OTHER] = other
         return W.WorkSession(source, model=model, escalation=escalation, model_name="m", policy=R.Policy(mode=mode),
-                             budget=C.Budget(max_steps=8), prepare=True)
+                             budget=C.Budget(max_steps=8), prepare=True, config=config or {"agent": {}})
+
+    SEEDED = {"agent": {"seed_facts": True}}
+    REVIEWED = {"agent": {"seed_facts": True, "review_meaning": True}}
+    BALANCE, MOVE = "截至2025年12月31日，余额为130.0万元。", "较2024年12月31日增加30.0万元。"
+    CAUSE = {"kind": "cause", "periods": [P2], "cites": [], "inference": True, "text": "增加主要系回款节奏变化所致"}
+
+    def test_python_writes_the_balance_and_movement_and_the_model_only_adds(self):
+        writer = Writer(lambda system, user, n: {"add": [], "unresolved": []})
+        work = self._work(writer, config=self.SEEDED)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertIn("KEPT (Python wrote these", writer.users[0])
+        self.assertIn(self.BALANCE, writer.users[0])
+        self.assertEqual([c["text"] for c in work.source.candidates[ACCOUNT].claims], [self.BALANCE, self.MOVE])
+        self.assertEqual((work.shared.calls, turn.report["prepared"]["seeded"]), (1, 2))
+
+    def test_an_addition_that_fails_is_repaired_and_the_python_sentences_stay(self):
+        def fn(system, user, n):
+            view = writer_view(user)
+            if n == 1:
+                return {"add": [amount_claim(view, P1, "2024年12月31日应收账款余额150.0万元")]}
+            return {"fix": [{"index": 0, "claim": amount_claim(view, P2, "改写")}, {"index": 2, "drop": "数字不符"}]}
+        writer = Writer(fn)
+        work = self._work(writer, config=self.SEEDED)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertIn("[2]", writer.users[1].split("REJECTED", 1)[1])
+        self.assertEqual([c["text"] for c in work.source.candidates[ACCOUNT].claims], [self.BALANCE, self.MOVE])
+        self.assertIn("数字不符", turn.unresolved)
+
+    def _reviewed(self, after_review):
+        def fn(system, user, n):
+            if "REVIEW:" in user:
+                return after_review(writer_view(user))
+            return {"add": [dict(self.CAUSE)]}
+        writer = Writer(fn)
+        reviewer = Writer(lambda system, user, n: {"objections": [{"index": 2, "why": "附注未说明回款节奏"}], "missing": []})
+        work = self._work(writer, escalation=reviewer, mode="escalate", config=self.REVIEWED)
+        return work, work.edit("撰写应收账款的段落", ACCOUNT), writer, reviewer
+
+    def test_the_stronger_model_reads_a_paragraph_with_a_cause_and_its_objection_is_repaired(self):
+        work, turn, writer, reviewer = self._reviewed(lambda view: {"fix": [{"index": 2, "drop": "原因未能从附注核实"}]})
+        self.assertTrue(turn.ok, turn.report)
+        self.assertIn("Judge meaning only", reviewer.systems[0])
+        self.assertEqual(turn.report["review"]["outcome"], "repaired")
+        self.assertEqual([c["text"] for c in work.source.candidates[ACCOUNT].claims], [self.BALANCE, self.MOVE])
+        books = work.shared.summary()
+        self.assertEqual((books["by_purpose"]["review"]["calls"], books["escalations"]), (1, 0), "a review is not an escalation")
+        self.assertEqual(len(writer.users), 2)
+
+    def test_a_repair_after_review_that_does_not_verify_keeps_the_verified_paragraph(self):
+        work, turn, writer, reviewer = self._reviewed(lambda view: {"fix": [{"index": 2, "claim": amount_claim(view, P2, "余额为999.0万元")}]})
+        self.assertTrue(turn.ok, turn.report)
+        self.assertTrue(turn.report["review"]["outcome"].startswith("reverted"))
+        self.assertEqual([c["text"] for c in work.source.candidates[ACCOUNT].claims], [self.BALANCE, self.MOVE, self.CAUSE["text"]])
+        self.assertTrue(work.source.candidates[ACCOUNT].validated)
+        self.assertTrue(any(u.startswith("REVIEW:") for u in turn.unresolved), "the objection is not lost")
+
+    def test_python_sentences_verify_in_english_and_for_an_income_statement_line(self):
+        work = self._work(Writer(lambda *a: {}))
+        contract = work.source.contracts[ACCOUNT]
+        view = T.get_account_evidence(work.source, ACCOUNT)
+        english = C.AgentController(work.source, lambda *a: {}, language="Eng", seed=True)._seed_claims(ACCOUNT, view)
+        self.assertEqual([c["text"] for c in english], ["As at 31 December 2025, the balance was CNY1.3 million.",
+                                                        "This was an increase of CNY0.3 million from 31 December 2024."])
+        contract.statement_type = "IS"
+        flow = C.AgentController(work.source, lambda *a: {}, language="Chi", seed=True)._seed_claims(ACCOUNT, view)
+        self.assertEqual(flow[0]["text"], "截至2025年12月31日止期间，发生额为130.0万元。")
+        self.assertEqual((C._money(-70_677_440, True), C._money(3_091, True), C._money(2.5e8, True)), ("-7,067.7万元", "0.31万元", "2.50亿元"))
+
+    def test_a_plain_paragraph_with_nothing_to_judge_is_not_sent_for_review(self):
+        reviewer = Writer(lambda system, user, n: {"objections": [], "missing": []})
+        work = self._work(Writer(lambda system, user, n: {"add": []}), escalation=reviewer, mode="escalate", config=self.REVIEWED)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual((len(reviewer.users), turn.report["review"]["reasons"]), (0, []))
 
     def test_one_account_is_written_in_one_call_with_no_tool_menu_from_evidence_the_controller_read(self):
         writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
@@ -632,6 +708,11 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertEqual((got["mixed"]["primary"]["model"], got["mixed"]["escalation"]["model"], got["mixed"]["routing"], got["mixed"]["escalate_after"]),
                          ("flash-id", "pro-id", "escalate", 1))
         self.assertEqual((got["loop"]["prepare"], got["loop"]["routing"]), (False, "escalate"))
+        self.assertEqual([(got[n].get("seed"), got[n].get("review")) for n in ("mixed", "seeded", "reviewed")],
+                         [(False, False), (True, False), (True, True)])
+        self.assertEqual(got["reviewed"]["escalation"]["model"], "pro-id", "the reviewer is the stronger model")
+        cfg = E.arm_config(self.CFG, got["reviewed"])
+        self.assertEqual((cfg["agent"]["seed_facts"], cfg["agent"]["review_meaning"]), (True, True))
         self.assertTrue(all(s["primary"]["max_output"] == 4000 for s in got.values()))
         cfg = E.arm_config(self.CFG, got["pro"])
         self.assertEqual((cfg["agent"]["models"]["primary"]["model"], cfg["agent"]["prepared_write"], cfg["agent"]["routing"]), ("pro-id", True, "single"))

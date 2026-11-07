@@ -404,6 +404,19 @@ class SignAndChangeBinding(unittest.TestCase):
         self.assertEqual(verdict("2025年末较2024年末变动-100.0万元", c, [ref(c, P1), ref(c, P2)], [P1, P2], "movement")["verdict"],
                          "verified")
 
+    def test_an_english_amount_is_held_to_the_precision_it_was_written_with(self):
+        # "CNY1.3 million" is right for 1,300,000 and for anything that rounds to it; the half-ulp used to be read in yuan for
+        # every English scale word, so a rounded English figure could never verify (found 2026-11-07 by the seeded write)
+        rows = [("甲公司", "detail", {P1: 1_000_000, P2: 1_296_400}), ("Total", "total", {P1: 1_000_000, P2: 1_296_400})]
+        c = build(rows, notes=[])
+        for text in ("As at 31 December 2025, the balance was CNY1.3 million.", "As at 31 December 2025, the balance was CNY1.3m.",
+                     "As at 31 December 2025, the balance was CNY1,296.4K."):
+            self.assertEqual(verdict(text, c, [ref(c, P2)], [P2])["verdict"], "verified", text)
+        self.assertIn("AMOUNT_UNMATCHED", codes(verdict("As at 31 December 2025, the balance was CNY1.4 million.", c, [ref(c, P2)], [P2])))
+        from fdd_utils.ai.validator import display_half_ulp
+        self.assertEqual((display_half_ulp("CNY1.3 million"), display_half_ulp("CNY835.3K"), display_half_ulp("CNY2.15bn"),
+                          display_half_ulp("130.0万元")), (50_000.0, 50.0, 5_000_000.0, 500.0))
+
     def test_a_dash_after_a_figure_is_a_range_not_a_minus(self):
         self.assertEqual([s["sign"] for s in cl.text_amounts("约100-130万元")], [""])
         self.assertEqual([s["sign"] for s in cl.text_amounts("截至2025-12-31，余额130万元")], [""])

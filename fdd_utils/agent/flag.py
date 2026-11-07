@@ -65,6 +65,18 @@ def prepared_write(config: Optional[Dict[str, Any]] = None) -> bool:
     return True if value is None else bool(value)
 
 
+def seed_facts(config: Optional[Dict[str, Any]] = None) -> bool:
+    """agent.seed_facts (default false): in a prepared write Python writes the balance and movement sentences and the model adds
+    the rest. Off until a paid comparison (entity_trial.py, arm 'seeded') shows it helps."""
+    return bool(_agent_block(config).get("seed_facts"))
+
+
+def review_meaning(config: Optional[Dict[str, Any]] = None) -> bool:
+    """agent.review_meaning (default false): a verified paragraph with something only a reader can judge (a cause, notes, a basis
+    caveat, part-year figures) is read once by the escalation model for meaning. Needs agent.models.escalation."""
+    return bool(_agent_block(config).get("review_meaning"))
+
+
 def _number(value: Any, kind=int) -> Optional[Any]:
     """0, '' and None mean 'no cap'; anything else must be a number."""
     if value in (None, "", 0, 0.0, False):

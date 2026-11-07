@@ -209,6 +209,23 @@ def estimate_tokens(text: str) -> int:
 
 _JSON_OBJ = re.compile(r"\{.*\}", re.S)
 
+_EN_MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+
+
+def _date_words(period: str, chinese: bool) -> str:
+    y, m, d = (int(x) for x in str(period)[:10].split("-"))
+    return f"{y}年{m}月{d}日" if chinese else f"{d} {_EN_MONTHS[m - 1]} {y}"
+
+
+def _money(yuan: float, chinese: bool) -> str:
+    """How the house style writes an amount: 亿元 above a hundred million, 万元 otherwise (two decimals under ten thousand yuan);
+    CNY millions in English. The verifier reads every form back at its printed precision."""
+    if chinese:
+        if abs(yuan) >= 1e8:
+            return f"{yuan / 1e8:,.2f}亿元"
+        return f"{yuan / 1e4:,.1f}万元" if abs(yuan) >= 1e4 or yuan == 0 else f"{yuan / 1e4:,.2f}万元"
+    return f"CNY{yuan / 1e6:,.1f} million" if abs(yuan) >= 1e5 else f"CNY{yuan / 1e6:,.3f} million"
+
 
 def parse_turn(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
     raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", str(text or "").strip(), flags=re.S)
@@ -267,6 +284,28 @@ REPAIR_PROTOCOL = (
     "Change only the claims listed under REJECTED (by their index). The claims under KEPT were verified and stay exactly as they are.\n"
     '  {"need_evidence": "<what is missing and why>"}           only if the evidence below cannot settle an objection\n'
 )
+SEED_PROTOCOL = (
+    "Reply with exactly ONE JSON object and nothing else:\n"
+    '  {"add": [{...claims...}], "unresolved": ["..."]}\n'
+    "Python wrote the claims under KEPT from the evidence and verified them; they open the paragraph unchanged. Add the rest:\n"
+    "the main detail lines where detail is permitted, causes only from notes, and anything material the notes say. Do not restate the\n"
+    "KEPT figures. An empty 'add' is right when the evidence holds nothing more worth saying.\n"
+)
+REVIEW_PROTOCOL = (
+    "Reply with exactly ONE JSON object and nothing else:\n"
+    '  {"objections": [{"index": <n>, "why": "..."}], "missing": [{"ref": "<N ref>", "why": "..."}]}\n'
+    "Both lists empty when the paragraph is sound. Do not rewrite the paragraph."
+)
+REVIEW_SYSTEM = (
+    "You review ONE paragraph of a financial due diligence report against EVIDENCE, which Python read from the workbook. Python has\n"
+    "already checked every figure, period, sign and citation in it: do not re-check arithmetic. Judge meaning only:\n"
+    "- a cause or explanation the cited notes do not state, or state differently;\n"
+    "- a balance described as a flow, or a flow as a balance; one period's fact applied to other periods;\n"
+    "- a parent line and its own children both counted; a detail line presented as the whole;\n"
+    "- a note's party, condition, timing, restriction or amount misstated;\n"
+    "- a material fact in the notes left out (give its N ref under 'missing').\n"
+    "Object only where EVIDENCE shows the problem; a style preference is not an objection."
+)
 CLAIM_SCHEMA = (
     "A claim is {\"kind\": amount|movement|composition|share|difference|annualized|cause|descriptive, \"text\",\n"
     '  "periods": [ISO dates], "cites": [F/D refs], "cause_cites": [N refs], "inference": false}.\n'
@@ -321,8 +360,11 @@ def system_prompt(mode: str, session: SourceSession, language: str, remembered: 
 
 class AgentController:
     def __init__(self, session: SourceSession, model: Model, *, budget: Optional[Budget] = None, language: Optional[str] = None,
-                 memory: Optional[Memory] = None, prepare: bool = False):
+                 memory: Optional[Memory] = None, prepare: bool = False, seed: bool = False, review: bool = False):
         self.session = session
+        #: prepared write only: Python writes the balance and movement sentences and the model adds the rest (seed); the stronger
+        #: model reads a verified paragraph for meaning when Python finds something a reviewer must judge (review)
+        self.seed, self.review = seed, review
         #: edit mode on one account starts with a prepared write (see the module docstring); the tool loop is the fallback
         self.prepare = prepare
         self.model = model
@@ -499,14 +541,17 @@ class AgentController:
             run.stop_reason = STOP_STEPS
         return self._finish(run, usage, started)
 
-    def _call_model(self, run: AgentRun, system: str, user: str, max_tokens: int, usage: Dict[str, Any]) -> Optional[Tuple[str, str]]:
-        """One model call with the turn's own accounting. None when the call may not be made or failed; run.stop_reason says why."""
+    def _call_model(self, run: AgentRun, system: str, user: str, max_tokens: int, usage: Dict[str, Any], *, role: str = "",
+                    purpose: str = "") -> Optional[Tuple[str, str]]:
+        """One model call with the turn's own accounting. None when the call may not be made or failed; run.stop_reason says why.
+        `role` + `purpose` call a named role of the router without moving the turn to it (a review)."""
         est = estimate_tokens(system) + estimate_tokens(user)
         if usage["prompt_tokens_est"] + usage["completion_tokens_est"] + est + max_tokens > self.budget.max_tokens:
             run.stop_reason = STOP_TOKENS
             return None
         try:
-            reply = self.model(system, user, max_tokens)
+            reply = self.router.call_as(role, system, user, max_tokens, purpose) if (role and self.router is not None) \
+                else self.model(system, user, max_tokens)
         except R.BudgetExhausted as exc:
             run.stop_reason, run.report["budget"] = STOP_SESSION, {"kind": exc.kind, "message": str(exc)}
             return None
@@ -584,6 +629,10 @@ class AgentController:
         if not claims:
             parts.append(WRITER_PROTOCOL + "Your JSON object:")
             return "\n\n".join(parts)
+        if not rejected and not unresolved:          # the first prompt of a seeded write: Python's sentences, the model adds
+            parts.append("KEPT (Python wrote these from EVIDENCE and verified them):\n" + "\n".join(f"  [{n}] {c.get('text')}" for n, c in enumerate(claims)))
+            parts.append(SEED_PROTOCOL + CLAIM_SCHEMA + "\nYour JSON object:")
+            return "\n\n".join(parts)
         kept = [f"  [{n}] {c.get('text')}" for n, c in enumerate(claims) if n not in rejected]
         bad = [f"  [{n}] {_compact({k: claims[n].get(k) for k in ('kind', 'text', 'periods', 'cites', 'cause_cites', 'inference')})}\n"
                f"      objections: {' | '.join(rejected[n])[:700]}" for n in sorted(rejected) if n < len(claims)]
@@ -647,6 +696,84 @@ class AgentController:
         unresolved.extend(str(u) for u in reply.get("unresolved") or [] if str(u) not in unresolved)
         return merged, ignored
 
+    def _seed_claims(self, account: str, view: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """The sentences Python can write itself: the latest balance the deck uses and the movement into it, in house style, kept
+        only if the verifier passes them. Nothing for a period in conflict (the writer states the difference)."""
+        periods = view.get("periods") or []
+        if not periods:
+            return []
+        latest = periods[-1]
+        perm = (view.get("permissions") or {}).get(latest) or {}
+        total = next((t for t in view.get("totals") or [] if t.get("period") == latest and t.get("basis") == "authority_adjusted"), None)
+        if total is None or not perm.get("describe_total", True):
+            return []
+        chinese = self.language in ("Chi", "Chn")
+        contract = self.session.contracts.get(account)
+        flow = str(getattr(contract, "statement_type", "") or "").upper().startswith("IS")
+        when, amount = _date_words(latest, chinese), _money(float(total.get("yuan") or 0.0), chinese)
+        if chinese:
+            text = f"截至{when}止期间，发生额为{amount}。" if flow else f"截至{when}，余额为{amount}。"
+        else:
+            text = f"For the period ended {when}, the amount was {amount}." if flow else f"As at {when}, the balance was {amount}."
+        seeds = [{"kind": "amount", "periods": [latest], "cites": [total["ref"]], "text": text}]
+        move = next((d for d in view.get("derived") or [] if d.get("kind") == "movement" and d.get("valid", True) and d.get("value")
+                     and list(d.get("periods") or [])[-1:] == [latest]), None)
+        if move is not None and perm.get("compute_movement", True):
+            prev, value = move["periods"][0], float(move["value"])
+            if chinese:
+                words = f"较{_date_words(prev, True)}{'增加' if value > 0 else '减少'}{_money(abs(value), True)}。"
+            else:
+                words = f"This was {'an increase' if value > 0 else 'a decrease'} of {_money(abs(value), False)} from {_date_words(prev, False)}."
+            seeds.append({"kind": "movement", "periods": list(move["periods"]), "cites": [move["ref"]], "text": words})
+        stamped = [dict(c, account=account, source_version=self.session.source_version) for c in seeds]
+        outcome = cl.verify_candidate(stamped, self.session.contracts, default_account=account)
+        return [c for c, v in zip(seeds, outcome["verdicts"]) if v.get("verdict") == "verified"]
+
+    @staticmethod
+    def _review_reasons(view: Dict[str, Any], claims: List[Dict[str, Any]]) -> List[str]:
+        """Whether a verified paragraph has anything a reviewer must judge that the verifier cannot: a cause, notes to read,
+        a basis caveat, part-year figures. Python decides; a plain balance-and-movement paragraph is not sent."""
+        reasons = []
+        if any(c.get("cause_cites") or c.get("inference") or c.get("kind") == "cause" for c in claims):
+            reasons.append("states a cause")
+        if view.get("notes"):
+            reasons.append(f"{len(view['notes'])} note(s) in the evidence")
+        perms = (view.get("permissions") or {}).values()
+        if any(not p.get("describe_total", True) or p.get("detail_basis") not in (None, "tied") for p in perms):
+            reasons.append("a basis or detail caveat")
+        if any(row.get("total_vs_financials") == "mismatch" for row in (view.get("checks") or {}).values()):
+            reasons.append("a period the deck replaced")
+        if (view.get("annualization") or {}).get("annualized"):
+            reasons.append("part-year figures")
+        return reasons
+
+    def _review_meaning(self, run: AgentRun, account: str, view: Dict[str, Any], claims: List[Dict[str, Any]],
+                        usage: Dict[str, Any]) -> Optional[Tuple[Dict[int, List[str]], List[str]]]:
+        """The stronger model reads the verified paragraph for meaning. (objections by claim index, missing facts) or None when
+        the call could not be made or did not answer in the protocol (the paragraph then stands as verified)."""
+        user = (f"EVIDENCE for {account}:\n{_compact(view)}\n\nPARAGRAPH (figures already verified by Python):\n"
+                + "\n".join(f"  [{n}] {_compact({k: c.get(k) for k in ('kind', 'text', 'periods', 'cites', 'cause_cites', 'inference')})}"
+                             for n, c in enumerate(claims))
+                + "\n\n" + REVIEW_PROTOCOL + "\nYour JSON object:")
+        stop_before = run.stop_reason
+        called = self._call_model(run, REVIEW_SYSTEM, user, 1500, usage, role=R.ROLE_ESCALATION, purpose="review")
+        if called is None:
+            run.stop_reason = stop_before                     # a review that could not be made does not end the turn
+            return None
+        turn, _error = parse_turn(called[0])
+        if turn is None or not isinstance(turn.get("objections", []), list):
+            return None
+        objections: Dict[int, List[str]] = {}
+        for item in turn.get("objections") or []:
+            try:
+                n = int((item or {}).get("index"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if 0 <= n < len(claims) and str(item.get("why") or "").strip():
+                objections.setdefault(n, []).append("REVIEW: " + str(item["why"])[:400])
+        missing = [f"REVIEW_MISSING {m.get('ref', '')}: {str(m.get('why') or '')[:300]}" for m in turn.get("missing") or [] if isinstance(m, dict)]
+        return objections, missing
+
     def _prepared_write(self, run: AgentRun, goal: str, account: str, export: bool, usage: Dict[str, Any], started: float) -> bool:
         """The paragraph for one known account, written once from evidence the controller read, then repaired locally.
         True: the turn is finished (accepted, or stopped by a budget). False: continue in the tool loop."""
@@ -662,6 +789,12 @@ class AgentController:
         unresolved: List[str] = []
         bad_replies, last_failed = 0, None
         run.report["prepared"] = {"required": required, "evidence_chars": len(_compact(view))}
+        if self.seed:
+            claims = self._seed_claims(account, view)
+            run.report["prepared"]["seeded"] = len(claims)
+        can_review = self.review and self.router is not None and R.ROLE_ESCALATION in self.router.roles
+        pre_review: Optional[List[Dict[str, Any]]] = None          # the verified paragraph the review objected to
+        review_notes: List[str] = []
         while len(run.steps) < self.budget.max_steps:
             if time.perf_counter() - started > self.budget.max_seconds:
                 run.stop_reason = STOP_TIME
@@ -694,6 +827,16 @@ class AgentController:
                 codes = ["NOT_JSON"] if turn is None else ["BAD_ACTION"]
                 if router is not None:
                     router.mark_last_reply_unused()
+                if pre_review is not None:
+                    # the repair the review asked for came back unusable: the verified paragraph stands, the objections are listed
+                    T.call_tool(self.session, "validate_candidate", {"account": account, "claims": pre_review})
+                    unresolved.extend(n for n in review_notes if n not in unresolved)
+                    run.report["review"]["outcome"] = "reverted: the repair reply was not usable; the objections are listed as unresolved"
+                    accepted, _feedback, answer = self._gate_done({"account": account}, account, export)
+                    if accepted:
+                        run.answer, run.stop_reason = dict(answer or {}, unresolved=list(unresolved)), STOP_DONE
+                        run.steps.append(record)
+                        return True
                 bad_replies += 1
                 if bad_replies >= 2:
                     run.steps.append(record)
@@ -724,7 +867,36 @@ class AgentController:
                     missing = [r for r in required if r not in cited]
                     record.update(claims=len(claims), verified=outcome.get("verified"), failed=outcome.get("failed"),
                                   unverified=outcome.get("unverified"))
-                    if result.ok and not missing:
+                    if pre_review is not None and not (result.ok and not missing):
+                        # the repair the review asked for did not verify: the paragraph that did stands, the objections are listed
+                        T.call_tool(self.session, "validate_candidate", {"account": account, "claims": pre_review})
+                        claims, result, missing = pre_review, None, []
+                        unresolved.extend(n for n in review_notes if n not in unresolved)
+                        run.report["review"]["outcome"] = "reverted: the repair did not verify; the objections are listed as unresolved"
+                    elif pre_review is not None:
+                        run.report["review"]["outcome"] = "repaired"
+                    if (result is None or result.ok) and not missing and can_review and pre_review is None and "review" not in run.report:
+                        reasons = self._review_reasons(view, claims)
+                        run.report["review"] = {"reasons": reasons}
+                        if reasons:
+                            found = self._review_meaning(run, account, view, claims, usage)
+                            if found is None:
+                                run.report["review"]["outcome"] = "no usable review reply; the verified paragraph stands"
+                            elif found[0] or found[1]:
+                                pre_review, (objections, absent) = list(claims), found
+                                rejected = dict(objections)
+                                if absent:
+                                    rejected[len(claims)] = absent
+                                review_notes = [o for objs in rejected.values() for o in objs]
+                                run.report["review"].update(objections=sum(len(v) for v in objections.values()), missing=len(absent))
+                                record.update(review=len(review_notes))
+                                run.steps.append(record)
+                                continue
+                            else:
+                                run.report["review"]["outcome"] = "no objection"
+                        else:
+                            run.report["review"]["outcome"] = "not needed: nothing a reviewer must judge"
+                    if (result is None or result.ok) and not missing:
                         accepted, feedback, answer = self._gate_done({"account": account}, account, export)
                         record["accepted"] = accepted
                         if accepted:
