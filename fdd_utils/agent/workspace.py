@@ -119,8 +119,11 @@ class WorkSession:
     def __init__(self, source: SourceSession, *, model: Optional[Callable[..., Dict[str, Any]]] = None, model_type: str = "",
                  model_name: Optional[str] = None, budget: Optional[Budget] = None, path: Optional[str] = None,
                  max_model_calls: Optional[int] = None, session_id: str = "", policy: Optional[R.Policy] = None,
-                 limits: Optional[R.Limits] = None, escalation: Any = None, thinking: str = "", config: Optional[Dict[str, Any]] = None) -> None:
+                 limits: Optional[R.Limits] = None, escalation: Any = None, thinking: str = "", config: Optional[Dict[str, Any]] = None,
+                 prepare: Optional[bool] = None) -> None:
         self.source = source
+        #: edit turns start as a prepared write (controller.py); None: agent.prepared_write in config.yml, true when unset
+        self.prepare = prepare
         source.workspace = self
         self.model, self.model_type, self.model_name = model, model_type, model_name
         self.budget = budget
@@ -262,10 +265,12 @@ class WorkSession:
             return self.refresh()
         return None
 
-    def _run(self, request: str, mode: str, account: str = "") -> Turn:
+    def _run(self, request: str, mode: str, account: str = "", memory: Optional[Memory] = None) -> Turn:
+        from . import flag as F
         notice = self.ensure_fresh()
+        prepare = self.prepare if self.prepare is not None else F.prepared_write(self.config)
         controller = AgentController(self.source, self._router(), budget=self.budget or _default_budget(),
-                                     language=self.source.language, memory=self.memory)
+                                     language=self.source.language, memory=memory or self.memory, prepare=prepare)
         before = {a: c.claims_digest for a, c in self.source.candidates.items()}
         run = controller.run(request, mode=mode, account=account, export=False, turn_number=len(self.turns) + 1)
         turn = self._record(run, mode, request, before)
@@ -276,6 +281,37 @@ class WorkSession:
 
     def ask(self, question: str) -> Turn:
         return self._run(question, "ask")
+
+    def entity_accounts(self) -> List[str]:
+        """The accounts a report on this entity comments on: those the selection admitted (the legacy pipeline's own rule), in the
+        workbook's order. Decided by Python, not by a model."""
+        return [k for k in self.source.contracts if not str(k).startswith("__") and self.source.in_scope(k)]
+
+    def draft_entity(self, accounts: Optional[List[str]] = None, instruction: str = "", on_account: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+        """Every in-scope account written from its own evidence, one edit turn each, accepted when the verifier passes it.
+
+        The state decides the order and the scope; each account is an independent task, so each turn starts with a fresh memory
+        (the earlier accounts' answers are not resent in every prompt). Nothing is copied from a base run: an account the model
+        could not finish has no paragraph, and the export says so. `on_account(key, turn)` is called after each account."""
+        keys = [k for k in (accounts or self.entity_accounts()) if k in self.source.contracts]
+        rows = []
+        for key in keys:
+            text = instruction or f"根据工作簿中的证据，撰写{key}的报告段落"
+            try:
+                turn = self._run(text, "edit", key, memory=Memory())
+            except R.BudgetExhausted as exc:
+                rows.append({"account": key, "ok": False, "stop_reason": "budget_session", "error": str(exc)})
+                break
+            if turn.ok:
+                self.accept(key)
+            rows.append({"account": key, "ok": turn.ok, "stop_reason": turn.stop_reason, "turn": turn.n,
+                         "stop_class": ((turn.report or {}).get("routing") or {}).get("stop_class"),
+                         "unresolved": list(turn.unresolved), "prepared_fallback": (turn.report or {}).get("prepared_fallback")})
+            if on_account is not None:
+                on_account(key, turn)
+        self._autosave()
+        return {"accounts": keys, "rows": rows, "ok": [r["account"] for r in rows if r["ok"]],
+                "not_finished": [r["account"] for r in rows if not r["ok"]] + [k for k in keys[len(rows):]]}
 
     def edit(self, instruction: str, account: str = "", *, accept: bool = False, export: bool = False, out_path: str = "") -> Turn:
         """The model rewrites one account's paragraph from the evidence already gathered. `account` defaults to the
@@ -517,8 +553,27 @@ class WorkSession:
         self._autosave()
         return result
 
-    def export(self, out_path: str = "", accounts: Optional[List[str]] = None) -> Dict[str, Any]:
+    def export(self, out_path: str = "", accounts: Optional[List[str]] = None, first_generation: bool = False) -> Dict[str, Any]:
+        """A deck from the accepted drafts. Over a base run, the drafts replace those accounts in its commentary. With
+        first_generation=True the deck is the drafts alone (draft_entity): no base text fills an account the agent did not finish;
+        the delivery decision lists each missing account and blocks the deck."""
         self.ensure_fresh()
+        if first_generation:
+            chosen = accounts or [a for a, c in self.source.candidates.items() if c.accepted and c.validated
+                                  and c.source_version == self.source.source_version]
+            if not chosen:
+                return {"ok": False, "error": {"code": "NO_ACCEPTED_CANDIDATE", "message": "no accepted draft to export"}}
+            result = T.call_tool(self.source, "export_first_generation", {"accounts": chosen, "out_path": out_path})
+            self.events.append({"at": _now(), "type": "export", "first_generation": True, "accounts": chosen, "ok": result.ok,
+                                "error": (result.error or {}).get("code"), "path": (result.data or {}).get("path")})
+            data = result.data or {}
+            self.deck["last_export"] = {"at": _now(), "ok": result.ok, "path": data.get("path"), "accounts": chosen, "first_generation": True,
+                                        "delivery": (data.get("delivery") or {}).get("status"), "error": (result.error or {}).get("code"),
+                                        "source_version": self.source.source_version}
+            if data.get("path"):
+                self.deck["current"] = data.get("path")
+            self._autosave()
+            return result.to_dict()
         if not self.source.base_results:
             return {"ok": False, "error": {"code": "NO_BASE_COMMENTARY",
                     "message": "this session has no base run: a deck made now would hold only the edited accounts. "

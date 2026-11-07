@@ -220,7 +220,8 @@ def numerical_summary(session: SourceSession, accounts: Optional[List[str]] = No
     return summary
 
 
-def export_candidate(session: SourceSession, out_path: str = "", accounts: Optional[List[str]] = None) -> Dict[str, Any]:
+def export_candidate(session: SourceSession, out_path: str = "", accounts: Optional[List[str]] = None, first_generation: bool = False) -> Dict[str, Any]:
+    """`first_generation` is passed only by export_first_generation (not a model-facing argument)."""
     from .export import export_session_deck
     chosen = [_account(session, a) for a in accounts] if accounts else list(session.candidates)
     if not chosen:
@@ -230,7 +231,7 @@ def export_candidate(session: SourceSession, out_path: str = "", accounts: Optio
     if unvalidated:
         raise ToolError("NOT_VALIDATED", "these candidates are not validated against the current sources: " + ", ".join(unvalidated),
                         {"accounts": unvalidated})
-    return export_session_deck(session, chosen, out_path or "")
+    return export_session_deck(session, chosen, out_path or "", first_generation=bool(first_generation))
 
 
 def refresh_sources(session: SourceSession) -> Dict[str, Any]:
@@ -371,6 +372,11 @@ _TOOLS: List[Tool] = [
     Tool("export_candidate", "Export a deck from validated candidates (replacing those accounts in the base commentary). Refuses unvalidated or stale candidates.",
          {"out_path": {"type": "str", "required": False, "help": ""}, "accounts": {"type": "list", "required": False, "help": ""}},
          export_candidate),
+    # the working session's whole-entity first draft (WorkSession.draft_entity / export(first_generation=True)); not offered to the
+    # model, which edits accounts and never decides that a deck is a from-zero report
+    Tool("export_first_generation", "A deck from the accepted drafts alone, with no base run; every in-scope account without one blocks it.",
+         {"out_path": {"type": "str", "required": False, "help": ""}, "accounts": {"type": "list", "required": False, "help": ""}},
+         lambda session, out_path="", accounts=None: export_candidate(session, out_path, accounts, first_generation=True), in_prompt=False),
 ]
 _TOOLS += [
     Tool("refresh_sources", "Read the same workbook again (it changed on disk) and list what is different from the previous reading. Earlier drafts must be redone.",

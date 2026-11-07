@@ -347,7 +347,7 @@ def scripted_models(get_source, wrong_first: bool = False) -> Tuple[Any, Any]:
             return {"tool": "get_account_evidence", "args": {"account": key}}
         if "EDIT MODE" in system:
             at = user.rfind("TOOL validate_candidate(")
-            if at >= 0 and any(mark in user[at:at + 600] for mark in ('"ok": true', "ok=True")):
+            if at >= 0 and any(mark in user[at:at + 600] for mark in ('"ok":true', '"ok": true', "ok=True")):   # compact JSON since the prompt diet
                 return {"done": {"account": key, "export": False, "summary": "scripted"}}
             return {"tool": "validate_candidate", "args": {"account": key, "claims": claims_for(source, key, bad)}}
         return {"answer": {"claims": claims_for(source, key, bad), "unresolved": [f"{key}：变动原因未能在工作簿中核实"]}}
@@ -610,7 +610,7 @@ def cmd_paid(args: argparse.Namespace) -> int:
 def _cost_text(books: Dict[str, Any]) -> str:
     """The configured-price figure, never called a bill, with how cached input was priced."""
     if books.get("cost") is None:
-        return "cost unknown (no price in config)"
+        return "cost unknown (these models have no price in config)"
     cached = str(books.get("cached_input_pricing") or "")
     note = "cached input at full price" if "full price_in" in cached else ("cached input at price_cached_in" if "price_cached_in" in cached else "")
     return f"cost {books['cost']:.4f} yuan at config prices" + (f" ({note})" if note else "")

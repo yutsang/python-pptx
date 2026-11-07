@@ -254,6 +254,41 @@ progress, answers sent back) that end the run with a report. When an answer cite
 refs that exist but whose evidence was not read, the controller fetches that
 evidence itself (a free tool call) before the next model call.
 
+**Prepared write.** A paragraph for one known account (edit mode) does not start
+in that loop. The controller reads the account's evidence itself, with the
+movements and differences Python derives and, for a part-year period, the
+annualised figure. It then asks the model once for the paragraph, with no tool
+menu: the writer's instructions are the loop's rules without the tools, about a
+quarter of the loop's system prompt. The evidence goes first in the request and
+the request last, so a provider's prompt cache can serve the same evidence to a
+repair. The verifier checks the draft, and the draft must cite the latest
+balance the deck uses (or, where tab and Financials disagree and nothing chose,
+the difference Python computed); without that rule one harmless sentence would
+pass. A rejected draft goes back with its verified claims marked as kept and
+only the rejected ones to rewrite or drop; a fix aimed at a kept claim is
+ignored, so a verified claim reaches the deck exactly as it was verified. The
+escalation rule is the loop's: consecutive capability failures move the repair
+to the stronger model, which receives the rejected claims and the evidence, not
+the whole task again. The writer can answer that the evidence is not enough, or
+call a tool; the turn then continues in the tool loop with the evidence already
+read, and a tool call it made is run there, not paid for twice. The same draft
+failing the same way twice also hands the turn to the loop. When the session's
+last answer was about the same account, the writer sees that answer too ("make
+it shorter" refers to it). `agent.prepared_write: false` in config.yml restores
+the loop from the first step. Tool results in the loop's prompt are compact JSON
+(no padding): the same values in about a tenth fewer characters.
+
+**A whole entity from zero.** `WorkSession.draft_entity()` writes every account
+the selection admitted (the fixed pipeline's own rule, decided by Python), one
+prepared write each, with a fresh memory per account so no account's answer is
+resent with the next, and accepts each that verifies. `export(first_generation=True)`
+builds the deck from those paragraphs alone: no base run's text stands in for
+an account the agent did not finish, and each such account blocks the deck by
+name (`ACCOUNT_NOT_DRAFTED`). The executive summary band of that deck is the
+exporter's splice of first sentences (`SUMMARY_SPLICED`, review); no summary
+call is made. The model cannot reach this export: it is a tool the session
+calls and the prompt does not list.
+
 - **Verified offline**: `test_agent_tools.py`, `test_agent_controller.py`
   (scripted policies; one policy takes three different tool paths in three
   situations because of what the tools returned) and `test_agent_flows.py` (the
@@ -507,6 +542,23 @@ A failed validation is not progress: only a draft that verified changes the
 controller's progress signature, so a model that keeps rewriting a failing
 sentence in edit mode reaches the escalation rule (it never did before).
 
+`ad-hoc/workbench/entity_trial.py` measures a whole databook written from zero,
+once per arm, on the same workbook bytes: `pro` (the stronger model writes),
+`flash` (the cheaper one writes), `mixed` (the cheaper one writes and the
+stronger repairs after `--escalate-after` rejections) and, opt-in, `loop` (the
+tool loop with no prepared write, the path the first paid acceptance measured).
+Each arm gets a fresh copy and session, drafts every in-scope account, and
+exports a first-generation deck. `plan` sends nothing; `run --scripted` runs the
+whole flow with a scripted writer, free; `run --i-accept-paid-calls` is the paid
+measurement. It prints, per arm, accounts accepted, calls, provider-reported
+input, cached input and output, cost at the configured prices, tokens and cost
+per account, escalations, hand-overs to the tool loop, seconds and the deck's
+delivery status, with a line per model. `--legacy-run` adds that run's
+commentary to a side-by-side file (local, it holds client text) and the calls
+the usage ledger recorded for that run's file in its time window, priced the
+same way; the legacy run also includes its summary calls, which the arms do
+not make. No cap unless one is given, and then one ceiling over every arm.
+
 ### 5.5 The code map
 
 `fdd_utils/agent/codemap.py` indexes the repo's own Python with the standard `ast`
@@ -608,6 +660,13 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
   active for an account that is not.
 - Statement-table values are not part of the claim contract. A change in the
   source reaches the tables only by regenerating the deck.
+- A repair replaces a rejected claim whole. The verifier checks its figures,
+  periods, signs and cited notes again, but nothing checks that the words
+  around them kept their meaning (a label changed while the amount was
+  corrected passes). Kept claims are protected; replaced ones are not.
+- The prepared write's required claim is the latest balance only. Coverage of
+  the movement, the main detail lines and the notes is asked for in the
+  instructions and not enforced.
 
 ## 9. Reproducing
 
@@ -615,6 +674,7 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
 python ad-hoc/workbench/migration_checks.py [--json out.json]   all offline suites, provider blocked
 python ad-hoc/workbench/test_agent_flows.py <databook.xlsx>       five flows on a real workbook (needs the file)
 FDD_FLOW_WORKBOOK=<databook.xlsx> FDD_FLOW_BASE_RUN=<run id> python ad-hoc/workbench/test_workspace_flows.py
+python ad-hoc/workbench/entity_trial.py run --databook <databook.xlsx> --scripted [--arms pro,flash,mixed,loop]   free, the whole flow
 python ad-hoc/workbench/baseline_pack.py --databook <databook.xlsx> [--out for_test/<pack>]   free; --verify <pack> checks one
 python ad-hoc/workbench/claim_eval.py <databook.xlsx>             false accept / reject of the claim verifier
 python ad-hoc/workbench/shadow_compare.py <databook.xlsx> --base-run <id>

@@ -248,6 +248,9 @@ agent:
   # AIClient answers from another configured provider when the requested one is not configured. The agent refuses that
   # (figures and the bill would go somewhere nobody chose) unless this is true.
   allow_provider_fallback: false
+  # true (default): a paragraph for one known account is written once from evidence the controller read itself, then
+  # repaired claim by claim (methods.md 5); false: the tool loop from the first step, as before 2026-11-07
+  prepared_write: true
   models:                  # provider "" = agent.models decides nothing; then --model / the app's selection, else local
     primary:    {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Flash model id
     escalation: {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Pro model id

@@ -29,8 +29,8 @@ from fdd_utils.agent import tools as T  # noqa: E402
 from fdd_utils.agent import workspace as W  # noqa: E402
 from fdd_utils.agent.session import capture_context, context_changes  # noqa: E402
 from fdd_utils.ai import claims as cl  # noqa: E402
-from test_agent_controller import Policy, evidence_of, tool, total_ref  # noqa: E402
-from test_workspace import ACCOUNT, P1, P2, answer_policy, build, session_on, write_book  # noqa: E402
+from test_agent_controller import Policy, evidence_of, returned, tool, total_ref  # noqa: E402
+from test_workspace import ACCOUNT, OTHER, P1, P2, answer_policy, build, session_on, write_book  # noqa: E402
 
 
 def reply(content="{}", **usage):
@@ -115,13 +115,15 @@ class Configurations(unittest.TestCase):
         single = R.RoutedModel(spec("primary", reply()), policy=R.Policy(mode="single", escalate_tasks=["adjustment_bridge"]))
         self.assertIsNone(single.begin_turn(1, ["adjustment_bridge"]))
 
-    def _work(self, model, escalation=None, mode="single"):
+    def _work(self, model, escalation=None, mode="single", prepare=False):
         tmp = tempfile.mkdtemp(prefix="cfg_")
         book = os.path.join(tmp, "wb.xlsx")
         write_book(book)
         source = session_on(book)
         source.load_params = {"workbook": book}
-        return W.WorkSession(source, model=model, escalation=escalation, model_name="m", policy=R.Policy(mode=mode), budget=C.Budget(max_steps=8))
+        # the tool loop's rules are what these tests hold: the prepared write is tested on its own (PreparedWrite)
+        return W.WorkSession(source, model=model, escalation=escalation, model_name="m", policy=R.Policy(mode=mode), budget=C.Budget(max_steps=8),
+                             prepare=prepare)
 
     def test_flash_only_pro_only_and_flash_then_pro_run_the_same_request_on_one_set_of_books(self):
         from test_routing import handoff_reader_policy, wrong_amount_policy
@@ -462,6 +464,213 @@ class Relabelling(unittest.TestCase):
             outcome = cl.verify_candidate([claim], {ACCOUNT: contract}, default_account=ACCOUNT)
             self.assertFalse(outcome["ok"], variant)
             self.assertEqual(outcome["failed"] + outcome["unverified"], 1, variant)
+
+
+# -- the prepared write: the controller reads, the model writes once, the verifier checks, a repair touches only what failed -------------
+
+def writer_view(user):
+    """The evidence JSON the prepared write puts in the prompt (one compact line after 'EVIDENCE for ...')."""
+    return json.loads(user.split("EVIDENCE for", 1)[1].split("\n", 1)[1].split("\n\n", 1)[0])
+
+
+class Writer:
+    """A scripted writer: fn(system, user, n) -> the reply object; records what it was sent."""
+
+    def __init__(self, fn):
+        self.fn, self.systems, self.users = fn, [], []
+
+    def __call__(self, system, user, max_tokens):
+        self.systems.append(system)
+        self.users.append(user)
+        return {"content": json.dumps(self.fn(system, user, len(self.users)), ensure_ascii=False), "prompt_tokens": 100, "completion_tokens": 20}
+
+
+def amount_claim(view, period, text):
+    return {"kind": "amount", "periods": [period], "cites": [total_ref(view, period)], "text": text}
+
+
+GOOD = "2025年12月31日应收账款余额130.0万元"
+
+
+class PreparedWrite(unittest.TestCase):
+    def _work(self, model, escalation=None, mode="single", extra_account=False):
+        tmp = tempfile.mkdtemp(prefix="prep_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        source = session_on(book)
+        source.load_params = {"workbook": book}
+        if extra_account:
+            from test_claims import build as build_contract
+            other = build_contract(account=OTHER)
+            other.binding = source.binding.to_dict()
+            source.contracts[OTHER] = other
+        return W.WorkSession(source, model=model, escalation=escalation, model_name="m", policy=R.Policy(mode=mode),
+                             budget=C.Budget(max_steps=8), prepare=True)
+
+    def test_one_account_is_written_in_one_call_with_no_tool_menu_from_evidence_the_controller_read(self):
+        writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
+        work = self._work(writer)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT, accept=True)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual((len(writer.users), work.shared.calls, turn.tool_path), (1, 1, []))
+        self.assertNotIn("Tools:", writer.systems[0])
+        self.assertNotIn("validate_candidate", writer.systems[0])
+        self.assertIn("EVIDENCE for 应收账款", writer.users[0])
+        self.assertLess(writer.users[0].index("EVIDENCE for"), writer.users[0].index("REQUEST:"), "the part that repeats comes first")
+        self.assertTrue(work.source.candidates[ACCOUNT].accepted)
+
+    def test_the_loop_would_have_sent_the_tool_menu_every_call(self):
+        loop_system = C.system_prompt("edit", self._work(Writer(lambda *a: {})).source, "Chi")
+        self.assertGreater(len(loop_system), 2 * len(C.writer_system_prompt("Chi")))
+
+    def test_a_rejected_claim_is_repaired_alone_and_the_verified_one_stays_byte_for_byte(self):
+        def fn(system, user, n):
+            view = writer_view(user)
+            if n == 1:
+                return {"draft": {"claims": [amount_claim(view, P2, GOOD), amount_claim(view, P1, "2024年12月31日应收账款余额150.0万元")],
+                                  "unresolved": []}}
+            return {"fix": [{"index": 0, "claim": amount_claim(view, P2, "改写已核实的句子")},
+                            {"index": 1, "claim": amount_claim(view, P1, "2024年12月31日应收账款余额100.0万元")}]}
+        writer = Writer(fn)
+        work = self._work(writer)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        repair = writer.users[1]
+        self.assertIn("KEPT", repair)
+        self.assertIn("[0] " + GOOD, repair)
+        self.assertIn("REJECTED", repair)
+        self.assertIn("150.0万元", repair.split("REJECTED", 1)[1])
+        final = work.source.candidates[ACCOUNT].claims
+        self.assertEqual(final[0]["text"], GOOD, "a fix aimed at a kept claim is ignored")
+        self.assertEqual(len(writer.users), 2)
+
+    def test_a_draft_that_leaves_out_the_latest_balance_is_sent_back_until_it_states_it(self):
+        def fn(system, user, n):
+            view = writer_view(user)
+            move = next(d["ref"] for d in view["derived"] if d["kind"] == "movement")
+            if n == 1:
+                return {"draft": {"claims": [{"kind": "movement", "periods": [P1, P2], "cites": [move], "text": "较2024年末增加30.0万元"}],
+                                  "unresolved": []}}
+            return {"fix": [], "add": [amount_claim(view, P2, GOOD)]}
+        writer = Writer(fn)
+        work = self._work(writer)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertIn("REQUIRED_NOT_STATED", writer.users[1])
+        self.assertEqual(len(work.source.candidates[ACCOUNT].claims), 2)
+
+    def test_the_writer_can_hand_the_turn_to_the_tool_loop_with_the_evidence_already_read(self):
+        def fn(system, user, n):
+            if n == 1:
+                return {"need_evidence": "需要查附注"}
+            if "Tools:" not in system:
+                raise AssertionError("the loop sends the tool menu")
+            view = evidence_of(returned(user))
+            if "validate_candidate(" not in user:
+                return tool("validate_candidate", account=ACCOUNT, claims=[amount_claim(view, P2, GOOD)])
+            return {"done": {"account": ACCOUNT, "export": False, "summary": "ok"}}
+        writer = Writer(fn)
+        work = self._work(writer)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertIn("TOOL get_account_evidence(", writer.users[1], "the loop starts with the evidence the controller read")
+        self.assertNotIn("get_account_evidence", turn.tool_path, "the model did not have to fetch it")
+        self.assertEqual(turn.report.get("prepared_fallback"), "需要查附注")
+
+    def test_the_first_model_writes_and_the_second_repairs_after_repeated_failures(self):
+        def wrong(system, user, n):
+            view = writer_view(user)
+            claim = amount_claim(view, P2, f"2025年12月31日应收账款余额{150 + n:.1f}万元")
+            return {"draft": {"claims": [claim], "unresolved": []}} if n == 1 else {"fix": [{"index": 0, "claim": claim}]}
+        primary = Writer(wrong)
+        pro = Writer(lambda system, user, n: {"fix": [{"index": 0, "claim": amount_claim(writer_view(user), P2, GOOD)}]})
+        work = self._work(primary, escalation=pro, mode="escalate")
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual([e["reason"] for e in turn.report["routing"]["escalations"]], ["capability"])
+        self.assertEqual((len(primary.users), len(pro.users)), (2, 1))
+        self.assertIn("REJECTED", pro.users[0], "the stronger model gets the rejected claim, not the whole task again")
+
+    def test_an_entity_is_drafted_account_by_account_with_a_fresh_memory_and_a_first_generation_deck_names_what_is_missing(self):
+        def fn(system, user, n):
+            view = writer_view(user)
+            text = GOOD if view["account"] == ACCOUNT else "其他应收款余额999.0万元"
+            claim = amount_claim(view, P2, text)
+            return {"draft": {"claims": [claim], "unresolved": []}} if "REJECTED" not in user else {"fix": [{"index": 0, "claim": claim}]}
+        writer = Writer(fn)
+        work = self._work(writer, extra_account=True)
+        done = work.draft_entity()
+        self.assertEqual(done["ok"], [ACCOUNT])
+        self.assertEqual(done["not_finished"], [OTHER])
+        later = [u for u in writer.users if "EVIDENCE for 其他应收款" in u]
+        self.assertTrue(later)
+        self.assertTrue(all("EARLIER IN THIS SESSION" not in u and GOOD not in u for u in later), "no account's text rides along with the next")
+        from fdd_utils.agent.export import merged_results, session_delivery
+        work.source.base_results = {OTHER: {"final": "旧流程的文字"}}
+        results = merged_results(work.source, [ACCOUNT], first_generation=True)
+        self.assertNotIn(OTHER, results, "a first generation never borrows a base run's text")
+        delivery = session_delivery(work.source, results, edited=[ACCOUNT], first_generation=True)
+        missing = [f for f in delivery.findings if f.code == "ACCOUNT_NOT_DRAFTED"]
+        self.assertEqual([(f.severity, f.account) for f in missing], [("blocked", OTHER)])
+        self.assertEqual(delivery.status, "blocked")
+
+
+class WholeDatabookTrial(unittest.TestCase):
+    """entity_trial.py: the arms are what they say, and the legacy row is what the ledger recorded for that run, nothing else."""
+
+    CFG = {"agent": {"models": {"primary": {"provider": "dashscope", "model": "flash-id"}, "escalation": {"provider": "dashscope", "model": "pro-id"}}},
+           "dashscope": {"available_models": [{"id": "pro-id", "price_in": 12, "price_out": 24}, {"id": "flash-id", "price_in": 1, "price_out": 2}]}}
+
+    def args(self, **kw):
+        return SimpleNamespace(**{"max_output": 4000, "escalate_after": 1, **kw})
+
+    def test_each_arm_is_the_model_and_the_path_it_names(self):
+        import entity_trial as E
+        got = {n: E.arm_setup(self.CFG, n, self.args()) for n in E.ARMS}
+        self.assertEqual((got["pro"]["primary"]["model"], got["pro"]["escalation"], got["pro"]["prepare"]), ("pro-id", None, True))
+        self.assertEqual((got["flash"]["primary"]["model"], got["flash"]["escalation"]), ("flash-id", None))
+        self.assertEqual((got["mixed"]["primary"]["model"], got["mixed"]["escalation"]["model"], got["mixed"]["routing"], got["mixed"]["escalate_after"]),
+                         ("flash-id", "pro-id", "escalate", 1))
+        self.assertEqual((got["loop"]["prepare"], got["loop"]["routing"]), (False, "escalate"))
+        self.assertTrue(all(s["primary"]["max_output"] == 4000 for s in got.values()))
+        cfg = E.arm_config(self.CFG, got["pro"])
+        self.assertEqual((cfg["agent"]["models"]["primary"]["model"], cfg["agent"]["prepared_write"], cfg["agent"]["routing"]), ("pro-id", True, "single"))
+        self.assertEqual(self.CFG["agent"]["models"]["primary"]["model"], "flash-id", "the arm's config is a copy")
+
+    def test_the_legacy_row_is_the_ledger_for_that_runs_file_and_time_window(self):
+        import entity_trial as E
+        tmp = Path(tempfile.mkdtemp(prefix="trial_"))
+        run = tmp / "run_20261030_180626"
+        run.mkdir()
+        (run / "results.yml").write_text("{}", encoding="utf-8")
+        (run / "run_identity.json").write_text(json.dumps({"workbook": "C:/x/book.xlsx", "written_at": "2026-10-30T18:40:00"}), encoding="utf-8")
+        rows = [
+            {"time": "2026-10-30T18:07:00", "file": "book.xlsx", "provider": "dashscope", "model": "pro-id", "prompt_tokens": 1000, "completion_tokens": 100,
+             "cached_prompt_tokens": 400},
+            {"time": "2026-10-30T18:30:00", "file": "book.xlsx", "provider": "dashscope", "model": "pro-id", "ok": False},
+            {"time": "2026-10-30T18:31:00", "file": "book.xlsx", "provider": "dashscope", "model": "pro-id", "token_source": "response_cache"},
+            {"time": "2026-10-30T18:32:00", "file": "other.xlsx", "provider": "dashscope", "model": "pro-id", "prompt_tokens": 9999},
+            {"time": "2026-10-30T20:00:00", "file": "book.xlsx", "provider": "dashscope", "model": "pro-id", "prompt_tokens": 9999},
+        ]
+        ledger = tmp / "usage.jsonl"
+        ledger.write_text("\n".join(json.dumps(r) for r in rows), encoding="utf-8")
+        got = E.legacy_usage(str(run), self.CFG, ledger=ledger)
+        self.assertEqual({k: got["total"][k] for k in ("calls", "failed", "response_cache", "in", "cached", "out")},
+                         {"calls": 1, "failed": 1, "response_cache": 1, "in": 1000, "cached": 400, "out": 100})
+        self.assertEqual(got["total"]["cost"], round((1000 * 12 + 100 * 24) / 1e6, 4))
+        self.assertIn("error", E.legacy_usage(str(run), self.CFG, ledger=tmp / "missing.jsonl"), "no ledger: said, not estimated")
+
+    def test_the_scripted_writer_writes_the_latest_balance_it_is_shown(self):
+        import entity_trial as E
+        tmp = tempfile.mkdtemp(prefix="trial_w_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        source = session_on(book)
+        source.load_params = {"workbook": book}
+        work = W.WorkSession(source, model=E.ScriptedWriter("x"), model_name="m", budget=C.Budget(max_steps=8), prepare=True)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT, accept=True)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual(work.shared.calls, 1)
 
 
 class AcceptanceAllowance(unittest.TestCase):

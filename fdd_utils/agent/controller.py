@@ -22,6 +22,16 @@ exists only in the prompt is a suggestion:
 
 Whether the model chooses well is the model's; whether what it says is allowed to
 stand is not.
+
+A paragraph for ONE known account (edit mode) starts as a prepared write when the
+controller is built with prepare=True: the controller reads the account's
+evidence itself (a free, deterministic tool call), computes what Python computes,
+and asks the model once for the paragraph, with no tool menu. The verifier checks
+it; a rejected draft goes back with only its rejected claims (the verified ones
+are kept as they were, byte for byte) for a local repair. The model can say the
+evidence is not enough ("need_evidence"), and then the turn continues in the tool
+loop above with that evidence already read. Escalation is the same rule as in the
+loop: consecutive capability failures move the repair to the stronger model.
 """
 from __future__ import annotations
 
@@ -216,8 +226,17 @@ def parse_turn(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
     return None, "reply was not valid JSON"
 
 
+def cl_digest(claims: List[Dict[str, Any]]) -> str:
+    return json.dumps(claims, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _compact(obj: Any) -> str:
+    """JSON with no padding: the same values, about a tenth fewer characters than the default separators."""
+    return json.dumps(obj, ensure_ascii=False, default=str, separators=(",", ":"))
+
+
 def _truncate(obj: Any, limit: int) -> str:
-    text = json.dumps(obj, ensure_ascii=False, default=str)
+    text = _compact(obj)
     return text if len(text) <= limit else text[:limit] + f" ...[truncated {len(text) - limit} chars; ask a narrower question]"
 
 
@@ -234,6 +253,46 @@ PROTOCOL = (
     "\"kind\" is a label. Every sentence is checked for everything its text states (amounts, periods, direction words, signs,\n"
     "percentages, causes); inference=true only waives the note behind a cause, never a figure, period, unit or sign."
 )
+
+
+WRITER_PROTOCOL = (
+    "Reply with exactly ONE JSON object and nothing else:\n"
+    '  {"draft": {"claims": [...], "unresolved": ["..."]}}       the paragraph, as claims\n'
+    '  {"need_evidence": "<what is missing and why>"}           only if the evidence below cannot support a paragraph at all\n'
+)
+REPAIR_PROTOCOL = (
+    "Reply with exactly ONE JSON object and nothing else:\n"
+    '  {"fix": [{"index": <n>, "claim": {...}}, {"index": <n>, "drop": "<why; it goes to unresolved>"}],\n'
+    '   "add": [{...claims to add...}], "unresolved": ["..."]}\n'
+    "Change only the claims listed under REJECTED (by their index). The claims under KEPT were verified and stay exactly as they are.\n"
+    '  {"need_evidence": "<what is missing and why>"}           only if the evidence below cannot settle an objection\n'
+)
+CLAIM_SCHEMA = (
+    "A claim is {\"kind\": amount|movement|composition|share|difference|annualized|cause|descriptive, \"text\",\n"
+    '  "periods": [ISO dates], "cites": [F/D refs], "cause_cites": [N refs], "inference": false}.\n'
+    "Every number in a claim's text must be one a cited F or D ref carries, in the period the claim declares. Cite only refs shown\n"
+    "in EVIDENCE. A cause needs a cited note (N ref) or inference=true; inference=true waives only the note, never a figure, period,\n"
+    "unit or sign. Every sentence is checked for everything its text states (amounts, periods, direction words, signs, percentages, causes)."
+)
+
+
+def writer_system_prompt(language: str) -> str:
+    """The prepared write's instructions: the same rules as the tool loop's, without the tool menu (nothing here calls a tool)."""
+    answer_lang = "繁體中文" if language in ("Chi", "Chn") else "English"
+    return (
+        "You write ONE account's paragraph for a financial due diligence report. EVIDENCE is what Python read from the workbook and\n"
+        "checked; you know nothing else about it.\n"
+        "1. State only figures, periods, flags and causes EVIDENCE carries. Python computed every movement, difference and annualised\n"
+        "   figure (D refs): cite the D ref, never compute a figure yourself.\n"
+        "2. totals list each period under several bases; the deck uses basis authority_adjusted. A period whose permissions say\n"
+        "   describe_total=false is in conflict: state the difference (its D ref), not either figure. Detail lines may explain a total\n"
+        "   only where permissions say explain_with_detail=true. Read the notes (N refs) for causes and adjustments.\n"
+        "3. The paragraph states the latest balance the deck uses (REQUIRED), the movement where a D ref exists, the main detail\n"
+        "   lines where detail is permitted, and causes only from notes.\n"
+        "4. What the evidence cannot settle goes in 'unresolved'; do not fill the gap.\n"
+        f"5. Write the text of claims in {answer_lang}. Amounts as 万元 or 亿元 with one decimal unless the figure is small.\n\n"
+        + CLAIM_SCHEMA
+    )
 
 
 def system_prompt(mode: str, session: SourceSession, language: str, remembered: bool = False) -> str:
@@ -262,8 +321,10 @@ def system_prompt(mode: str, session: SourceSession, language: str, remembered: 
 
 class AgentController:
     def __init__(self, session: SourceSession, model: Model, *, budget: Optional[Budget] = None, language: Optional[str] = None,
-                 memory: Optional[Memory] = None):
+                 memory: Optional[Memory] = None, prepare: bool = False):
         self.session = session
+        #: edit mode on one account starts with a prepared write (see the module docstring); the tool loop is the fallback
+        self.prepare = prepare
         self.model = model
         self.budget = budget or Budget()
         self.language = language or session.language or "Chi"
@@ -290,6 +351,8 @@ class AgentController:
         self._notes_found: Dict[str, int] = {}
         self._tool_failures: Dict[str, int] = {}
         self._repeated_failure = False
+        #: a reply the prepared write received but the tool loop must handle (the writer called a tool): not paid for twice
+        self._pending_reply: Optional[Tuple[str, str]] = None
 
     # -- the run -----------------------------------------------------------------------
 
@@ -310,41 +373,24 @@ class AgentController:
         if account and resolved_account is None:
             run.stop_reason, run.question = STOP_NEEDS_USER, f"The account '{account}' matches no single account in this workbook."
             return self._finish(run, usage, started)
+        if mode == "edit" and resolved_account and self.prepare:
+            if self._prepared_write(run, goal, resolved_account, export, usage, started):
+                return self._finish(run, usage, started)
+            run.report["prepared_fallback"] = run.report.get("prepared_fallback") or "the writer asked for the tool loop"
+            no_progress, last_signature = 0, self._signature()
 
-        for step in range(1, self.budget.max_steps + 1):
+        for step in range(len(run.steps) + 1, self.budget.max_steps + 1):
             elapsed = time.perf_counter() - started
             if elapsed > self.budget.max_seconds:
                 run.stop_reason = STOP_TIME
                 break
-            user = self._render(goal)
-            est = estimate_tokens(system) + estimate_tokens(user)
-            if usage["prompt_tokens_est"] + usage["completion_tokens_est"] + est + 1500 > self.budget.max_tokens:
-                run.stop_reason = STOP_TOKENS
-                break
-            try:
-                reply = self.model(system, user, 1500)
-            except R.BudgetExhausted as exc:
-                run.stop_reason, run.report["budget"] = STOP_SESSION, {"kind": exc.kind, "message": str(exc)}
-                break
-            except Exception as exc:                                # noqa: BLE001
-                run.stop_reason, run.report["model_error"] = STOP_MODEL_ERROR, f"{type(exc).__name__}: {exc}"
-                break
-            text = str((reply or {}).get("content") or "")
-            usage["model_calls"] += 1
-            usage["prompt_tokens_est"] += est
-            usage["completion_tokens_est"] += estimate_tokens(text)
-            role = str((reply or {}).get("role") or "")
-            row = usage["by_role"].setdefault(role or "model", {"calls": 0, "prompt_est": 0, "completion_est": 0, "provider_prompt": 0,
-                                                                "provider_completion": 0, "model": (reply or {}).get("model")})
-            row["calls"] += 1
-            row["prompt_est"] += est
-            row["completion_est"] += estimate_tokens(text)
-            if (reply or {}).get("prompt_tokens") is not None:
-                usage["provider_reported"] = True
-                usage["provider_prompt_tokens"] += int(reply["prompt_tokens"] or 0)
-                usage["provider_completion_tokens"] += int(reply.get("completion_tokens") or 0)
-                row["provider_prompt"] += int(reply["prompt_tokens"] or 0)
-                row["provider_completion"] += int(reply.get("completion_tokens") or 0)
+            if self._pending_reply is not None:
+                (text, role), self._pending_reply = self._pending_reply, None
+            else:
+                called = self._call_model(run, system, self._render(goal), 1500, usage)
+                if called is None:
+                    break
+                text, role = called
             turn, error = parse_turn(text)
             record: Dict[str, Any] = {"step": step}
             if role:
@@ -452,6 +498,286 @@ class AgentController:
         if not run.stop_reason:
             run.stop_reason = STOP_STEPS
         return self._finish(run, usage, started)
+
+    def _call_model(self, run: AgentRun, system: str, user: str, max_tokens: int, usage: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+        """One model call with the turn's own accounting. None when the call may not be made or failed; run.stop_reason says why."""
+        est = estimate_tokens(system) + estimate_tokens(user)
+        if usage["prompt_tokens_est"] + usage["completion_tokens_est"] + est + max_tokens > self.budget.max_tokens:
+            run.stop_reason = STOP_TOKENS
+            return None
+        try:
+            reply = self.model(system, user, max_tokens)
+        except R.BudgetExhausted as exc:
+            run.stop_reason, run.report["budget"] = STOP_SESSION, {"kind": exc.kind, "message": str(exc)}
+            return None
+        except Exception as exc:                                # noqa: BLE001
+            run.stop_reason, run.report["model_error"] = STOP_MODEL_ERROR, f"{type(exc).__name__}: {exc}"
+            return None
+        text = str((reply or {}).get("content") or "")
+        usage["model_calls"] += 1
+        usage["prompt_tokens_est"] += est
+        usage["completion_tokens_est"] += estimate_tokens(text)
+        role = str((reply or {}).get("role") or "")
+        row = usage["by_role"].setdefault(role or "model", {"calls": 0, "prompt_est": 0, "completion_est": 0, "provider_prompt": 0,
+                                                            "provider_completion": 0, "model": (reply or {}).get("model")})
+        row["calls"] += 1
+        row["prompt_est"] += est
+        row["completion_est"] += estimate_tokens(text)
+        if (reply or {}).get("prompt_tokens") is not None:
+            usage["provider_reported"] = True
+            usage["provider_prompt_tokens"] += int(reply["prompt_tokens"] or 0)
+            usage["provider_completion_tokens"] += int(reply.get("completion_tokens") or 0)
+            row["provider_prompt"] += int(reply["prompt_tokens"] or 0)
+            row["provider_completion"] += int(reply.get("completion_tokens") or 0)
+        return text, role
+
+    # -- the prepared write -------------------------------------------------------------------------
+
+    WRITE_ALLOWANCE = 3000                 # a paragraph of claims as JSON; a role's max_output still caps it
+
+    def _prepare_evidence(self, account: str) -> Optional[Dict[str, Any]]:
+        """What the controller reads before the model writes: the account's evidence (with the standard movements Python
+        derives) and, for a part-year period, the annualised figure. Tool calls, made here, recorded as the controller's."""
+        result = T.call_tool(self.session, "get_account_evidence", {"account": account})
+        self._absorb("get_account_evidence", {"account": account}, result)
+        self.transcript.append({"tool": "get_account_evidence", "args": {"account": account}, "result": result.to_dict(), "by": "controller"})
+        if not result.ok:
+            return None
+        view = dict(result.data)
+        if (view.get("annualization") or {}).get("annualized") and view.get("periods"):
+            extra = T.call_tool(self.session, "compute_analysis", {"account": account, "op": "annualized", "period": view["periods"][-1]})
+            self._absorb("compute_analysis", {"account": account, "op": "annualized"}, extra)
+            if extra.ok:
+                derived = (extra.data or {}).get("derived") or {}
+                if derived and all(d.get("ref") != derived.get("ref") for d in view.get("derived") or []):
+                    view["derived"] = list(view.get("derived") or []) + [derived]
+        return view
+
+    def _required_refs(self, view: Dict[str, Any]) -> List[str]:
+        """What a paragraph must state: the latest balance the deck uses, or, where tab and Financials disagree and nothing chose,
+        the difference Python computed. Without it a draft of one harmless sentence would pass the verifier."""
+        periods = view.get("periods") or []
+        if not periods:
+            return []
+        latest = periods[-1]
+        perm = (view.get("permissions") or {}).get(latest) or {}
+        if perm.get("describe_total", True):
+            refs = [t["ref"] for t in view.get("totals") or [] if t.get("period") == latest and t.get("basis") == "authority_adjusted"]
+            return refs[:1]
+        refs = [d["ref"] for d in view.get("derived") or [] if d.get("kind") == "difference" and latest in (d.get("periods") or [d.get("period")])]
+        return refs[:1]
+
+    def _writer_user(self, goal: str, account: str, view: Dict[str, Any], required: List[str], claims: List[Dict[str, Any]],
+                     rejected: Dict[int, List[str]], unresolved: List[str]) -> str:
+        # what does not change between a draft and its repairs comes first, so a provider's prompt cache can serve it again
+        parts = [f"EVIDENCE for {account} (cite only these refs):\n{_compact(view)}"]
+        open_issues = [i for i in self.issues.values() if not i.resolved and (not i.account or i.account == account)]
+        if open_issues:
+            parts.append("OPEN ISSUES (from the evidence):\n" + "\n".join(f"  [{i.severity}] {i.message}" + (f" -> {i.suggest}" if i.suggest else "")
+                                                                   for i in open_issues))
+        earlier = self._earlier_answer(account)
+        if earlier:
+            parts.append(earlier)
+        if required:
+            parts.append("REQUIRED: a claim must cite " + ", ".join(required) + " (the latest balance the deck uses, or the difference that replaces it).")
+        parts.append(f"REQUEST: {goal}")
+        if not claims:
+            parts.append(WRITER_PROTOCOL + "Your JSON object:")
+            return "\n\n".join(parts)
+        kept = [f"  [{n}] {c.get('text')}" for n, c in enumerate(claims) if n not in rejected]
+        bad = [f"  [{n}] {_compact({k: claims[n].get(k) for k in ('kind', 'text', 'periods', 'cites', 'cause_cites', 'inference')})}\n"
+               f"      objections: {' | '.join(rejected[n])[:700]}" for n in sorted(rejected) if n < len(claims)]
+        if kept:
+            parts.append("KEPT (verified; unchanged whatever you reply):\n" + "\n".join(kept))
+        if bad:
+            parts.append("REJECTED (rewrite each from EVIDENCE, or drop it and say why):\n" + "\n".join(bad))
+        extra = [o for n, objs in rejected.items() if n >= len(claims) for o in objs]
+        if extra:
+            parts.append("ALSO: " + " | ".join(extra)[:600])
+        if unresolved:
+            parts.append("UNRESOLVED so far: " + "; ".join(str(u)[:160] for u in unresolved[:8]))
+        parts.append(REPAIR_PROTOCOL + "Your JSON object:")
+        return "\n\n".join(parts)
+
+    def _earlier_answer(self, account: str) -> str:
+        """The last answer of this session about this account, when the request may refer to it ("make that shorter"). Only that
+        one: the prepared write is about one account, and the rest of the history would be resent for nothing."""
+        history = self.memory.history if self.memory is not None else []
+        last = history[-1] if history else None
+        if not last or last.get("stale"):
+            return ""
+        mine = [c for c in last.get("claims") or [] if (self.session.resolve_account(str(c.get("account") or "")) or "") == account]
+        if not mine:
+            return ""
+        return ("EARLIER IN THIS SESSION (the answer this request may refer to; its refs are in EVIDENCE):\n"
+                f"  {str(last.get('request'))[:200]}\n  -> {str(last.get('text'))[:800]}\n  its claims: "
+                + _truncate([{k: c.get(k) for k in ("kind", "periods", "cites", "cause_cites", "inference", "text") if c.get(k) not in (None, [], "")}
+                             for c in mine], 2600))
+
+    @staticmethod
+    def _clean_claim(claim: Any) -> Optional[Dict[str, Any]]:
+        if not isinstance(claim, dict) or not str(claim.get("text") or "").strip():
+            return None
+        return {k: claim[k] for k in ("kind", "text", "periods", "cites", "cause_cites", "inference", "cross_account") if k in claim}
+
+    def _merge_fix(self, claims: List[Dict[str, Any]], rejected: Dict[int, List[str]], reply: Dict[str, Any],
+                   unresolved: List[str]) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """Apply a repair to the REJECTED claims only. A fix aimed at a kept claim is ignored and said so."""
+        out: List[Optional[Dict[str, Any]]] = list(claims)
+        ignored: List[str] = []
+        for item in reply.get("fix") or []:
+            if not isinstance(item, dict):
+                continue
+            try:
+                n = int(item.get("index"))
+            except (TypeError, ValueError):
+                continue
+            if n not in rejected or n >= len(out):
+                ignored.append(f"index {n} is not a rejected claim; kept claims are not changed")
+                continue
+            if item.get("drop"):
+                unresolved.append(str(item.get("drop"))[:300])
+                out[n] = None
+                continue
+            fixed = self._clean_claim(item.get("claim"))
+            if fixed is not None:
+                out[n] = fixed
+        merged = [c for c in out if c is not None]
+        merged += [c for c in (self._clean_claim(a) for a in reply.get("add") or []) if c is not None]
+        unresolved.extend(str(u) for u in reply.get("unresolved") or [] if str(u) not in unresolved)
+        return merged, ignored
+
+    def _prepared_write(self, run: AgentRun, goal: str, account: str, export: bool, usage: Dict[str, Any], started: float) -> bool:
+        """The paragraph for one known account, written once from evidence the controller read, then repaired locally.
+        True: the turn is finished (accepted, or stopped by a budget). False: continue in the tool loop."""
+        view = self._prepare_evidence(account)
+        if view is None:
+            run.report["prepared_fallback"] = "the account's evidence could not be read"
+            return False
+        required = self._required_refs(view)
+        system = writer_system_prompt(self.language)
+        router = self.router
+        claims: List[Dict[str, Any]] = []
+        rejected: Dict[int, List[str]] = {}
+        unresolved: List[str] = []
+        bad_replies, last_failed = 0, None
+        run.report["prepared"] = {"required": required, "evidence_chars": len(_compact(view))}
+        while len(run.steps) < self.budget.max_steps:
+            if time.perf_counter() - started > self.budget.max_seconds:
+                run.stop_reason = STOP_TIME
+                return True
+            step = len(run.steps) + 1
+            called = self._call_model(run, system, self._writer_user(goal, account, view, required, claims, rejected, unresolved),
+                                      self.WRITE_ALLOWANCE, usage)
+            if called is None:
+                return True
+            text, role = called
+            turn, error = parse_turn(text)
+            record: Dict[str, Any] = {"step": step, "action": "repair" if claims else "write", "prepared": True}
+            if role:
+                record["role"] = role
+            codes: List[str] = []
+            if turn is not None and ("need_evidence" in turn or "tool" in turn):
+                record["fallback"] = str(turn.get("need_evidence") or f"tool {turn.get('tool')}")[:300]
+                if "tool" in turn:
+                    self._pending_reply = (text, role)          # the loop runs this tool call as its first step
+                else:
+                    run.steps.append(record)
+                self._note("CONTROLLER: the evidence for " + account + " was read for you (above). "
+                           + (f"The writer said: {record['fallback']}. " if "need_evidence" in turn else "")
+                           + (f"Last objections: {' | '.join(o for objs in rejected.values() for o in objs)[:600]}. " if rejected else "")
+                           + "Investigate with the tools, then validate_candidate and finish with done.")
+                run.report["prepared_fallback"] = record["fallback"]
+                return False
+            if turn is None or not ("draft" in turn or "fix" in turn or "add" in turn):
+                record["error"] = error or "neither a draft nor a fix"
+                codes = ["NOT_JSON"] if turn is None else ["BAD_ACTION"]
+                if router is not None:
+                    router.mark_last_reply_unused()
+                bad_replies += 1
+                if bad_replies >= 2:
+                    run.steps.append(record)
+                    run.report["prepared_fallback"] = "two replies in a row were not a draft"
+                    return False
+            else:
+                bad_replies = 0
+                if "draft" in turn:
+                    body = turn.get("draft") if isinstance(turn.get("draft"), dict) else {}
+                    new = [c for c in (self._clean_claim(x) for x in body.get("claims") or []) if c is not None]
+                    unresolved.extend(str(u) for u in body.get("unresolved") or [] if str(u) not in unresolved)
+                    ignored: List[str] = []
+                    if claims and new:            # a whole new draft in answer to a repair: the kept claims still stand
+                        new = [c for n, c in enumerate(claims) if n not in rejected] + new
+                else:
+                    new, ignored = self._merge_fix(claims, rejected, turn, unresolved)
+                if ignored:
+                    record["ignored"] = ignored
+                claims = new
+                if not claims:
+                    codes = ["EMPTY_ANSWER"]
+                    rejected = {}
+                else:
+                    result = T.call_tool(self.session, "validate_candidate", {"account": account, "claims": claims})
+                    self._absorb("validate_candidate", {"account": account, "claims": claims}, result)
+                    outcome = (result.data or {}).get("outcome") or {}
+                    cited = {r for c in claims for r in list(c.get("cites") or []) + list(c.get("cause_cites") or [])}
+                    missing = [r for r in required if r not in cited]
+                    record.update(claims=len(claims), verified=outcome.get("verified"), failed=outcome.get("failed"),
+                                  unverified=outcome.get("unverified"))
+                    if result.ok and not missing:
+                        accepted, feedback, answer = self._gate_done({"account": account}, account, export)
+                        record["accepted"] = accepted
+                        if accepted:
+                            answer = dict(answer or {}, unresolved=list(unresolved))
+                            run.answer, run.stop_reason = answer, STOP_DONE
+                            run.steps.append(record)
+                            return True
+                        codes = list(self._gate_codes)
+                        rejected = {}
+                    else:
+                        rejected = {}
+                        for n, v in enumerate(outcome.get("verdicts") or []):
+                            if v.get("verdict") not in ("verified", "verified_inference"):
+                                bad = [f for f in v.get("findings") or [] if f.get("severity") in ("failed", "review")]
+                                rejected[n] = [f"{f['code']}: {f.get('message', '')}" for f in bad] or ["not verified"]
+                        if missing:
+                            rejected[len(claims)] = [f"REQUIRED_NOT_STATED: no claim cites {', '.join(missing)}; add one ('add')"]
+                        codes = sorted(outcome.get("by_code") or {}) + (["REQUIRED_NOT_STATED"] if missing else [])
+                        record["feedback"] = " | ".join(o for objs in rejected.values() for o in objs)[:900]
+                if codes:
+                    self.rejections += 1
+                    if router is not None:
+                        router.note_rejection()
+                    if self.rejections >= self.budget.max_rejections:
+                        self._step_log.append((step, codes))
+                        run.stop_reason = STOP_REJECTED
+                        run.steps.append(record)
+                        return True
+            # the same failure twice from the same draft: nothing new is happening; the tool loop can investigate
+            failed_now = (tuple(sorted(codes)), cl_digest(claims))
+            if codes and failed_now == last_failed:
+                run.steps.append(record)
+                run.report["prepared_fallback"] = "the same draft failed the same way twice"
+                self._note("CONTROLLER: the draft below failed the same way twice: " + " | ".join(
+                    o for objs in rejected.values() for o in objs)[:700] + ". Investigate with the tools, then validate_candidate and finish with done.")
+                return False
+            last_failed = failed_now
+            if router is not None and codes:
+                classes = R.effective_classes(codes, self._context(codes))
+                self._step_log.append((step, codes))
+                self._step_classes[step] = classes
+                decision = router.observe(R.StepEvent(step=step, codes=codes, progress=False, no_progress=1, classes=classes))
+                if decision.escalate:
+                    handoff = (f"A prepared write of {account}: the evidence and the draft are in the next message; the repair moves to you. "
+                               f"Failures so far: {', '.join(codes)}.")
+                    info = router.escalate(decision, handoff, step)
+                    self.escalations.append({**info, "handoff": handoff})
+                    record["escalated"] = {"to": info["to"], "model": info["model"], "reason": info["reason"]}
+                    if router.policy.fresh_rejections:
+                        self.rejections = 0
+            run.steps.append(record)
+        run.stop_reason = STOP_STEPS
+        return True
 
     def _context(self, codes: List[str]) -> R.StepContext:
         """What this step's codes mean in context (routing.effective_classes): what was read, what exists, what the searches found."""

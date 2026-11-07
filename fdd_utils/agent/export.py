@@ -39,9 +39,10 @@ def _load_inspect_pptx():
         return module
 
 
-def merged_results(session: SourceSession, accounts: List[str]) -> Dict[str, Any]:
-    """The base commentary with each chosen account replaced by its validated candidate."""
-    results = copy.deepcopy(session.base_results or {})
+def merged_results(session: SourceSession, accounts: List[str], first_generation: bool = False) -> Dict[str, Any]:
+    """The base commentary with each chosen account replaced by its validated candidate; with first_generation, the candidates
+    alone (no base text stands in for an account the agent did not finish)."""
+    results = {} if first_generation else copy.deepcopy(session.base_results or {})
     for account in accounts:
         candidate = session.candidates[account]
         results[account] = cl.to_legacy_result(account, candidate.claims, candidate.outcome)
@@ -69,7 +70,7 @@ def text_fragments(text: str, width: int = 14) -> List[str]:
     return [flat[i:i + width] for i in range(0, max(len(flat) - width, 1), width * 2)][:40]
 
 
-def session_delivery(session: SourceSession, results: Dict[str, Any], edited: Iterable[str] = ()):
+def session_delivery(session: SourceSession, results: Dict[str, Any], edited: Iterable[str] = (), first_generation: bool = False):
     """The delivery decision for results made against this session's sources: the run's own
     findings plus three it cannot see -- a Financials sheet that ties to almost nothing, a base run nothing ties to
     this workbook, and executive summaries written before the edit."""
@@ -79,6 +80,14 @@ def session_delivery(session: SourceSession, results: Dict[str, Any], edited: It
                      f"only {pairing['agreeing_latest']} of {pairing['compared']} accounts tie to the Financials sheet on their latest period; "
                      "the sheet may belong to another entity or period")] if pairing["suspect"] else []
     edited = set(edited)
+    if first_generation:
+        # nothing from a base run is in this deck, so nothing about one applies; the summary band is the exporter's splice
+        extra.append(Finding("SUMMARY_SPLICED", "review", "the executive summary band is the exporter's splice of each account's first "
+                             "sentence; no summary was written for this first generation"))
+        for account in session.contracts:
+            if not str(account).startswith("__") and session.in_scope(account) and account not in results:
+                extra.append(Finding("ACCOUNT_NOT_DRAFTED", "blocked", "in scope, but the agent has no accepted paragraph for it", account))
+        return decide_delivery(selection=session.selection, ai_results=results, bs_is_results=session.bs_is_results, extra_findings=extra)
     check = session.base_run_check or {}
     if check.get("status") == "mismatch":
         for reason in (check.get("reasons") or [])[:4]:
@@ -113,7 +122,7 @@ def layout_problems(deck_path: str, slides: List[int]) -> Dict[str, Any]:
             "content_slides": layout.get("content_slides"), "total_slides": layout.get("total_slides")}
 
 
-def export_session_deck(session: SourceSession, accounts: List[str], out_path: str = "") -> Dict[str, Any]:
+def export_session_deck(session: SourceSession, accounts: List[str], out_path: str = "", first_generation: bool = False) -> Dict[str, Any]:
     from ..pptx import build_pptx_structured_payloads, export_pptx_from_structured_data_combined
     from ..pptx.helpers import _rendered_bullet_label
     from .tools import ToolError
@@ -121,8 +130,8 @@ def export_session_deck(session: SourceSession, accounts: List[str], out_path: s
     template = REPO_ROOT / "fdd_utils" / "template.pptx"
     if not template.exists():
         raise ToolError("NO_TEMPLATE", f"template not found: {template}")
-    results = merged_results(session, accounts)
-    delivery = session_delivery(session, results, edited=accounts)
+    results = merged_results(session, accounts, first_generation=first_generation)
+    delivery = session_delivery(session, results, edited=accounts, first_generation=first_generation)
     payloads = build_pptx_structured_payloads(results, session.mappings, bs_is_results=session.bs_is_results, dfs=session.dfs)
     stem = re.sub(r"[^\w\-]", "_", session.entity_name or Path(session.workbook_path).stem or "deck")
     target = out_path or str(REPO_ROOT / "fdd_utils" / "output" / f"{stem}_agent_{time.strftime('%Y%m%d_%H%M%S')}.pptx")
@@ -135,7 +144,7 @@ def export_session_deck(session: SourceSession, accounts: List[str], out_path: s
         language="chinese" if is_chinese else "english",
         temp_path=session.financials_from or session.workbook_path, selected_sheet=session.financials_sheet,
         is_chinese_databook=is_chinese, bs_is_results=session.bs_is_results, model_type=None,
-        skip_summary_ai=True, pre_generated_summaries=session.base_summaries or None, mappings=session.mappings,
+        skip_summary_ai=True, pre_generated_summaries=(None if first_generation else session.base_summaries or None), mappings=session.mappings,
         financials_from=session.financials_from, delivery=delivery)
 
     touched: Dict[str, List[int]] = {}

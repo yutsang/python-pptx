@@ -58,6 +58,13 @@ def _agent_block(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     return _config(config).get("agent") or {}
 
 
+def prepared_write(config: Optional[Dict[str, Any]] = None) -> bool:
+    """agent.prepared_write (default true): a paragraph for one known account is written once from evidence the controller read
+    itself, then repaired claim by claim; false sends it through the tool loop from the first step, as before."""
+    value = _agent_block(config).get("prepared_write")
+    return True if value is None else bool(value)
+
+
 def _number(value: Any, kind=int) -> Optional[Any]:
     """0, '' and None mean 'no cap'; anything else must be a number."""
     if value in (None, "", 0, 0.0, False):
