@@ -816,6 +816,20 @@ class AgentController:
                 + _truncate([{k: c.get(k) for k in ("kind", "periods", "cites", "cause_cites", "inference", "text") if c.get(k) not in (None, [], "")}
                              for c in mine], 2600))
 
+    def _with_cited_periods(self, account: str, claim: Dict[str, Any]) -> Dict[str, Any]:
+        """The claim's declared periods widened to the periods of what it cites: citing a movement from 2024 to 2025 while declaring
+        2025 alone failed WRONG_PERIOD and cost turns (2026-11-08). The text is not touched, and every period the TEXT names is
+        still checked against these."""
+        contract = self.session.contracts.get(account)
+        if contract is None:
+            return claim
+        periods = set(claim.get("periods") or [])
+        for ref in claim.get("cites") or []:
+            item = contract.fact(ref) or next((d for d in contract.derived if d.get("ref") == ref), None)
+            if item is not None:
+                periods.update(p for p in (item.get("periods") or [item.get("period")]) if p in contract.periods)
+        return claim if periods == set(claim.get("periods") or []) else dict(claim, periods=sorted(periods))
+
     @staticmethod
     def _clean_claim(claim: Any) -> Optional[Dict[str, Any]]:
         if not isinstance(claim, dict) or not str(claim.get("text") or "").strip():
@@ -1113,6 +1127,7 @@ class AgentController:
                     codes = ["EMPTY_ANSWER"]
                     rejected = {}
                 else:
+                    claims = [self._with_cited_periods(account, c) for c in claims]
                     result = T.call_tool(self.session, "validate_candidate", {"account": account, "claims": claims})
                     self._absorb("validate_candidate", {"account": account, "claims": claims}, result)
                     outcome = (result.data or {}).get("outcome") or {}

@@ -752,6 +752,19 @@ class PreparedWrite(unittest.TestCase):
         self.assertIn("REQUIRED_NOT_STATED", writer.users[1])
         self.assertEqual(len(work.source.candidates[ACCOUNT].claims), 2)
 
+    def test_a_claim_that_cites_a_movement_declares_both_of_its_periods(self):
+        def fn(system, user, n):
+            view = writer_view(user)
+            move = next(d["ref"] for d in view["derived"] if d["kind"] == "movement")
+            return {"draft": {"claims": [amount_claim(view, P2, GOOD), {"kind": "movement", "periods": [P2], "cites": [move],
+                                                                        "text": "2025年12月31日较2024年12月31日增加30.0万元"}], "unresolved": []}}
+        writer = Writer(fn)
+        work = self._work(writer)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual(len(writer.users), 1)
+        self.assertEqual(work.source.candidates[ACCOUNT].claims[1]["periods"], [P1, P2])
+
     def test_a_draft_with_a_stray_tool_or_none_evidence_key_is_still_a_draft(self):
         for extra in ({"tool": None}, {"need_evidence": "无"}, {"need_evidence": "None; the evidence is sufficient"}, {"tool": None, "need_evidence": ""}):
             writer = Writer(lambda system, user, n, e=extra: dict({"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}}, **e))

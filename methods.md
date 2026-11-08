@@ -162,9 +162,18 @@ What "checked" means here has four parts.
   the note's own currency (7,000万美元 matches a dollar figure, never a yuan
   one), a date the note states is not a reporting period the claim must
   declare, and each such figure is marked `NOTE_SOURCED_AMOUNT` for a person,
-  because a note is free text, not a cell. A remark's bare cell values are not
-  read. Before 2026-11-08 notes could only support a cause, so a paragraph could
-  not state what the notes said and material facts went to `unresolved`.
+  because a note is free text, not a cell. A remark's cell values are read only
+  where they carry their period ("2026-03-31: 4342452.0", in yuan, bound to that
+  period; "annualised" values count as annualised). A sign the note writes is
+  kept (an adjustment of -133.2万元 is a reduction), a direction the note states,
+  in its words or by its sign, backs the same direction word in the sentence,
+  and a year the note names ("2025审计费") may be named. Naming the line a cited
+  note is about needs no line figure, and line names are compared without the
+  star a tab puts before a counterparty ("*甲公司"); with the star kept, a figure
+  put under the wrong counterparty passed. Before 2026-11-08 notes could only
+  support a cause, so a paragraph could not state what the notes said and
+  material facts went to `unresolved`; the first run that allowed it refused
+  about 60 of 71 claims for these reasons, not for errors in them.
 - **Three meaning checks.** No reference or internal name in the text
   (`INTERNAL_TERMS_IN_TEXT`: "(F52)", "authority_adjusted"). No percentage
   change over a negative base or across a change of sign
@@ -310,7 +319,10 @@ accrual, a reclassification, an agreement, an ageing and similar, unless its
 line is known to be under 1%; a remark repeating a note on the same line, or a
 note contained in another, is listed once; eight at most. Each must be stated
 in a verified claim that cites it, or named by its ref in `unresolved`; a draft
-that drops one silently is sent back (`NOTE_UNADDRESSED`). When the paragraph
+that drops one silently is sent back (`NOTE_UNADDRESSED`). Before checking, the
+controller widens each claim's declared periods to those of the facts it cites
+(a movement from 2024 to 2025 declares both); the text is not changed, and the
+periods it names are still checked. When the paragraph
 is finished the state writes `flags` on the candidate for a person: material
 notes deferred rather than stated, figures from a note's text, causes marked
 as inference or only related to a note, detail and basis caveats, what is

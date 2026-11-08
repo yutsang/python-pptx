@@ -479,6 +479,63 @@ class NotesAndGuards(unittest.TestCase):
         self.assertEqual([(x["year"], x["month"]) for x in cl.period_mentions("2026年1至3月")], [(2026, 3)])
 
 
+class NoteContentRefusals(unittest.TestCase):
+    """Refusals from the 2026-11-08 whole-databook run (71 claims): most were the verifier not reading what a cited note says."""
+
+    def note_ref(self, c, start):
+        return next(n["ref"] for n in c.notes if n["text"].startswith(start))
+
+    def test_an_adjustments_sign_and_direction_come_from_the_note(self):
+        c = build(notes=["「2025」Audit ADJ#4：-133.2万元（对方科目：投资收益）；调整说明：应收借款利息重分类至投资收益"])
+        n = self.note_ref(c, "「2025」")
+        for text in ("2025年度审计调整-133.2万元，系应收借款利息重分类。", "2025年度审计调整减少133.2万元，系应收借款利息重分类。"):
+            v = verdict(text, c, [n], [P2], "descriptive")
+            self.assertEqual(v["verdict"], "verified", (text, v["findings"]))
+        wrong = verdict("2025年度审计调整增加133.2万元。", c, [n], [P2], "descriptive")
+        self.assertNotEqual(wrong["verdict"], "verified", "the note says the adjustment reduced it")
+
+    def test_a_direction_the_note_itself_states_is_backed_by_it(self):
+        c = build(notes=["租金 | 出租率先大幅下降后逐渐回升，同期新增租赁面积仅53,975平方米"])
+        n = self.note_ref(c, "租金")
+        v = verdict("出租率先大幅下降后逐渐回升。", c, [n], [P2], "descriptive")
+        self.assertNotIn("DIRECTION_UNSUPPORTED", codes(v), v["findings"])
+
+    def test_a_remarks_period_value_is_a_yuan_figure_of_that_period(self):
+        c = build(notes=["租金收入 | 2025-12-31: 4342452.0; Detail 26: 会计角度直线法下形成的应收租金",
+                         "房产税 | 2025-12-31 annualised: 6705120.0; Detail 22: 按月计提"])
+        n1, n2 = self.note_ref(c, "租金收入"), self.note_ref(c, "房产税")
+        v = verdict("2025年12月31日租金收入为434.2万元，系直线法下形成的应收租金。", c, [n1], [P2], "descriptive")
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+        other = verdict("2024年12月31日租金收入为434.2万元。", c, [n1], [P1], "descriptive")
+        self.assertEqual(other["verdict"], "failed", "a remark's value belongs to its own period")
+        self.assertTrue(codes(other) & {"AMOUNT_UNMATCHED", "WRONG_PERIOD"}, other["findings"])
+        self.assertEqual(verdict("2025年度房产税年化金额为670.5万元。", c, [n2], [P2], "descriptive")["verdict"], "verified")
+
+    def test_a_year_the_note_names_without_the_character_is_still_its_year(self):
+        c = build(notes=["*某会计师事务所 | 2023审计费191400和2025Q1审计费50000"])
+        n = self.note_ref(c, "*某会计师")
+        v = verdict("其中包括2023年审计费。", c, [n], [P2], "descriptive")
+        self.assertNotIn("WRONG_PERIOD", codes(v), v["findings"])
+
+    def test_naming_the_line_a_cited_note_is_about_needs_no_line_figure(self):
+        rows = [("资产管理费", "detail", {P1: 400000, P2: 500000}), ("折旧", "detail", {P1: 600000, P2: 800000}),
+                ("Total", "total", {P1: 1000000, P2: 1300000})]
+        c = build(rows, notes=["「2025」ADJ#1：+180.7万元（对方科目：毛利）；调整说明：资产管理费截止性调整"])
+        n = self.note_ref(c, "「2025」")
+        v = verdict("2025年度包含资产管理费截止性调整增加180.7万元。", c, [n], [P2], "descriptive")
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+
+    def test_a_counterparty_line_with_a_star_is_the_line_the_sentence_names(self):
+        rows = [("押金及保证金", "detail", {P1: 900000, P2: 900000}), ("*甲公司", "detail", {P1: 600000, P2: 600000}),
+                ("*乙公司", "detail", {P1: 300000, P2: 300000}), ("Total", "total", {P1: 900000, P2: 900000})]
+        c = build(rows, notes=[])
+        cites = [ref(c, P2, "押金及保证金"), ref(c, P2, "*甲公司")]
+        v = verdict("2025年12月31日余额主要为押金及保证金90.0万元，其中甲公司60.0万元。", c, cites, [P2], "composition")
+        self.assertNotIn("WRONG_LINE", codes(v), v["findings"])
+        bad = verdict("2025年12月31日余额主要为押金及保证金90.0万元，其中乙公司60.0万元。", c, cites, [P2], "composition")
+        self.assertEqual(bad["verdict"], "failed", "a figure under another line still fails")
+
+
 class Nesting(unittest.TestCase):
     """A line listed beside its own sub-lines: found when the line equals the sum of the lines right under it, and then the top
     level is what ties to the total. Before, every such account had its composition blocked."""

@@ -179,12 +179,16 @@ def sources_for_review(source: Any, key: str, candidate: Any) -> Dict[str, Any]:
                 continue
             seen.add(ref)
             item = contract.fact(ref) or contract.note(ref) or next((d for d in contract.derived if d.get("ref") == ref), None) or {}
+            if str(ref).startswith("N"):
+                cited.append({"ref": ref, "basis": "note"})          # its text is listed once per case
+                continue
             cited.append({"ref": ref, "period": item.get("period") or item.get("periods"), "basis": item.get("basis") or item.get("kind"),
                           "line": item.get("line"), "value": item.get("value"), "where": f"{item.get('sheet') or ''}!{item.get('row') or ''}".strip("!"),
                           "text": (item.get("text") or "")[:300] or None, "formula": item.get("formula")})
     notes = [{"ref": n.get("ref"), "kind": n.get("kind"), "period": n.get("period"), "text": n.get("text")}
              for n in contract.notes if n.get("ref") and n.get("ref") not in seen]
-    return {"cited": cited, "notes_not_cited": notes}
+    return {"cited": cited, "notes_not_cited": notes,
+            "all_notes": [{"ref": n.get("ref"), "kind": n.get("kind"), "text": n.get("text")} for n in contract.notes if n.get("ref")]}
 
 
 def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str, workdir: Path, limits: Any, *,
@@ -236,7 +240,8 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                    "review_status": review.get("status"), "review_objections": len(review.get("objections") or []) + len(review.get("missing") or []),
                    "flags": _flag_counts((c.flags if c is not None else []) or []),
                    "failure_codes": sorted({code for r in refusals(c) for code in r["codes"]}),
-                   "coverage": {k: v for k, v in coverage(work.source, key, c, work.source.language).items() if k not in ("required",)},
+                   "coverage": {k: v for k, v in coverage(work.source, key, c, work.source.language).items()
+                                if k not in ("required", "notes_not_cited", "must_refs")},
                    "unresolved": len(turn.unresolved or []), "calls": d["calls"], "in": pr.get("prompt", 0), "cached": pr.get("cached_prompt", 0),
                    "out": pr.get("completion", 0), "charged": d["charged_tokens"], "cost": d.get("cost"), "escalations": d["escalations"],
                    "review_calls": ((d.get("by_purpose") or {}).get("review") or {}).get("calls", 0),
@@ -602,10 +607,16 @@ def quality_markdown(report: Dict[str, Any], legacy: Dict[str, str], order: List
             if k not in keys:
                 keys.append(k)
     for key in keys:
+        all_notes = next((t.get("sources", {}).get("all_notes") for res in arms.values() for k, t in (res.get("_texts") or {}).items()
+                          if k == key and t.get("sources", {}).get("all_notes")), None)
         rows = {name: next((p for p in res.get("per_account") or [] if res.get("order") and key in res["order"]
                             and p["case"] == res["order"].index(key) + 1), {}) for name, res in arms.items()}
         any_row = next((r for r in rows.values() if r), {})
         out.append(f"## case {any_row.get('case', '?')}: {key} (sorted index {any_row.get('sorted_index', '?')})")
+        if all_notes:                                   # once per case, not once per arm (the report was too long to carry)
+            out.append("_notes in the evidence_:")
+            out.extend(f"- {n['ref']} ({n.get('kind')}): {n.get('text')}" for n in all_notes)
+            out.append("")
         old = legacy.get(key, "")
         if legacy:
             out.append(f"**legacy** ({len(old)} chars)\n\n{old or '(no legacy paragraph)'}\n")
@@ -651,8 +662,7 @@ def quality_markdown(report: Dict[str, Any], legacy: Dict[str, str], order: List
                            f" {('(' + x['where'] + ')') if x.get('where') else ''} {x.get('text') or ''}{(' = ' + x['formula']) if x.get('formula') else ''}".rstrip()
                            for x in src["cited"])
             if src.get("notes_not_cited"):
-                out.append("\n_notes in the evidence this paragraph does not cite_:")
-                out.extend(f"- {n['ref']} ({n.get('kind')}, {n.get('period') or 'no period'}): {n.get('text')}" for n in src["notes_not_cited"])
+                out.append("\n_notes this paragraph does not cite_: " + ", ".join(n["ref"] for n in src["notes_not_cited"]))
             out.append("\n" + REVIEW_FORM + "\n")
     return "\n".join(out)
 
@@ -804,7 +814,7 @@ def _write_reports(report: Dict[str, Any], legacy: Dict[str, str], stamp: str) -
     numbers = {k: v for k, v in report.items()}
     numbers["arms"] = {n: {k: v for k, v in r.items() if k not in ("_texts", "order", "sorted_index", "in_scope")}
                        | {"in_scope_count": sum(1 for v in (r.get("in_scope") or {}).values() if v)} for n, r in report["arms"].items()}
-    (OUT_DIR / f"trial_{stamp}.json").write_text(json.dumps(numbers, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
+    (OUT_DIR / f"trial_{stamp}.json").write_text(json.dumps(numbers, ensure_ascii=False, separators=(",", ":"), default=str), encoding="utf-8")
     text = summary_text(report)
     (OUT_DIR / f"trial_{stamp}.txt").write_text(text + "\n", encoding="utf-8")
     return text
