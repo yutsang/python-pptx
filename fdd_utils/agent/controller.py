@@ -248,6 +248,19 @@ def parse_turn(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
     return None, "reply was not valid JSON"
 
 
+_NOTHING = ("", "none", "null", "n/a", "na", "no", "无", "没有", "不需要", "无需", "不适用")
+
+
+def _wants_handover(turn: Dict[str, Any]) -> bool:
+    """The writer asks for the tool loop: a tool named, or evidence asked for in words that are not "none", and no draft to check.
+    A reply that carries a draft is a draft: models add {"tool": null} or {"need_evidence": "无"} beside one (seen 7 times on the
+    cheaper model on 2026-11-08), and reading that as a hand-over threw the draft away and cost the turn."""
+    if any(k in turn for k in ("draft", "fix", "add")):
+        return False
+    asked = str(turn.get("need_evidence") or "").strip()
+    return bool(turn.get("tool")) or bool(asked and asked.lower().rstrip("。.;；") not in _NOTHING and not asked.lower().startswith("none"))
+
+
 def _claim_sha(claim: Dict[str, Any]) -> str:
     """One claim's content (text, cites, periods, kind, inference): an objection is bound to this, not to a list position."""
     import hashlib
@@ -714,8 +727,11 @@ class AgentController:
             codes = {f.get("code") for f in v.get("findings") or []}
             if "NOTE_SOURCED_AMOUNT" in codes:
                 flags.append({"kind": "note_amount", "claim": n, "text": str(v.get("text"))[:160]})
-            if v.get("verdict") == "verified_inference" or "CAUSE_NOTE_RELATED_UNCHECKED" in codes:
+            if "CAUSE_INFERENCE" in codes:
                 flags.append({"kind": "cause_not_proven", "claim": n, "text": str(v.get("text"))[:160]})
+            elif "CAUSE_NOTE_RELATED_UNCHECKED" in codes:
+                # the sentence is about what a cited note says; no contradiction was found, the wording was not checked against it
+                flags.append({"kind": "note_wording_unchecked", "claim": n, "text": str(v.get("text"))[:160]})
             if "DETAIL_NESTING_UNKNOWN" in codes:
                 flags.append({"kind": "detail_caveat", "claim": n, "text": str(v.get("text"))[:160]})
         for p, perm in (view.get("permissions") or {}).items():
@@ -1054,7 +1070,7 @@ class AgentController:
             if role:
                 record["role"] = role
             codes: List[str] = []
-            if turn is not None and ("need_evidence" in turn or "tool" in turn):
+            if turn is not None and _wants_handover(turn):
                 record["fallback"] = str(turn.get("need_evidence") or f"tool {turn.get('tool')}")[:300]
                 if "tool" in turn:
                     self._pending_reply = (text, role)          # the loop runs this tool call as its first step

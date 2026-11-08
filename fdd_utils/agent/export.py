@@ -83,7 +83,7 @@ def review_findings(session: SourceSession, accounts: Iterable[str]) -> List[Fin
         elif review.get("status") == "unavailable":
             out.append(Finding("REVIEW_PENDING", "review", f"a review of this paragraph's meaning was due and did not happen: {str(review.get('why') or '')[:160]}", account))
         flags = [f for f in ((candidate.flags if candidate is not None else []) or [])
-                 if f.get("kind") in ("deferred_note", "note_amount", "cause_not_proven", "detail_caveat")]
+                 if f.get("kind") in ("deferred_note", "note_amount", "cause_not_proven", "note_wording_unchecked", "detail_caveat")]
         if flags:
             kinds: Dict[str, int] = {}
             for f in flags:

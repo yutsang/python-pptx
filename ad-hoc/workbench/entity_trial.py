@@ -235,6 +235,7 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                                                                              | {"validated": bool(c.validated)}) if c is not None else None,
                    "review_status": review.get("status"), "review_objections": len(review.get("objections") or []) + len(review.get("missing") or []),
                    "flags": _flag_counts((c.flags if c is not None else []) or []),
+                   "failure_codes": sorted({code for r in refusals(c) for code in r["codes"]}),
                    "coverage": {k: v for k, v in coverage(work.source, key, c, work.source.language).items() if k not in ("required",)},
                    "unresolved": len(turn.unresolved or []), "calls": d["calls"], "in": pr.get("prompt", 0), "cached": pr.get("cached_prompt", 0),
                    "out": pr.get("completion", 0), "charged": d["charged_tokens"], "cost": d.get("cost"), "escalations": d["escalations"],
@@ -246,7 +247,8 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
             result["_texts"][key] = {"text": cl.render_claims(c.claims) if c is not None else "", "accepted": bool(c is not None and c.accepted and c.validated),
                                      "unresolved": list(turn.unresolved or []), "review": review,
                                      "sources": sources_for_review(work.source, key, c),
-                                     "flags": list((c.flags if c is not None else []) or [])}
+                                     "flags": list((c.flags if c is not None else []) or []),
+                                     "refusals": refusals(c) if not (c is not None and c.accepted and c.validated) else []}
             marks.append(books.calls)
             clock.append(time.perf_counter())
             result.update(done=len(per), ok=sum(p["ok"] for p in per), books=A._books_delta(books, 0))
@@ -281,6 +283,21 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                 result["session_file_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         result["wall_seconds"] = round(time.perf_counter() - started_all, 1)
     return result
+
+
+def refusals(candidate: Any) -> List[Dict[str, Any]]:
+    """Why the verifier refused each claim it did not pass: the claim's text and every failed / review finding. Without this a
+    failed case said only how many claims failed (the 2026-11-08 whole-databook run could not be diagnosed from its report)."""
+    if candidate is None:
+        return []
+    out = []
+    for n, v in enumerate(candidate.outcome.get("verdicts") or []):
+        if v.get("verdict") in ("verified", "verified_inference"):
+            continue
+        bad = [f for f in v.get("findings") or [] if f.get("severity") in ("failed", "review")]
+        out.append({"claim": n, "text": str(v.get("text") or "")[:300], "codes": sorted({f.get("code") for f in bad}),
+                    "messages": [f"{f.get('code')}: {str(f.get('message') or '')[:300]}" for f in bad]})
+    return out
 
 
 def _flag_counts(flags: List[Dict[str, Any]]) -> Dict[str, int]:
@@ -500,11 +517,17 @@ def summary_text(report: Dict[str, Any]) -> str:
         for p in res.get("per_account") or []:
             stops[str(p.get("stop_reason"))] = stops.get(str(p.get("stop_reason")), 0) + 1
         lines.append(f"           end states {stops}")
+        codes: Dict[str, int] = {}
+        for p in res.get("per_account") or []:
+            for code in p.get("failure_codes") or []:
+                codes[code] = codes.get(code, 0) + 1
+        if codes:
+            lines.append(f"           refused by (accounts per code): {dict(sorted(codes.items(), key=lambda kv: -kv[1]))}")
         must = sum((p.get("coverage") or {}).get("must", 0) for p in res.get("per_account") or [])
         stated = sum((p.get("coverage") or {}).get("must_stated", 0) for p in res.get("per_account") or [])
         deferred = sum((p.get("flags") or {}).get("deferred_note", 0) for p in res.get("per_account") or [])
         flagged = sum(1 for p in res.get("per_account") or [] if any(k in (p.get("flags") or {}) for k in
-                                                                       ("deferred_note", "note_amount", "cause_not_proven", "detail_caveat")))
+                                                                       ("deferred_note", "note_amount", "cause_not_proven", "note_wording_unchecked", "detail_caveat")))
         lines.append(f"           material notes: {stated} stated, {deferred} deferred (flagged), of {must}; accounts with a human check: {flagged}")
         rev = (b.get("by_purpose") or {}).get("review")
         if res.get("review"):
@@ -532,7 +555,7 @@ def summary_text(report: Dict[str, Any]) -> str:
                              f"{str(p.get('review_status') or '-'):19s} | {_yn(cov.get('balance_stated'))} {_yn(cov.get('movement_stated'))} "
                              f"{cov.get('notes_cited', 0)}/{cov.get('notes', 0)}{'' if not cov.get('components_not_shown') else ' +' + str(cov['components_not_shown']) + ' lines not shown'} | "
                              f"{cov.get('must_stated', 0)}/{cov.get('must', 0)} | "
-                             f"{','.join(f'{k}:{v}' for k, v in (p.get('flags') or {}).items() if k in ('deferred_note', 'note_amount', 'cause_not_proven', 'detail_caveat', 'basis_caveat')) or '-'} | "
+                             f"{','.join(f'{k}:{v}' for k, v in (p.get('flags') or {}).items() if k in ('deferred_note', 'note_amount', 'cause_not_proven', 'note_wording_unchecked', 'detail_caveat', 'basis_caveat')) or '-'} | "
                              f"{p.get('unresolved', 0)} | {p.get('calls')} {p.get('in', 0) + p.get('out', 0):,} {_num(p.get('cost'))} {p.get('seconds')}")
     leg = report.get("legacy_usage") or {}
     if leg.get("total"):
@@ -606,6 +629,9 @@ def quality_markdown(report: Dict[str, Any], legacy: Dict[str, str], order: List
                 out.append("\n_reviewer objections_: " + "; ".join([f"[{o.get('index')}] {o.get('why')}" for o in review.get("objections") or []]
                                                                   + [f"missing {x.get('ref')}: {x.get('why')}" for x in review.get("missing") or []])
                            + (f" ({review.get('settled')})" if review.get("settled") else ""))
+            if t.get("refusals"):
+                out.append("\n_why the verifier refused (the last draft)_:")
+                out.extend(f"- [{r['claim']}] {r['text']}\n  " + "\n  ".join(r["messages"]) for r in t["refusals"])
             if t.get("flags"):
                 out.append("\n_flags for a person (set by the state)_:")
                 out.extend(f"- {f.get('kind')}{(' ' + f['ref']) if f.get('ref') else ''}{(' claim ' + str(f['claim'])) if f.get('claim') is not None else ''}: "

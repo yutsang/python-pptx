@@ -752,6 +752,14 @@ class PreparedWrite(unittest.TestCase):
         self.assertIn("REQUIRED_NOT_STATED", writer.users[1])
         self.assertEqual(len(work.source.candidates[ACCOUNT].claims), 2)
 
+    def test_a_draft_with_a_stray_tool_or_none_evidence_key_is_still_a_draft(self):
+        for extra in ({"tool": None}, {"need_evidence": "无"}, {"need_evidence": "None; the evidence is sufficient"}, {"tool": None, "need_evidence": ""}):
+            writer = Writer(lambda system, user, n, e=extra: dict({"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}}, **e))
+            work = self._work(writer)
+            turn = work.edit("撰写应收账款的段落", ACCOUNT)
+            self.assertTrue(turn.ok, (extra, turn.report))
+            self.assertEqual((len(writer.users), turn.report.get("prepared_fallback")), (1, None), extra)
+
     def test_the_writer_can_hand_the_turn_to_the_tool_loop_with_the_evidence_already_read(self):
         def fn(system, user, n):
             if n == 1:
