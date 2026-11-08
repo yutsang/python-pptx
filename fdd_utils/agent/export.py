@@ -82,6 +82,14 @@ def review_findings(session: SourceSession, accounts: Iterable[str]) -> List[Fin
             out.append(Finding("SEMANTIC_OBJECTION", "blocked", f"the reviewer's objection to this paragraph stands: {why[:200]}", account))
         elif review.get("status") == "unavailable":
             out.append(Finding("REVIEW_PENDING", "review", f"a review of this paragraph's meaning was due and did not happen: {str(review.get('why') or '')[:160]}", account))
+        flags = [f for f in ((candidate.flags if candidate is not None else []) or [])
+                 if f.get("kind") in ("deferred_note", "note_amount", "cause_not_proven", "detail_caveat")]
+        if flags:
+            kinds: Dict[str, int] = {}
+            for f in flags:
+                kinds[f["kind"]] = kinds.get(f["kind"], 0) + 1
+            out.append(Finding("HUMAN_CHECK", "review", "check against the source: " + ", ".join(f"{n} {k.replace('_', ' ')}" for k, n in kinds.items()),
+                               account))
     return out
 
 

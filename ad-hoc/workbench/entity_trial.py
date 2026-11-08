@@ -63,7 +63,7 @@ import agent_acceptance as A  # noqa: E402
 
 OUT_DIR = ROOT / "fdd_utils" / "output" / "agent_trial"
 ARMS = ("pro", "flash", "mixed", "seeded", "reviewed", "loop")
-DEFAULT_ARMS = "pro,flash,mixed,seeded,reviewed"
+DEFAULT_ARMS = "pro,flash,mixed"           # the mechanisms under comparison; seeded / reviewed were measured 2026-11-08 and dropped
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -150,8 +150,10 @@ def coverage(source: Any, key: str, candidate: Any, language: str) -> Dict[str, 
     move = next((d["ref"] for d in view.get("derived") or [] if d.get("kind") == "movement" and d.get("valid", True) and d.get("value")
                  and list(d.get("periods") or [])[-1:] == [latest]), None)
     notes = [n["ref"] for n in view.get("notes") or [] if n.get("ref")]
+    must = [m["ref"] for m in ctl._must_address(view)]
     out = {"required": required, "balance_stated": None, "movement": move, "movement_stated": None, "notes": len(notes),
-           "notes_cited": 0, "notes_not_cited": notes, "components_not_shown": view.get("components_not_shown")}
+           "notes_cited": 0, "notes_not_cited": notes, "components_not_shown": view.get("components_not_shown"),
+           "must": len(must), "must_stated": 0, "must_refs": must}
     if candidate is None:
         return out
     claims, outcome = candidate.claims, candidate.outcome
@@ -159,6 +161,7 @@ def coverage(source: Any, key: str, candidate: Any, language: str) -> Dict[str, 
     out["balance_stated"] = (not ctl._required_unstated(required, claims, outcome, view)) if required else None
     out["movement_stated"] = (not ctl._required_unstated([move], claims, outcome, view)) if move else None
     out["notes_cited"] = len([n for n in notes if n in cited])
+    out["must_stated"] = len([m for m in must if m in cited])
     out["notes_not_cited"] = [n for n in notes if n not in cited]
     return out
 
@@ -231,6 +234,7 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                    "stop_class": routing.get("stop_class"), "mechanical": ({k: c.outcome.get(k) for k in ("verified", "inference", "failed", "unverified")}
                                                                              | {"validated": bool(c.validated)}) if c is not None else None,
                    "review_status": review.get("status"), "review_objections": len(review.get("objections") or []) + len(review.get("missing") or []),
+                   "flags": _flag_counts((c.flags if c is not None else []) or []),
                    "coverage": {k: v for k, v in coverage(work.source, key, c, work.source.language).items() if k not in ("required",)},
                    "unresolved": len(turn.unresolved or []), "calls": d["calls"], "in": pr.get("prompt", 0), "cached": pr.get("cached_prompt", 0),
                    "out": pr.get("completion", 0), "charged": d["charged_tokens"], "cost": d.get("cost"), "escalations": d["escalations"],
@@ -241,7 +245,8 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
             per.append(row)
             result["_texts"][key] = {"text": cl.render_claims(c.claims) if c is not None else "", "accepted": bool(c is not None and c.accepted and c.validated),
                                      "unresolved": list(turn.unresolved or []), "review": review,
-                                     "sources": sources_for_review(work.source, key, c)}
+                                     "sources": sources_for_review(work.source, key, c),
+                                     "flags": list((c.flags if c is not None else []) or [])}
             marks.append(books.calls)
             clock.append(time.perf_counter())
             result.update(done=len(per), ok=sum(p["ok"] for p in per), books=A._books_delta(books, 0))
@@ -276,6 +281,13 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                 result["session_file_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         result["wall_seconds"] = round(time.perf_counter() - started_all, 1)
     return result
+
+
+def _flag_counts(flags: List[Dict[str, Any]]) -> Dict[str, int]:
+    out: Dict[str, int] = {}
+    for f in flags:
+        out[f.get("kind", "?")] = out.get(f.get("kind", "?"), 0) + 1
+    return out
 
 
 def _rel(path: str) -> Optional[str]:
@@ -326,7 +338,7 @@ class ScriptedWriter:
         if "Judge meaning only" in system:
             reply: Dict[str, Any] = {"objections": [], "missing": []}
         elif "KEPT (Python wrote these" in user and "REJECTED" not in user:
-            reply = {"add": [], "unresolved": []}
+            reply = {"add": [], "unresolved": [f"{r}: scripted writer defers it" for r in _must_refs(user)]}
         elif view is None:
             reply = {"need_evidence": "scripted writer: no EVIDENCE block"}
         else:
@@ -335,11 +347,19 @@ class ScriptedWriter:
             if claim is None:
                 reply = {"draft": {"claims": [], "unresolved": ["no latest balance on the deck's basis"]}}
             elif repairing:
-                reply = {"fix": [{"index": 0, "claim": claim}], "add": [] if "REQUIRED_NOT_STATED" not in user else [claim]}
+                reply = {"fix": [{"index": 0, "claim": claim}], "add": [] if "REQUIRED_NOT_STATED" not in user else [claim],
+                         "unresolved": [f"{r}: scripted writer defers it" for r in _must_refs(user)]}
             else:
-                reply = {"draft": {"claims": [claim], "unresolved": []}}
+                reply = {"draft": {"claims": [claim], "unresolved": [f"{r}: scripted writer defers it" for r in _must_refs(user)]}}
         text = json.dumps(reply, ensure_ascii=False)
         return {"content": text, "prompt_tokens": None, "completion_tokens": None}
+
+
+def _must_refs(user: str) -> List[str]:
+    if "MUST ADDRESS" not in user:
+        return []
+    block = user.split("MUST ADDRESS", 1)[1].split("\n\n", 1)[0]
+    return [line.split()[0] for line in block.splitlines()[1:] if line.strip()]
 
 
 def scripted_for(name: str) -> Dict[str, Any]:
@@ -480,6 +500,12 @@ def summary_text(report: Dict[str, Any]) -> str:
         for p in res.get("per_account") or []:
             stops[str(p.get("stop_reason"))] = stops.get(str(p.get("stop_reason")), 0) + 1
         lines.append(f"           end states {stops}")
+        must = sum((p.get("coverage") or {}).get("must", 0) for p in res.get("per_account") or [])
+        stated = sum((p.get("coverage") or {}).get("must_stated", 0) for p in res.get("per_account") or [])
+        deferred = sum((p.get("flags") or {}).get("deferred_note", 0) for p in res.get("per_account") or [])
+        flagged = sum(1 for p in res.get("per_account") or [] if any(k in (p.get("flags") or {}) for k in
+                                                                       ("deferred_note", "note_amount", "cause_not_proven", "detail_caveat")))
+        lines.append(f"           material notes: {stated} stated, {deferred} deferred (flagged), of {must}; accounts with a human check: {flagged}")
         rev = (b.get("by_purpose") or {}).get("review")
         if res.get("review"):
             statuses: Dict[str, int] = {}
@@ -496,7 +522,7 @@ def summary_text(report: Dict[str, Any]) -> str:
         if (b.get("cached_input_pricing") or "").startswith(tuple("0123456789")):
             lines.append("           " + b["cached_input_pricing"])
     if cases:
-        lines.append("  per case: arm case(index) end | mech v/i/f/u | review | balance movement notes | unresolved | calls tokens yuan secs")
+        lines.append("  per case: arm case(index) end | mech v/i/f/u | review | balance movement notes | must stated/total | flags | unresolved | calls tokens yuan secs")
         for name, res in (report.get("arms") or {}).items():
             for p in res.get("per_account") or []:
                 m = p.get("mechanical") or {}
@@ -505,6 +531,8 @@ def summary_text(report: Dict[str, Any]) -> str:
                              f"{m.get('verified', '-')}/{m.get('inference', '-')}/{m.get('failed', '-')}/{m.get('unverified', '-')} | "
                              f"{str(p.get('review_status') or '-'):19s} | {_yn(cov.get('balance_stated'))} {_yn(cov.get('movement_stated'))} "
                              f"{cov.get('notes_cited', 0)}/{cov.get('notes', 0)}{'' if not cov.get('components_not_shown') else ' +' + str(cov['components_not_shown']) + ' lines not shown'} | "
+                             f"{cov.get('must_stated', 0)}/{cov.get('must', 0)} | "
+                             f"{','.join(f'{k}:{v}' for k, v in (p.get('flags') or {}).items() if k in ('deferred_note', 'note_amount', 'cause_not_proven', 'detail_caveat', 'basis_caveat')) or '-'} | "
                              f"{p.get('unresolved', 0)} | {p.get('calls')} {p.get('in', 0) + p.get('out', 0):,} {_num(p.get('cost'))} {p.get('seconds')}")
     leg = report.get("legacy_usage") or {}
     if leg.get("total"):
@@ -578,6 +606,10 @@ def quality_markdown(report: Dict[str, Any], legacy: Dict[str, str], order: List
                 out.append("\n_reviewer objections_: " + "; ".join([f"[{o.get('index')}] {o.get('why')}" for o in review.get("objections") or []]
                                                                   + [f"missing {x.get('ref')}: {x.get('why')}" for x in review.get("missing") or []])
                            + (f" ({review.get('settled')})" if review.get("settled") else ""))
+            if t.get("flags"):
+                out.append("\n_flags for a person (set by the state)_:")
+                out.extend(f"- {f.get('kind')}{(' ' + f['ref']) if f.get('ref') else ''}{(' claim ' + str(f['claim'])) if f.get('claim') is not None else ''}: "
+                           f"{f.get('why') or ''} {f.get('text') or ''}".rstrip() for f in t["flags"])
             if t.get("unresolved"):
                 out.append("\n_unresolved_: " + "; ".join(t["unresolved"]))
             if cov.get("notes_not_cited"):

@@ -339,9 +339,18 @@ def writer_system_prompt(language: str) -> str:
         "   describe_total=false is in conflict: state the difference (its D ref), not either figure. Detail lines may explain a total\n"
         "   only where permissions say explain_with_detail=true. Read the notes (N refs) for causes and adjustments.\n"
         "3. The paragraph states the latest balance the deck uses (REQUIRED), the movement where a D ref exists, the main detail\n"
-        "   lines where detail is permitted, and causes only from notes.\n"
-        "4. What the evidence cannot settle goes in 'unresolved'; do not fill the gap.\n"
-        f"5. Write the text of claims in {answer_lang}. Amounts as 万元 or 亿元 with one decimal unless the figure is small.\n\n"
+        "   lines where detail is permitted, and causes only from notes. A line marked nested_in is a sub-line of that line: never\n"
+        "   add it to its parent.\n"
+        "4. Notes are evidence too. A figure, percentage or date written in a note may be stated when the claim cites that note in\n"
+        "   'cites' (an amount in the note's own currency, e.g. 万美元; never convert it). MUST ADDRESS lists the notes Python found\n"
+        "   material: state what each says in a claim that cites it, or name its ref in 'unresolved' with the reason. None may be\n"
+        "   left out silently.\n"
+        "5. What the evidence cannot settle goes in 'unresolved'; do not fill the gap.\n"
+        f"6. Write for the report, in {answer_lang}: amounts as 万元 or 亿元 with one decimal unless the figure is small; periods as\n"
+        "   period_labels gives them (an income-statement line is a flow: 2024年度, 2026年1-3月, never '2024年12月31日营业成本');\n"
+        "   no refs (F12, N3) and no internal names (authority_adjusted, raw_schedule) in the text. No percentage change over a\n"
+        "   negative base or across a change of sign. The tab's lines are not the make-up of an adjusted balance unless they add\n"
+        "   up to it.\n\n"
         + CLAIM_SCHEMA
     )
 
@@ -407,6 +416,9 @@ class AgentController:
         self._repeated_failure = False
         #: a reply the prepared write received but the tool loop must handle (the writer called a tool): not paid for twice
         self._pending_reply: Optional[Tuple[str, str]] = None
+        #: the prepared write's evidence and the notes it must address (set when it starts)
+        self._view: Optional[Dict[str, Any]] = None
+        self._must: List[Dict[str, str]] = []
 
     # -- the run -----------------------------------------------------------------------
 
@@ -601,6 +613,7 @@ class AgentController:
         if not result.ok:
             return None
         view = dict(result.data)
+        view["period_labels"] = self._period_labels(account, view)
         if (view.get("annualization") or {}).get("annualized") and view.get("periods"):
             extra = T.call_tool(self.session, "compute_analysis", {"account": account, "op": "annualized", "period": view["periods"][-1]})
             self._absorb("compute_analysis", {"account": account, "op": "annualized"}, extra)
@@ -609,6 +622,114 @@ class AgentController:
                 if derived and all(d.get("ref") != derived.get("ref") for d in view.get("derived") or []):
                     view["derived"] = list(view.get("derived") or []) + [derived]
         return view
+
+    def _period_labels(self, account: str, view: Dict[str, Any]) -> Dict[str, str]:
+        """How each period is written: a balance at its date; a flow (income statement) as the year, or the months it covers."""
+        chinese = self.language in ("Chi", "Chn")
+        contract = self.session.contracts.get(account)
+        flow = str(getattr(contract, "statement_type", "") or "").upper().startswith("IS")
+        months = (view.get("annualization") or {}).get("months")
+        latest = (view.get("periods") or [""])[-1]
+        out = {}
+        for p in view.get("periods") or []:
+            y, m, _d = (int(x) for x in p[:10].split("-"))
+            if not flow:
+                out[p] = _date_words(p, chinese)
+            elif m == 12:
+                out[p] = f"{y}年度" if chinese else f"FY{y}"
+            elif p == latest and months and int(months) == m:
+                out[p] = f"{y}年1-{m}月" if chinese else f"the {int(months)} months ended {_date_words(p, False)}"
+            else:
+                out[p] = f"截至{_date_words(p, True)}止期间" if chinese else f"the period ended {_date_words(p, False)}"
+        return out
+
+    _MATERIAL_WORDS = ("关联", "质保", "尾款", "保证金", "押金", "减值", "坏账", "抵押", "担保", "质押", "直线法", "重分类", "协议",
+                       "合同", "账龄", "逾期", "诉讼", "变更", "利率", "未付", "受限", "冻结", "承诺", "实缴", "注册资本")
+    _REMARK_VALUE = re.compile(r"\d{4}-\d{2}-\d{2}(?: annualised)?:\s*(-?[\d.]+)")
+
+    def _must_address(self, view: Dict[str, Any]) -> List[Dict[str, str]]:
+        """The notes a paragraph may not leave out silently, decided by Python: an adjustment of at least 5% of the latest balance; a
+        note on a line that is at least 5% of it; a note that names a related party, a retention, a deposit, an impairment, a
+        pledge, a straight-line accrual, a reclassification, an agreement, an ageing... unless its line is known to be under 1%.
+        A remark that repeats a note on the same line, and a note contained in another, are not listed twice. At most eight."""
+        latest = (view.get("periods") or [""])[-1]
+        total = next((abs(float(t.get("yuan") or 0)) for t in view.get("totals") or []
+                      if t.get("period") == latest and t.get("basis") == "authority_adjusted"), 0.0)
+        notes = view.get("notes") or []
+        label_value: Dict[str, float] = {}
+        for n in notes:
+            label = str(n.get("text") or "").split("|")[0].strip(" *")
+            m = self._REMARK_VALUE.search(str(n.get("text") or ""))
+            if m:
+                label_value[label] = max(label_value.get(label, 0.0), abs(float(m.group(1))))
+        picked: List[Dict[str, str]] = []
+        seen_labels: set = set()
+        ordered = sorted(notes, key=lambda n: {"adjustment": 0, "supporting_note": 1}.get(n.get("kind"), 2))
+        for n in ordered:
+            text = str(n.get("text") or "")
+            label = text.split("|")[0].strip(" *")
+            amounts = [abs(sp["value"]) for sp in cl.text_amounts(text) if cl._currency_at(text, sp["start"], sp["end"]) == "CNY"]
+            weight = max(amounts + ([label_value[label]] if label in label_value else []), default=None)
+            share = (weight / total) if (weight is not None and total) else None
+            keyword = any(w in text for w in self._MATERIAL_WORDS)
+            if n.get("kind") == "adjustment":
+                why = f"adjustment of {share:.0%} of the balance" if share is not None and share >= 0.05 else ""
+            elif share is not None and share >= 0.05:
+                why = f"its line is {share:.0%} of the balance"
+            elif keyword and (share is None or share >= 0.01):
+                why = "names " + next(w for w in self._MATERIAL_WORDS if w in text)
+            else:
+                why = ""
+            if not why or (n.get("kind") != "adjustment" and label and label in seen_labels):
+                continue
+            if any(text.split("|")[-1].strip() and text.split("|")[-1].strip() in other["text"] for other in picked):
+                continue
+            seen_labels.add(label)
+            picked.append({"ref": n["ref"], "why": why, "text": text[:160]})
+            if len(picked) >= 8:
+                break
+        return picked
+
+    @staticmethod
+    def _unaddressed(must: List[Dict[str, str]], claims: List[Dict[str, Any]], outcome: Dict[str, Any], unresolved: List[str]) -> List[Dict[str, str]]:
+        """Must-address notes neither cited by a verified claim nor named in unresolved."""
+        verdicts = outcome.get("verdicts") or []
+        cited = {r for n, c in enumerate(claims) if n < len(verdicts) and verdicts[n].get("verdict") in ("verified", "verified_inference")
+                 for r in list(c.get("cites") or []) + list(c.get("cause_cites") or [])}
+        named = {r for u in unresolved for r in re.findall(r"(?<![A-Za-z])N\d+(?!\d)", str(u))}
+        return [m for m in must if m["ref"] not in cited and m["ref"] not in named]
+
+    def _flags(self, account: str, view: Dict[str, Any], must: List[Dict[str, str]], claims: List[Dict[str, Any]],
+               outcome: Dict[str, Any], unresolved: List[str], escalated: bool) -> List[Dict[str, Any]]:
+        """What a person should look at in this paragraph, decided by the state, not by a model: material notes deferred instead
+        of stated, figures taken from a note's free text, causes marked as inference or only related to a note, detail or basis
+        caveats, what is unresolved, and that the stronger model had to repair it."""
+        flags: List[Dict[str, Any]] = []
+        verdicts = outcome.get("verdicts") or []
+        cited = {r for c in claims for r in list(c.get("cites") or []) + list(c.get("cause_cites") or [])}
+        for m in must:
+            if m["ref"] not in cited:
+                flags.append({"kind": "deferred_note", "ref": m["ref"], "why": m["why"], "text": m["text"]})
+        for n, v in enumerate(verdicts):
+            codes = {f.get("code") for f in v.get("findings") or []}
+            if "NOTE_SOURCED_AMOUNT" in codes:
+                flags.append({"kind": "note_amount", "claim": n, "text": str(v.get("text"))[:160]})
+            if v.get("verdict") == "verified_inference" or "CAUSE_NOTE_RELATED_UNCHECKED" in codes:
+                flags.append({"kind": "cause_not_proven", "claim": n, "text": str(v.get("text"))[:160]})
+            if "DETAIL_NESTING_UNKNOWN" in codes:
+                flags.append({"kind": "detail_caveat", "claim": n, "text": str(v.get("text"))[:160]})
+        for p, perm in (view.get("permissions") or {}).items():
+            if not perm.get("describe_total", True) or (view.get("checks") or {}).get(p, {}).get("total_vs_financials") == "mismatch":
+                flags.append({"kind": "basis_caveat", "period": p, "text": "tab and Financials differ in this period"})
+        deferred = {m["ref"] for m in must}
+        for u in unresolved:
+            if not any(r in deferred for r in re.findall(r"(?<![A-Za-z])N\d+(?!\d)", str(u))):
+                flags.append({"kind": "unresolved", "text": str(u)[:200]})
+        if view.get("components_not_shown"):
+            flags.append({"kind": "evidence_cut", "text": f"{view['components_not_shown']} detail line(s) were not shown to the writer"})
+        if escalated:
+            flags.append({"kind": "escalated", "text": "the cheaper model's draft was rejected; the stronger model repaired it"})
+        return flags
 
     def _required_refs(self, view: Dict[str, Any]) -> List[str]:
         """What a paragraph must state: the latest balance the deck uses, or, where tab and Financials disagree and nothing chose,
@@ -635,6 +756,10 @@ class AgentController:
         earlier = self._earlier_answer(account)
         if earlier:
             parts.append(earlier)
+        must = getattr(self, "_must", None) or []
+        if must:
+            parts.append("MUST ADDRESS (state it citing the ref, or name the ref in 'unresolved' with the reason):\n"
+                         + "\n".join(f"  {m['ref']} ({m['why']}): {m['text']}" for m in must))
         if required:
             parts.append("REQUIRED: a claim must cite " + ", ".join(required) + " (the latest balance the deck uses, or the difference that replaces it).")
         parts.append(f"REQUEST: {goal}")
@@ -723,10 +848,11 @@ class AgentController:
         contract = self.session.contracts.get(account)
         flow = str(getattr(contract, "statement_type", "") or "").upper().startswith("IS")
         when, amount = _date_words(latest, chinese), _money(float(total.get("yuan") or 0.0), chinese)
+        label = self._period_labels(account, view).get(latest) or when
         if chinese:
-            text = f"截至{when}止期间，发生额为{amount}。" if flow else f"截至{when}，余额为{amount}。"
+            text = f"{label}，发生额为{amount}。" if flow else f"截至{when}，余额为{amount}。"
         else:
-            text = f"For the period ended {when}, the amount was {amount}." if flow else f"As at {when}, the balance was {amount}."
+            text = f"For {label}, the amount was {amount}." if flow else f"As at {when}, the balance was {amount}."
         seeds = [{"kind": "amount", "periods": [latest], "cites": [total["ref"]], "text": text}]
         move = next((d for d in view.get("derived") or [] if d.get("kind") == "movement" and d.get("valid", True) and d.get("value")
                      and list(d.get("periods") or [])[-1:] == [latest]), None)
@@ -864,6 +990,10 @@ class AgentController:
         candidate = self.session.candidates.get(account)
         if candidate is not None and review is not None:
             candidate.review = {k: v for k, v in review.items()}
+        if candidate is not None and getattr(self, "_view", None) is not None:
+            candidate.flags = self._flags(account, self._view, self._must, candidate.claims, candidate.outcome, unresolved,
+                                          escalated=bool(self.escalations))
+            run.report["flags"] = list(candidate.flags)
         if review is not None:
             run.report["review"] = dict(review, outcome=review.get("status"))
             if review.get("status") in ("objected", "unavailable"):
@@ -895,6 +1025,7 @@ class AgentController:
             run.report["prepared_fallback"] = "the account's evidence could not be read"
             return False
         required = self._required_refs(view)
+        self._view, self._must = view, self._must_address(view)
         system = writer_system_prompt(self.language)
         router = self.router
         claims: List[Dict[str, Any]] = []
@@ -970,13 +1101,14 @@ class AgentController:
                     self._absorb("validate_candidate", {"account": account, "claims": claims}, result)
                     outcome = (result.data or {}).get("outcome") or {}
                     missing = self._required_unstated(required, claims, outcome, view)
+                    unaddressed = self._unaddressed(self._must, claims, outcome, unresolved)
                     record.update(claims=len(claims), verified=outcome.get("verified"), failed=outcome.get("failed"),
                                   unverified=outcome.get("unverified"))
                     if review is not None and review["status"] == "objected" and pre_review is not None:
                         # this draft answers the reviewer: settled only by a change the reviewer accepts, never by a repeat
-                        return self._settle_review(run, account, view, claims, pre_review, result.ok and not missing, review,
+                        return self._settle_review(run, account, view, claims, pre_review, result.ok and not missing and not unaddressed, review,
                                                    unresolved, usage, export, record)
-                    if result.ok and not missing:
+                    if result.ok and not missing and not unaddressed:
                         if can_review:
                             reasons = self._review_reasons(view, claims)
                             if not reasons:
@@ -1007,7 +1139,12 @@ class AgentController:
                         if missing:
                             rejected[len(claims)] = [f"REQUIRED_NOT_STATED: no verified claim cites {', '.join(missing)} AND writes its figure; "
                                                      "add one ('add')"]
-                        codes = sorted(outcome.get("by_code") or {}) + (["REQUIRED_NOT_STATED"] if missing else [])
+                        if unaddressed:
+                            rejected.setdefault(len(claims), []).extend(
+                                f"NOTE_UNADDRESSED: {m['ref']} ({m['why']}) is in MUST ADDRESS; state it citing {m['ref']}, or name {m['ref']} "
+                                "in 'unresolved' with the reason" for m in unaddressed)
+                        codes = sorted(outcome.get("by_code") or {}) + (["REQUIRED_NOT_STATED"] if missing else []) + \
+                            (["NOTE_UNADDRESSED"] if unaddressed else [])
                         record["feedback"] = " | ".join(o for objs in rejected.values() for o in objs)[:900]
                 if codes:
                     self.rejections += 1

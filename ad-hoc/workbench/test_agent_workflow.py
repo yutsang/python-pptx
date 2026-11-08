@@ -639,8 +639,59 @@ class PreparedWrite(unittest.TestCase):
                                                         "This was an increase of CNY0.3 million from 31 December 2024."])
         contract.statement_type = "IS"
         flow = C.AgentController(work.source, lambda *a: {}, language="Chi", seed=True)._seed_claims(ACCOUNT, view)
-        self.assertEqual(flow[0]["text"], "截至2025年12月31日止期间，发生额为130.0万元。")
+        self.assertEqual(flow[0]["text"], "2025年度，发生额为130.0万元。")
         self.assertEqual((C._money(-70_677_440, True), C._money(3_091, True), C._money(2.5e8, True)), ("-7,067.7万元", "0.31万元", "2.50亿元"))
+
+    # -- 2026-11-08 ten-case review: material notes may not be dropped silently; what is left is flagged for a person ------------
+
+    def _noted(self, writer, notes):
+        tmp = tempfile.mkdtemp(prefix="prep_notes_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        source = session_on(book, notes=notes)
+        source.load_params = {"workbook": book}
+        return W.WorkSession(source, model=writer, model_name="m", budget=C.Budget(max_steps=8), prepare=True, config={"agent": {}})
+
+    NOTE = "应收甲公司的租金按直线法确认，尚未开票"
+
+    def test_a_material_note_is_stated_or_deferred_by_ref_and_a_deferral_is_flagged_for_a_person(self):
+        def defer(system, user, n):
+            view = writer_view(user)
+            if n == 1:
+                return {"draft": {"claims": [amount_claim(view, P2, GOOD)], "unresolved": []}}
+            return {"fix": [], "unresolved": ["N1：直线法租金的金额未单独列示，需人工确认"]}
+        writer = Writer(defer)
+        work = self._noted(writer, [self.NOTE])
+        turn = work.edit("撰写应收账款的段落", ACCOUNT, accept=True)
+        self.assertIn("MUST ADDRESS", writer.users[0])
+        self.assertIn("N1", writer.users[0].split("MUST ADDRESS", 1)[1].split("\n\n", 1)[0])
+        self.assertIn("NOTE_UNADDRESSED", writer.users[1], "dropping it silently is sent back")
+        self.assertTrue(turn.ok, turn.report)
+        flags = work.source.candidates[ACCOUNT].flags
+        self.assertIn(("deferred_note", "N1"), [(f["kind"], f.get("ref")) for f in flags])
+        from fdd_utils.agent.export import review_findings
+        self.assertEqual([f.code for f in review_findings(work.source, [ACCOUNT])], ["HUMAN_CHECK"])
+
+    def test_a_material_note_stated_with_its_ref_is_not_deferred(self):
+        def state(system, user, n):
+            view = writer_view(user)
+            return {"draft": {"claims": [amount_claim(view, P2, GOOD),
+                                         {"kind": "descriptive", "periods": [P2], "cites": ["N1"], "text": "部分应收租金按直线法确认，尚未开票。"}],
+                              "unresolved": []}}
+        writer = Writer(state)
+        work = self._noted(writer, [self.NOTE])
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual(len(writer.users), 1)
+        self.assertNotIn("deferred_note", [f["kind"] for f in work.source.candidates[ACCOUNT].flags])
+
+    def test_periods_are_labelled_as_a_balance_or_a_flow(self):
+        work = self._work(Writer(lambda *a: {}))
+        ctl = C.AgentController(work.source, lambda *a: {}, language="Chi")
+        view = T.get_account_evidence(work.source, ACCOUNT)
+        self.assertEqual(ctl._period_labels(ACCOUNT, view), {P1: "2024年12月31日", P2: "2025年12月31日"})
+        work.source.contracts[ACCOUNT].statement_type = "IS"
+        self.assertEqual(ctl._period_labels(ACCOUNT, view), {P1: "2024年度", P2: "2025年度"})
 
     def test_a_plain_paragraph_with_nothing_to_judge_is_not_sent_for_review(self):
         reviewer = Writer(lambda system, user, n: {"objections": [], "missing": []})

@@ -157,6 +157,22 @@ What "checked" means here has four parts.
   million by 50,000. The English scale words (million, mn, m, K, bn) were not
   read for this until 2026-11-07, so a rounded English figure failed as
   unmatched; the fixed pipeline's matcher uses the same function.
+- **Notes as evidence.** A figure, percentage or date written in a note (with
+  its unit) may be stated when the claim cites that note. An amount must be in
+  the note's own currency (7,000万美元 matches a dollar figure, never a yuan
+  one), a date the note states is not a reporting period the claim must
+  declare, and each such figure is marked `NOTE_SOURCED_AMOUNT` for a person,
+  because a note is free text, not a cell. A remark's bare cell values are not
+  read. Before 2026-11-08 notes could only support a cause, so a paragraph could
+  not state what the notes said and material facts went to `unresolved`.
+- **Three meaning checks.** No reference or internal name in the text
+  (`INTERNAL_TERMS_IN_TEXT`: "(F52)", "authority_adjusted"). No percentage
+  change over a negative base or across a change of sign
+  (`PERCENT_OVER_SIGN_CHANGE`). Every detail line of a period named as the
+  make-up of a balance must add up to that balance; the tab's own lines under an
+  adjusted balance do not (`COMPOSITION_BASIS`), which the detail check's
+  tolerance had let through. A part-year flow written "2026年1-3月" names the
+  period it ends.
 - **Amount signs.** Amounts are compared as magnitudes, because prose writes a
   fall as 减少 with no sign. A sign the sentence does write ("-130万元", "负130万元",
   "+70万元") is held to the cited figure: the opposite sign fails (`SIGN_ERROR`).
@@ -285,6 +301,23 @@ it shorter" refers to it). `agent.prepared_write: false` in config.yml restores
 the loop from the first step. Tool results in the loop's prompt are compact JSON
 (no padding): the same values in about a tenth fewer characters.
 
+The writer is also given each period's label (a balance at its date; an
+income-statement line as 2024年度 or 2026年1-3月) and a MUST ADDRESS list that
+Python draws from the notes: an adjustment of at least 5% of the latest
+balance, a note on a line of at least 5% of it, and a note that names a related
+party, a retention, a deposit, an impairment, a pledge, a straight-line
+accrual, a reclassification, an agreement, an ageing and similar, unless its
+line is known to be under 1%; a remark repeating a note on the same line, or a
+note contained in another, is listed once; eight at most. Each must be stated
+in a verified claim that cites it, or named by its ref in `unresolved`; a draft
+that drops one silently is sent back (`NOTE_UNADDRESSED`). When the paragraph
+is finished the state writes `flags` on the candidate for a person: material
+notes deferred rather than stated, figures from a note's text, causes marked
+as inference or only related to a note, detail and basis caveats, what is
+unresolved, detail lines the writer was not shown, and a repair by the stronger
+model. Export turns the first four kinds into a `HUMAN_CHECK` finding (review)
+for that account.
+
 Two options of the prepared write are off until a paid comparison shows they
 help. `agent.seed_facts`: Python writes the latest balance (or, for an income
 statement line, the period's amount) and the movement into it in house style,
@@ -321,6 +354,12 @@ name (`ACCOUNT_NOT_DRAFTED`). The executive summary band of that deck is the
 exporter's splice of first sentences (`SUMMARY_SPLICED`, review); no summary
 call is made. The model cannot reach this export: it is a tool the session
 calls and the prompt does not list.
+
+The detail check now recognises a nested layout: a line equal, to the yuan, to
+the sum of the run of lines right under it (or right above it, a subtotal),
+with two lines at least. When the top level then ties to the total, detail is
+`tied` and may explain it, and each sub-line carries `nested_in` so it is never
+added to its parent. Without an exact subtotal the layout stays `ambiguous`.
 
 - **Verified offline**: `test_agent_tools.py`, `test_agent_controller.py`
   (scripted policies; one policy takes three different tool paths in three
@@ -578,7 +617,10 @@ sentence in edit mode reaches the escalation rule (it never did before).
 `ad-hoc/workbench/entity_trial.py` measures a whole databook written from zero,
 once per arm, on the same workbook bytes: `pro` (the stronger model writes),
 `flash` (the cheaper one writes), `mixed` (the cheaper one writes and the
-stronger repairs after `--escalate-after` rejections), `seeded` (mixed, with
+stronger repairs after `--escalate-after` rejections), the three compared by
+default, and, measured on ten accounts on 2026-11-08 and then dropped from the
+default (no cheaper than `pro`, a review that caught one problem in nine),
+`seeded` (mixed, with
 Python writing the balance and movement sentences), `reviewed` (seeded, with the
 stronger model's meaning review) and, opt-in, `loop` (the tool loop with no
 prepared write, the path the first paid acceptance measured).

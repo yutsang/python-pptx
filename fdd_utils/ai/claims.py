@@ -93,6 +93,7 @@ def derive_movement(contract: EvidenceContract, p_from: str, p_to: str) -> Dict[
         return _register(contract, d)
     d["inputs"] = [a["id"], b["id"]]
     d["value"] = b["value"] - a["value"]
+    d["base"], d["end"] = a["value"], b["value"]
     perm = contract.permissions.get(p_to) or {}
     prev = contract.permissions.get(p_from) or {}
     if not (perm.get("describe_total") and prev.get("describe_total")):
@@ -202,6 +203,8 @@ _EN_MONTH = r"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?"
 _PERIOD_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("date", re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]")),
     ("date_en", re.compile(r"(\d{1,2})\s+" + _EN_MONTH + r",?\s+(\d{4})", re.I)),
+    # "2026年1-3月" / "2026年1至3月": a part-year flow, named by the month it ends (before "month", which would read "2026年1")
+    ("month_range", re.compile(r"(\d{4})\s*年\s*\d{1,2}\s*[-–—~至到]\s*(\d{1,2})\s*月(?:份)?")),
     ("month", re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月(?!\s*\d)(?:末|底|份)?")),
     ("month_en", re.compile(_EN_MONTH + r"\s+(\d{4})", re.I)),
     ("year_end", re.compile(r"(\d{4})\s*年\s*(?:末|底|年末|年底)")),
@@ -222,7 +225,7 @@ def period_mentions(text: str) -> List[Dict[str, Any]]:
                 found.append({"kind": "date", "year": int(g[0]), "month": int(g[1]), "day": int(g[2]), **where})
             elif kind == "date_en":
                 found.append({"kind": "date", "year": int(g[2]), "month": _MONTHS[g[1][:3].lower()], "day": int(g[0]), **where})
-            elif kind == "month":
+            elif kind in ("month", "month_range"):
                 found.append({"kind": "month", "year": int(g[0]), "month": int(g[1]), **where})
             elif kind == "month_en":
                 found.append({"kind": "month", "year": int(g[1]), "month": _MONTHS[g[0][:3].lower()], **where})
@@ -341,6 +344,51 @@ _FORECAST_WORD = ("预计全年", "全年预测", "全年预计", "预计全年�
 _ANNUAL_ANY = _ANNUAL_WORD + _FORECAST_WORD + ("全年", "full year", "full-year")
 _GENERIC = {"金额", "余额", "增加", "减少", "主要", "所致", "导致", "由于", "因为", "本期", "期末", "上升", "下降", "原因",
             "较上", "上年", "增长", "变动", "系因", "主要系", "其中", "包括", "合计", "公司", "款项", "万元", "亿元"}
+
+
+_CURRENCY_WORDS = (("USD", re.compile(r"美元|美金|USD|US\$", re.I)), ("HKD", re.compile(r"港元|港币|HKD", re.I)),
+                   ("EUR", re.compile(r"欧元|EUR", re.I)))
+
+
+def _currency_at(text: str, start: int, end: int) -> str:
+    """The currency an amount at [start, end) is written in: a currency word inside it, right after it, or right before it."""
+    window = text[max(0, start - 4):min(len(text), end + 4)]
+    for code, pattern in _CURRENCY_WORDS:
+        if pattern.search(window):
+            return code
+    return "CNY"
+
+
+_NOTE_TAG = re.compile(r"「(?:(\d{1,2})M(\d{2})|(\d{4}))」")
+
+
+def note_period(note: Dict[str, Any], periods: List[str]) -> Optional[str]:
+    """The period a note's figures belong to: its own, or its tag ("「2025」", "「3M26」") when exactly one period matches."""
+    if note.get("period"):
+        return str(note["period"])
+    m = _NOTE_TAG.search(str(note.get("text") or ""))
+    if not m:
+        return None
+    if m.group(3):
+        hits = [p for p in periods if p.startswith(m.group(3) + "-12")] or [p for p in periods if p.startswith(m.group(3))]
+    else:
+        month, year = int(m.group(1)), 2000 + int(m.group(2))
+        hits = [p for p in periods if p.startswith(f"{year}-{month:02d}")]
+    return hits[0] if len(hits) == 1 else None
+
+
+def note_figures(note: Dict[str, Any], periods: List[str]) -> Dict[str, Any]:
+    """What a note's text states with a unit: amounts (value, currency), percentages, dates. Bare numbers are not read (a
+    remark's cell values have no unit here)."""
+    text = str(note.get("text") or "")
+    amounts = [{"value": sp["value"], "currency": _currency_at(text, sp["start"], sp["end"]), "written": sp["written"]}
+               for sp in text_amounts(text)]
+    return {"amounts": amounts, "percents": [abs(sp["value"]) for sp in text_percents(text) if not sp["points"]],
+            "dates": [m for m in period_mentions(text) if m["kind"] in ("date", "month")], "period": note_period(note, periods)}
+
+
+_INTERNAL_TERMS = re.compile(r"[（(]\s*[FDN]\d{1,4}(?:\s*[,，、]\s*[FDN]\d{1,4})*\s*[)）]|(?<![A-Za-z])[FDN]\d{1,4}(?![\d])|authority_adjusted|"
+                             r"raw_schedule|detail_basis|explain_with_detail|describe_total|(?<![A-Za-z])financials口径")
 
 
 def _has(text: str, words: Iterable[str]) -> bool:
@@ -733,8 +781,12 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         fail("STALE_SOURCE", "citations",
              f"the claim was written against source version {claim['source_version']}; the workbook now reads {contract.source_version}")
     cited: List[Dict[str, Any]] = []
+    cited_notes: List[Dict[str, Any]] = []
     for ref in claim["cites"]:
         item, owner = _lookup(ref, contracts, account)
+        if item is None and contract.note(ref) is not None:
+            cited_notes.append(contract.note(ref))           # a note's own figures may be stated when it is cited
+            continue
         if item is None:
             fail("UNKNOWN_REF", "citations", f"cited fact '{ref}' does not exist (or is on a hidden sheet)")
             continue
@@ -759,8 +811,13 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         checked.add("amounts")
     if amounts or percents:
         checked.add("coverage")
-    if (amounts or percents) and not cited:
+    if (amounts or percents) and not cited and not cited_notes and not claim["cause_cites"]:
         fail("AMOUNT_UNCITED", "coverage", "the sentence states figures and cites no fact")
+    if _INTERNAL_TERMS.search(text):
+        fail("INTERNAL_TERMS_IN_TEXT", "format", f"'{_INTERNAL_TERMS.search(text).group(0)}' is a reference or an internal name; "
+             "the report states facts, not their refs or bases")
+    source_notes = cited_notes + [n for n in (contract.note(r) for r in claim["cause_cites"]) if n is not None]
+    note_facts = {n["ref"]: note_figures(n, contract.periods) for n in source_notes}
 
     # -- the values the citations allow -------------------------------------------------
     allowed: List[Tuple[float, Dict[str, Any], str]] = []        # (abs value, source item, how)
@@ -779,6 +836,10 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                                                                  "period": period, "account": account, "line": "", "basis": BASIS_RAW,
                                                                  "role": "sum", "ref": "sum", "value": sum(p["value"] for p in parts)},
                             "sum_of_cited"))
+    for ref_n, figs in note_facts.items():
+        for a in figs["amounts"]:
+            allowed.append((abs(a["value"]), {"id": f"note:{ref_n}", "ref": ref_n, "account": account, "role": "note", "basis": "note",
+                                              "line": "", "period": figs["period"], "currency": a["currency"], "value": a["value"]}, "note"))
     pairs = _consecutive_pairs(cited_facts)
     for a, b in pairs:
         allowed.append((abs(b["value"] - a["value"]), {
@@ -792,7 +853,8 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     component_labels = sorted({f["line"] for f in contract.facts if f["role"] == ROLE_COMPONENT and f["line"]}, key=len, reverse=True)
     for span in amounts:
         target = abs(span["value"])
-        hits = [(v, s, how) for v, s, how in allowed if abs(v - target) <= span["tolerance"]]
+        currency = _currency_at(text, span["start"], span["end"])
+        hits = [(v, s, how) for v, s, how in allowed if abs(v - target) <= span["tolerance"] and (s.get("currency") or "CNY") == currency]
         hit = None
         if hits:
             # Two lines can carry the same figure (a loan listed by type and by bank).
@@ -813,6 +875,9 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             hit = max(hits, key=fit)                     # max keeps the first of equals, so ties fall back to the order above
         if hit:
             matched_sources.append((span, hit[1], hit[2]))
+            if hit[1].get("role") == "note":
+                info("NOTE_SOURCED_AMOUNT", "amounts", f"'{span['written']}' is taken from {hit[1].get('ref')}'s text (free text, not a cell): "
+                     "a person should read it against the note")
             # Amounts are matched as magnitudes, because prose writes a fall as "减少30万元". A sign the sentence DOES write is
             # held to account: "-130万元" for a balance of +130万 matched before.
             value = hit[1].get("value")
@@ -855,14 +920,16 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         if d.get("pct") is not None:
             signed = d["pct"] * 100
             pct_candidates.append({"pct": abs(signed), "signed": signed, "kind": "share" if d.get("kind") == KIND_SHARE else "change",
-                                   "periods": list(d.get("periods") or [d.get("period")]), "line": d.get("line", ""), "ref": d.get("ref"), "item": d})
+                                   "periods": list(d.get("periods") or [d.get("period")]), "line": d.get("line", ""), "ref": d.get("ref"), "item": d,
+                                   "base": d.get("base"), "end": d.get("end")})
     for a_fact, b_fact in pairs:
         if abs(a_fact["value"]) > 0:
             signed = (b_fact["value"] - a_fact["value"]) / abs(a_fact["value"]) * 100
             pct_candidates.append({"pct": abs(signed), "signed": signed, "kind": "change",
                                    "periods": [a_fact["period"], b_fact["period"]],
                                    "line": a_fact["line"] if a_fact["role"] == ROLE_COMPONENT else "",
-                                   "ref": f"movement({a_fact['ref']},{b_fact['ref']})", "item": None})
+                                   "ref": f"movement({a_fact['ref']},{b_fact['ref']})", "item": None,
+                                   "base": a_fact["value"], "end": b_fact["value"]})
     share_truths = share_movements(cited_derived)
     for t in share_truths:                    # "占比下降6.2个百分点": the difference of two shares, in points
         pct_candidates.append({"pct": abs(t["value"]) * 100, "signed": t["value"] * 100, "kind": "points", "periods": t["periods"],
@@ -871,7 +938,10 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     sentence_neutral = _has(text, _NEUTRAL_CHANGE)
     previous_end, previous_bound = -1, {}
     percent_kinds: List[Tuple[int, str]] = []          # (where the figure starts, the ratio it was bound to)
+    note_pcts = [x for figs in note_facts.values() for x in figs["percents"]]
     for span in percents:
+        if not span["points"] and any(abs(abs(span["value"]) - x) <= span["tolerance"] for x in note_pcts):
+            continue                                   # a percentage the cited note itself states ("5%工程尾款")
         if any(d.get("zero_denominator") for d in cited_derived):
             fail("PERCENT_ZERO_DENOMINATOR", "arithmetic", f"'{span['written']}' is a change over a zero base; no percentage exists")
             continue
@@ -914,6 +984,13 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             written_as = "percentage points" if span["points"] else ("a percentage" if cue is None else f"a {names[cue]}")
             fail("WRONG_OPERATION", "arithmetic",
                  f"'{span['written']}' is written as {written_as}, but the cited ratio is the {names[best['kind']]}")
+        base, end = best.get("base"), best.get("end")
+        if best["kind"] == "change" and base is not None and (base < 0 or (end is not None and base * end < 0)):
+            fail("PERCENT_OVER_SIGN_CHANGE", "arithmetic",
+                 f"'{span['written']}' is a change over a negative base or across a change of sign ({_fmt(base)} to {_fmt(end)} yuan): "
+                 "such a percentage means nothing; state the two amounts")
+            previous_end, previous_bound = span["end"], {"line": named, "cue": cue}
+            continue
         if period_ok and line_ok and kind_ok:
             signed, slack = best["signed"], span["tolerance"]
             if span["sign"] == "-" and signed > slack:
@@ -939,7 +1016,10 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             fail("MOVEMENT_NOT_PERMITTED", "binding", f"{d['ref']}: {d.get('invalid_reason')}")
 
     # -- binding: periods -------------------------------------------------------------------
+    note_dates = [d for figs in note_facts.values() for d in figs["dates"]]
     for mention in period_mentions(text):
+        if any((d["year"], d.get("month"), d.get("day")) == (mention["year"], mention.get("month"), mention.get("day")) for d in note_dates):
+            continue                                   # a date the cited note itself states (an event, not a reporting period)
         if claim_periods and not any(mention_matches(mention, p) for p in claim_periods):
             fail("WRONG_PERIOD", "binding",
                  f"the text names '{mention['text']}', which is not among the periods this claim declares ({', '.join(sorted(claim_periods))})")
@@ -981,6 +1061,27 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         else:
             fail("WRONG_PERIOD", "binding",
                  f"'{span['written']}' is written under {mention['text']}, but the fact it matches is from {', '.join(sorted(src_periods))}")
+
+    # -- composition on the tab's basis --------------------------------------------------------
+    # "由A和B构成" over every detail line of a period says they make up the balance. When the deck's balance is adjusted and the
+    # lines are the tab's own, they add up to the tab's total, not to it; within the detail check's tolerance that passed before
+    # (the ten-case review, 2026-11-08: retained earnings, 9.2万 of adjustments).
+    if _has(text, ("构成", "组成", "consist", "made up of", "comprise")):
+        by_p: Dict[str, List[Dict[str, Any]]] = {}
+        for f in cited_facts:
+            if f["role"] == ROLE_COMPONENT:
+                by_p.setdefault(f["period"], []).append(f)
+        for period, parts in by_p.items():
+            every = [f for f in contract.facts if f["period"] == period and f["role"] == ROLE_COMPONENT]
+            adjusted = contract.total(period, BASIS_ADJUSTED)
+            if adjusted is None or len(parts) < len(every):
+                continue
+            gap = adjusted - sum(f["value"] for f in parts)
+            if abs(gap) > max(1.0, 0.0005 * abs(adjusted)):
+                fail("COMPOSITION_BASIS", "binding",
+                     f"{period}: the lines named are the tab's own and add up to {_fmt(adjusted - gap)} yuan, not to the balance of "
+                     f"{_fmt(adjusted)} (a difference of {_fmt(gap)}, the adjustments): say they are before the adjustments, or do not "
+                     "call them its make-up")
 
     # -- binding: basis, line, permissions ----------------------------------------------------
     # A sentence may quote a total the deck did not adopt only when it is describing the gap itself: it states the
@@ -1271,8 +1372,11 @@ def evidence_view(contract: EvidenceContract, *, max_components: int = 8, compon
     line) last and capped, with a count of what was left out. Facts a period does not permit
     are not withheld -- the permission is stated beside them."""
     def fact_view(f: Dict[str, Any]) -> Dict[str, Any]:
-        return {"ref": f["ref"], "period": f["period"], "basis": f["basis"], "line": f["line"] or "(total)",
-                "yuan": round(f["value"], 2), "wan": round(f["value"] / 1e4, 2)}
+        out = {"ref": f["ref"], "period": f["period"], "basis": f["basis"], "line": f["line"] or "(total)",
+               "yuan": round(f["value"], 2), "wan": round(f["value"] / 1e4, 2)}
+        if f.get("nested_in"):
+            out["nested_in"] = f["nested_in"]          # a sub-line of that line: never add it to its parent
+        return out
     components: Dict[str, List[Dict[str, Any]]] = {}
     for f in contract.facts:
         if f["role"] == ROLE_COMPONENT:

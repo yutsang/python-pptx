@@ -70,6 +70,34 @@ TIE_RELATIVE = 0.005
 TIE_ABSOLUTE = 1.0
 
 
+def find_nesting(parts: List[Dict[str, Any]], tolerance: float = TIE_ABSOLUTE) -> Dict[str, Any]:
+    """Lines that are the exact sum of the run of lines right under them (or right above them, a subtotal), in sheet order.
+    {"parents": {parent id: [child ids]}, "children": {child ids}}. Needs a row for every line; two lines at least per run."""
+    rows = [f for f in parts if f.get("row") is not None]
+    if len(rows) != len(parts) or len(rows) < 3:
+        return {"parents": {}, "children": set()}
+    rows.sort(key=lambda f: f["row"])
+    parents: Dict[str, List[str]] = {}
+    children: set = set()
+    for i, line in enumerate(rows):
+        if line["id"] in children or abs(line["value"]) <= tolerance:
+            continue
+        for run in (range(i + 1, len(rows)), range(i - 1, -1, -1)):
+            total, picked = 0.0, []
+            for j in run:
+                if rows[j]["id"] in children or rows[j]["id"] in parents:
+                    break
+                total += rows[j]["value"]
+                picked.append(rows[j]["id"])
+                if len(picked) >= 2 and abs(total - line["value"]) <= tolerance:
+                    parents[line["id"]] = list(picked)
+                    children.update(picked)
+                    break
+            if line["id"] in parents:
+                break
+    return {"parents": parents, "children": children}
+
+
 def tie_tolerance(left: float, right: float) -> float:
     return max(TIE_ABSOLUTE, TIE_RELATIVE * max(abs(left), abs(right)))
 
@@ -446,8 +474,23 @@ def build_contract(
             else:
                 # A flat sum that misses the total is either a real gap or a nested
                 # layout (a line listed beside its own sub-lines). Nothing here can
-                # tell which, and saying "mismatch" would be a guess.
-                status, note = AMBIGUOUS, "detail rows do not sum to the total as a flat list; nesting is not known"
+                # tell which, and saying "mismatch" would be a guess -- unless the
+                # nesting shows itself: a line that equals, to the yuan, the sum of
+                # the lines right under (or right above) it, and a top level that then
+                # ties. Found 2026-11-08: every account laid out that way had its
+                # composition blocked.
+                nested = find_nesting(parts)
+                top = sum(f["value"] for f in parts if f["id"] not in nested["children"])
+                if nested["parents"] and abs(top - adjusted_value) <= tol:
+                    for parent_id, child_ids in nested["parents"].items():
+                        parent_ref = next((f.get("ref") for f in parts if f["id"] == parent_id), "")
+                        for f in parts:
+                            if f["id"] in child_ids:
+                                f["nested_in"] = parent_ref or parent_id
+                    status, note = PASS, (f"nested: {len(nested['parents'])} line(s) listed with their own sub-lines; the top level "
+                                          f"({top:,.2f}) ties to the total")
+                else:
+                    status, note = AMBIGUOUS, "detail rows do not sum to the total as a flat list; nesting is not known"
             contract.checks.append(CheckResult(did, account, p, CHECK_DETAIL_VS_TOTAL, status, inputs=ids_used,
                                                left=flat, right=adjusted_value, diff=diff, tolerance=tol,
                                                overridden=overridden, note=note).to_dict())

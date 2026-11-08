@@ -422,6 +422,87 @@ class SignAndChangeBinding(unittest.TestCase):
         self.assertEqual([s["sign"] for s in cl.text_amounts("截至2025-12-31，余额130万元")], [""])
 
 
+class NotesAndGuards(unittest.TestCase):
+    """2026-11-08 ten-case review: note facts could not be stated (so material notes went to unresolved), a nested layout blocked
+    every composition, and three meaning problems passed the verifier."""
+
+    NOTES = ["注册资本为7000万美元，已全额实缴，我们已检查至FDI入账凭证",
+             "2024年6月18日目标公司将注册资本从15000万美元变更为7000万美元",
+             "应付二期项目监理的5%工程尾款"]
+
+    def note_ref(self, c, start):
+        return next(n["ref"] for n in c.notes if n["text"].startswith(start))
+
+    def test_an_amount_and_a_date_written_in_a_cited_note_can_be_stated_in_its_currency(self):
+        c = build(notes=self.NOTES)
+        n2 = self.note_ref(c, "2024年6月18日")
+        v = verdict("2024年6月18日，注册资本由15,000万美元变更为7,000万美元。", c, [n2], [P1], "descriptive")
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+        self.assertIn("NOTE_SOURCED_AMOUNT", {f["code"] for f in v["findings"]})
+        wrong_currency = verdict("2024年6月18日，注册资本由15,000万元变更为7,000万元。", c, [n2], [P1], "descriptive")
+        self.assertIn("AMOUNT_UNMATCHED", codes(wrong_currency), "a dollar amount is not a yuan amount")
+        uncited = verdict("2024年6月18日，注册资本由15,000万美元变更为7,000万美元。", c, [ref(c, P1)], [P1], "descriptive")
+        self.assertNotEqual(uncited["verdict"], "verified", "a note's figures need that note cited")
+
+    def test_a_percentage_written_in_a_cited_note_can_be_stated(self):
+        c = build(notes=self.NOTES)
+        n3 = self.note_ref(c, "应付二期")
+        self.assertEqual(verdict("其中包括应付二期项目监理5%的工程尾款。", c, [n3], [P2], "descriptive")["verdict"], "verified")
+        self.assertIn("PERCENT_UNMATCHED", codes(verdict("其中包括应付二期项目监理8%的工程尾款。", c, [n3], [P2], "descriptive")))
+
+    def test_a_percentage_change_over_a_negative_base_is_refused_and_the_amounts_are_not(self):
+        rows = [("甲", "detail", {P1: -2_049_216, P2: 4_844_347}), ("Total", "total", {P1: -2_049_216, P2: 4_844_347})]
+        c = build(rows, notes=[])
+        d = cl.derive_movement(c, P1, P2)
+        self.assertIn("PERCENT_OVER_SIGN_CHANGE", codes(verdict("2025年较2024年增加689.4万元，增幅336.4%", c, [d["ref"]], [P1, P2], "movement")))
+        self.assertEqual(verdict("2025年较2024年增加689.4万元", c, [d["ref"]], [P1, P2], "movement")["verdict"], "verified")
+
+    def test_the_tabs_lines_are_not_the_make_up_of_an_adjusted_balance(self):
+        rows = [("甲公司", "detail", {P1: 600000, P2: 700000}), ("乙公司", "detail", {P1: 400000, P2: 600000}),
+                ("Total", "total", {P1: 1000000, P2: 1302000})]            # the deck's (adjusted) total; the tab's own is 1,300,000
+        c = build(rows, financials={P1: 1000000.0, P2: 1302000.0}, authority={P2: {"tab": 1300000.0, "financials": 1302000.0}})
+        cites = [ref(c, P2), ref(c, P2, "甲公司"), ref(c, P2, "乙公司")]
+        bad = verdict("2025年12月31日余额130.2万元，由甲公司70.0万元和乙公司60.0万元构成。", c, cites, [P2], "composition")
+        self.assertIn("COMPOSITION_BASIS", codes(bad))
+        fine = verdict("2025年12月31日余额130.2万元；明细表中甲公司70.0万元、乙公司60.0万元。", c, cites, [P2], "composition")
+        self.assertNotIn("COMPOSITION_BASIS", codes(fine))
+
+    def test_internal_names_and_refs_do_not_belong_in_the_text(self):
+        c = build()
+        for text in ("截至2025年12月31日，应收账款余额130.0万元（F2）。", "截至2025年12月31日，应收账款（authority_adjusted口径）余额130.0万元。"):
+            self.assertIn("INTERNAL_TERMS_IN_TEXT", codes(verdict(text, c, [ref(c, P2)], [P2])), text)
+
+    def test_a_month_range_names_the_period_it_ends(self):
+        m = cl.period_mentions("2026年1-3月营业成本为1,032.9万元")
+        self.assertEqual([(x["kind"], x["year"], x["month"]) for x in m], [("month", 2026, 3)])
+        self.assertTrue(cl.mention_matches(m[0], "2026-03-31"))
+        self.assertEqual([(x["year"], x["month"]) for x in cl.period_mentions("2026年1至3月")], [(2026, 3)])
+
+
+class Nesting(unittest.TestCase):
+    """A line listed beside its own sub-lines: found when the line equals the sum of the lines right under it, and then the top
+    level is what ties to the total. Before, every such account had its composition blocked."""
+
+    ROWS = [("甲工程", "detail", {P1: 600000, P2: 700000}), ("一期尾款", "detail", {P1: 100000, P2: 100000}),
+            ("二期尾款", "detail", {P1: 500000, P2: 600000}), ("物管费", "detail", {P1: 400000, P2: 600000}),
+            ("Total", "total", {P1: 1000000, P2: 1300000})]
+
+    def test_a_parent_and_its_children_tie_at_the_top_level_and_composition_is_permitted(self):
+        c = build(self.ROWS, notes=[])
+        self.assertEqual(c.permissions[P2]["detail_basis"], "tied")
+        self.assertTrue(c.permissions[P2]["explain_with_detail"])
+        check = c.check(P2, ec.CHECK_DETAIL_VS_TOTAL)
+        self.assertIn("nested", check.get("note", ""))
+        v = verdict("2025年12月31日余额主要为甲工程70.0万元和物管费60.0万元", c, [ref(c, P2, "甲工程"), ref(c, P2, "物管费")], [P2], "composition")
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+
+    def test_without_an_exact_sub_total_the_layout_stays_unknown(self):
+        rows = [(n, t, dict(v)) for n, t, v in self.ROWS]
+        rows[2] = ("二期尾款", "detail", {P1: 499000, P2: 599000})
+        c = build(rows, notes=[])
+        self.assertEqual(c.permissions[P2]["detail_basis"], "ambiguous")
+
+
 class PercentBinding(unittest.TestCase):
     """A percentage is bound to the period, the line and the kind of ratio the sentence says, as an amount is."""
 

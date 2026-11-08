@@ -61,6 +61,9 @@ class Candidate:
     #: with the reasons it was due and the objections. Empty: no review was configured. Export reads it: an open objection blocks
     #: the deck for this account, a review that did not happen asks for a person.
     review: Dict[str, Any] = field(default_factory=dict)
+    #: what a person should check in this text, set by the state when the paragraph was finished (controller._flags): material
+    #: notes deferred, figures from a note's free text, causes not proven, basis and detail caveats, what is unresolved
+    flags: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def validated(self) -> bool:
