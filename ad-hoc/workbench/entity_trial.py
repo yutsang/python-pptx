@@ -841,7 +841,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.add_argument("--expect-sha", default="", help="refuse to start unless the workbook's sha256 starts with this")
         p.add_argument("--no-deck", action="store_true", help="do not export a deck (always off with --cases)")
         p.add_argument("--limit", type=int, default=0, help="only the first N accounts in scope (a cheap pilot); 0 = all")
-        p.add_argument("--escalate-after", type=int, default=1, help="mixed/seeded/reviewed: rejected drafts before the stronger model repairs (default 1)")
+        # 2 since 2026-11-08: with 1, nearly every cheap draft went to the stronger model (23 of 26), many of them for refusals the
+        # verifier has since stopped making; the cheaper model now gets one repair of its own first
+        p.add_argument("--escalate-after", type=int, default=2, help="mixed/seeded/reviewed: rejected drafts before the stronger model repairs (default 2)")
         p.add_argument("--max-output", type=int, default=4000, help="output allowance per call for every role (0 = config's)")
         p.add_argument("--flash", default="", help="provider::model for the cheaper role (default agent.models.primary)")
         p.add_argument("--pro", default="", help="provider::model for the stronger role (default agent.models.escalation)")
