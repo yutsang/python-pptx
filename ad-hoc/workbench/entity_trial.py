@@ -163,6 +163,27 @@ def coverage(source: Any, key: str, candidate: Any, language: str) -> Dict[str, 
     return out
 
 
+def sources_for_review(source: Any, key: str, candidate: Any) -> Dict[str, Any]:
+    """What a source review needs without the workbook at hand: each cited fact (period, basis, line, value, sheet and row) and
+    note (its text), and the notes the paragraph did not cite, in full. Written only to the local side-by-side file."""
+    contract = source.contracts.get(key)
+    if contract is None:
+        return {}
+    cited, seen = [], set()
+    for c in (candidate.claims if candidate is not None else []):
+        for ref in list(c.get("cites") or []) + list(c.get("cause_cites") or []):
+            if ref in seen:
+                continue
+            seen.add(ref)
+            item = contract.fact(ref) or contract.note(ref) or next((d for d in contract.derived if d.get("ref") == ref), None) or {}
+            cited.append({"ref": ref, "period": item.get("period") or item.get("periods"), "basis": item.get("basis") or item.get("kind"),
+                          "line": item.get("line"), "value": item.get("value"), "where": f"{item.get('sheet') or ''}!{item.get('row') or ''}".strip("!"),
+                          "text": (item.get("text") or "")[:300] or None, "formula": item.get("formula")})
+    notes = [{"ref": n.get("ref"), "kind": n.get("kind"), "period": n.get("period"), "text": n.get("text")}
+             for n in contract.notes if n.get("ref") and n.get("ref") not in seen]
+    return {"cited": cited, "notes_not_cited": notes}
+
+
 def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str, workdir: Path, limits: Any, *,
             select: Callable[[Any], List[str]], scripted: Optional[Dict[str, Any]] = None, stamp: str = "", deck: bool = True,
             checkpoint: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
@@ -219,7 +240,8 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                    "seconds": round(time.perf_counter() - clock[-1], 2)}
             per.append(row)
             result["_texts"][key] = {"text": cl.render_claims(c.claims) if c is not None else "", "accepted": bool(c is not None and c.accepted and c.validated),
-                                     "unresolved": list(turn.unresolved or []), "review": review}
+                                     "unresolved": list(turn.unresolved or []), "review": review,
+                                     "sources": sources_for_review(work.source, key, c)}
             marks.append(books.calls)
             clock.append(time.perf_counter())
             result.update(done=len(per), ok=sum(p["ok"] for p in per), books=A._books_delta(books, 0))
@@ -564,6 +586,15 @@ def quality_markdown(report: Dict[str, Any], legacy: Dict[str, str], order: List
                 missing = sorted(_numbers(old) - _numbers(t["text"]))
                 if missing:
                     out.append(f"\n_legacy figures not in this text_: {', '.join(missing[:20])}")
+            src = t.get("sources") or {}
+            if src.get("cited"):
+                out.append("\n_cited, as read from the workbook_:")
+                out.extend(f"- {x['ref']}: {x.get('period')} {x.get('basis')} {x.get('line') or ''} {_num(x.get('value')) if isinstance(x.get('value'), (int, float)) else ''}"
+                           f" {('(' + x['where'] + ')') if x.get('where') else ''} {x.get('text') or ''}{(' = ' + x['formula']) if x.get('formula') else ''}".rstrip()
+                           for x in src["cited"])
+            if src.get("notes_not_cited"):
+                out.append("\n_notes in the evidence this paragraph does not cite_:")
+                out.extend(f"- {n['ref']} ({n.get('kind')}, {n.get('period') or 'no period'}): {n.get('text')}" for n in src["notes_not_cited"])
             out.append("\n" + REVIEW_FORM + "\n")
     return "\n".join(out)
 
