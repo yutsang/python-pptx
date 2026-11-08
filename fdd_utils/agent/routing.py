@@ -681,6 +681,10 @@ class RoutedModel:
             return "provider_error"
         if stop_reason == "needs_user" or open_human:
             return "needs_human"
+        if stop_reason == "semantic_blocked":
+            return "semantic_objection"           # verifies, but the reviewer's objection to its meaning stands
+        if stop_reason == "review_pending":
+            return "review_unavailable"           # a review was due and did not happen
         kinds: Dict[str, List[str]] = {}
         for c in last_codes:
             kind = (last_classes or {}).get(c) or classify(c)

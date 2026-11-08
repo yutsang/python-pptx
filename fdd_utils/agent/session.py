@@ -57,6 +57,10 @@ class Candidate:
     #: what moved in that context since the user last looked, in words. A draft with entries here still verifies,
     #: but the person who accepted it accepted it against a different account.
     context_changes: List[str] = field(default_factory=list)
+    #: the meaning review of this text (controller.py): status not_needed | passed | passed_after_repair | objected | unavailable,
+    #: with the reasons it was due and the objections. Empty: no review was configured. Export reads it: an open objection blocks
+    #: the deck for this account, a review that did not happen asks for a person.
+    review: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def validated(self) -> bool:

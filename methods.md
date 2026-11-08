@@ -266,10 +266,12 @@ annualised figure. It then asks the model once for the paragraph, with no tool
 menu: the writer's instructions are the loop's rules without the tools, about a
 quarter of the loop's system prompt. The evidence goes first in the request and
 the request last, so a provider's prompt cache can serve the same evidence to a
-repair. The verifier checks the draft, and the draft must cite the latest
+repair. The verifier checks the draft, and the draft must state the latest
 balance the deck uses (or, where tab and Financials disagree and nothing chose,
-the difference Python computed); without that rule one harmless sentence would
-pass. A rejected draft goes back with its verified claims marked as kept and
+the difference Python computed): a verified claim that cites that fact and
+writes its figure at its printed precision. Citing the balance under a sentence
+that does not give it ("needs continued attention") does not count; without the
+rule one harmless sentence would pass. A rejected draft goes back with its verified claims marked as kept and
 only the rejected ones to rewrite or drop; a fix aimed at a kept claim is
 ignored, so a verified claim reaches the deck exactly as it was verified. The
 escalation rule is the loop's: consecutive capability failures move the repair
@@ -291,11 +293,23 @@ are kept claims like any verified one. A movement is written only where Python
 computed one that is permitted and not zero. `agent.review_meaning`: a verified
 paragraph that states a cause, sits on notes, carries a basis caveat or uses
 part-year figures (Python decides) is read once by the escalation model for
-meaning only, with the instruction not to re-check arithmetic. Its objections go
-back to the writer as rejected claims; if that repair does not verify, or its
-reply is unusable, the verified paragraph stands and the objections are listed
-as unresolved. A review is recorded as a call with purpose `review`; it is not an
-escalation and does not count as one.
+meaning only, with the instruction not to re-check arithmetic. The reply must be
+the protocol (both lists present); a reply that is not, or a call that fails, is
+`unavailable`, never a passed review. Each objection is bound to the content of
+the claim it names (a hash of its text, citations and periods), not to its
+position. Its objections go back to the writer as rejected claims, and an
+objection is settled only by a change: every objected sentence dropped with
+nothing new written, or a changed paragraph that the reviewer reads once more and
+passes. A reply that changes nothing, an objected sentence still there word for
+word, a repair that does not verify (the verified text is then kept), or a
+second reading that still objects leaves the objection open. The turn then ends
+`semantic_blocked`; a review that was due and did not happen ends it
+`review_pending`. Neither is a finished paragraph: the session does not accept
+it, and the state is written on the candidate (`review`), where export reads it.
+An open objection blocks the deck for that account (`SEMANTIC_OBJECTION`), even
+if a person accepted the draft; a review that did not happen asks for one
+(`REVIEW_PENDING`). A review is recorded as a call with purpose `review`; it is
+not an escalation and does not count as one.
 
 **A whole entity from zero.** `WorkSession.draft_entity()` writes every account
 the selection admitted (the fixed pipeline's own rule, decided by Python), one
@@ -577,8 +591,20 @@ per account, escalations, hand-overs to the tool loop, seconds and the deck's
 delivery status, with a line per model. `--legacy-run` adds that run's
 commentary to a side-by-side file (local, it holds client text) and the calls
 the usage ledger recorded for that run's file in its time window, priced the
-same way; the legacy run also includes its summary calls, which the arms do
-not make. No cap unless one is given, and then one ceiling over every arm.
+same way, labelled as not directly comparable (attributed by file name and time
+window, failed calls not costed, cached input at full price, summary and mapping
+calls included). No cap unless one is given, and then one ceiling over every arm.
+`--cases` runs named accounts by their index in the sorted contract list (the
+ten-case study's numbering) with no deck; `--expect-sha` refuses a workbook whose
+bytes differ. Per case it records the end state, the mechanical verdict, the
+review state, whether the balance and the movement are stated, which notes are
+cited, how many detail lines the writer was not shown, what is unresolved, and
+calls, tokens, cost and seconds; the side-by-side file adds an empty source
+review form per case and arm. Every finished case is appended to a progress file
+as it finishes and the reports are rewritten after each arm, so an arm that
+fails keeps what it did and what it spent. Each report carries a fingerprint of
+the code it ran (sha256 over the agent, claim and trial sources, line endings
+normalised), because the company folder is not a git checkout.
 
 ### 5.5 The code map
 
@@ -685,9 +711,12 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
   periods, signs and cited notes again, but nothing checks that the words
   around them kept their meaning (a label changed while the amount was
   corrected passes). Kept claims are protected; replaced ones are not.
-- The prepared write's required claim is the latest balance only. Coverage of
-  the movement, the main detail lines and the notes is asked for in the
-  instructions and not enforced.
+- The prepared write's required statement is the latest balance only. Coverage
+  of the movement, the main detail lines and the notes is asked for in the
+  instructions and not enforced; the whole-databook trial records it per case.
+- The writer and the reviewer see the same evidence view: the last three periods
+  and eight detail lines per period, with a count of what was left out. A
+  reviewer cannot check detail it was not shown.
 
 ## 9. Reproducing
 

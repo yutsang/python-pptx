@@ -56,6 +56,11 @@ STOP_NO_PROGRESS = "no_progress"
 STOP_REJECTED = "answer_not_acceptable"
 STOP_MODEL_ERROR = "model_error"
 STOP_SESSION = "budget_session"      # a cap that spans turns, roles and attempts (routing.SharedBudget) would be passed
+#: the paragraph verifies, but the reviewer's objection to its meaning stands (the sentence is unchanged, or still objected to after
+#: a rewrite): a draft, not a finished paragraph, and the state goes with the candidate into the deck's delivery decision
+STOP_SEMANTIC_BLOCKED = "semantic_blocked"
+#: a review was due (Python found something to judge) and did not happen: the call failed or the reply was not in the protocol
+STOP_REVIEW_PENDING = "review_pending"
 
 Model = Callable[[str, str, int], Dict[str, Any]]
 
@@ -241,6 +246,13 @@ def parse_turn(text: str) -> Tuple[Optional[Dict[str, Any]], str]:
         except Exception:
             continue
     return None, "reply was not valid JSON"
+
+
+def _claim_sha(claim: Dict[str, Any]) -> str:
+    """One claim's content (text, cites, periods, kind, inference): an objection is bound to this, not to a list position."""
+    import hashlib
+    body = {k: claim.get(k) for k in ("kind", "text", "periods", "cites", "cause_cites", "inference")}
+    return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
 
 
 def cl_digest(claims: List[Dict[str, Any]]) -> str:
@@ -748,9 +760,10 @@ class AgentController:
         return reasons
 
     def _review_meaning(self, run: AgentRun, account: str, view: Dict[str, Any], claims: List[Dict[str, Any]],
-                        usage: Dict[str, Any]) -> Optional[Tuple[Dict[int, List[str]], List[str]]]:
-        """The stronger model reads the verified paragraph for meaning. (objections by claim index, missing facts) or None when
-        the call could not be made or did not answer in the protocol (the paragraph then stands as verified)."""
+                        usage: Dict[str, Any]) -> Dict[str, Any]:
+        """The stronger model reads a verified paragraph for meaning. Returns {"status": "passed" | "objected" | "unavailable", ...}.
+        Unavailable: the call could not be made or failed, or the reply is not the protocol (both lists present). A review that did
+        not happen is never a passed review."""
         user = (f"EVIDENCE for {account}:\n{_compact(view)}\n\nPARAGRAPH (figures already verified by Python):\n"
                 + "\n".join(f"  [{n}] {_compact({k: c.get(k) for k in ('kind', 'text', 'periods', 'cites', 'cause_cites', 'inference')})}"
                              for n, c in enumerate(claims))
@@ -758,21 +771,121 @@ class AgentController:
         stop_before = run.stop_reason
         called = self._call_model(run, REVIEW_SYSTEM, user, 1500, usage, role=R.ROLE_ESCALATION, purpose="review")
         if called is None:
-            run.stop_reason = stop_before                     # a review that could not be made does not end the turn
-            return None
-        turn, _error = parse_turn(called[0])
-        if turn is None or not isinstance(turn.get("objections", []), list):
-            return None
-        objections: Dict[int, List[str]] = {}
-        for item in turn.get("objections") or []:
+            why = run.report.get("model_error") or (run.report.get("budget") or {}).get("message") or run.stop_reason
+            if run.stop_reason not in (STOP_SESSION, STOP_TOKENS):
+                run.stop_reason = stop_before                 # a provider failure ends the review, not the turn's own accounting
+            return {"status": "unavailable", "why": f"the review call was not made or failed: {str(why)[:200]}"}
+        turn, error = parse_turn(called[0])
+        if turn is None or not isinstance(turn.get("objections"), list) or not isinstance(turn.get("missing"), list):
+            return {"status": "unavailable", "why": "the reply was not the review protocol (objections and missing, both lists)"
+                                                     + (f": {error}" if error else "")}
+        objections: List[Dict[str, Any]] = []
+        for item in turn["objections"]:
+            if not isinstance(item, dict):
+                continue
             try:
-                n = int((item or {}).get("index"))
-            except (TypeError, ValueError, AttributeError):
+                n = int(item.get("index"))
+            except (TypeError, ValueError):
                 continue
             if 0 <= n < len(claims) and str(item.get("why") or "").strip():
-                objections.setdefault(n, []).append("REVIEW: " + str(item["why"])[:400])
-        missing = [f"REVIEW_MISSING {m.get('ref', '')}: {str(m.get('why') or '')[:300]}" for m in turn.get("missing") or [] if isinstance(m, dict)]
-        return objections, missing
+                objections.append({"index": n, "claim_sha": _claim_sha(claims[n]), "why": str(item["why"])[:400]})
+        missing = [{"ref": str(m.get("ref") or ""), "why": str(m.get("why") or "")[:300]} for m in turn["missing"]
+                   if isinstance(m, dict) and (m.get("ref") or m.get("why"))]
+        return {"status": "objected" if objections or missing else "passed", "objections": objections, "missing": missing}
+
+    @staticmethod
+    def _objection_lines(review: Dict[str, Any]) -> List[str]:
+        return ([f"REVIEW: [{o['index']}] {o['why']}" for o in review.get("objections") or []]
+                + [f"REVIEW_MISSING {m['ref']}: {m['why']}" for m in review.get("missing") or []])
+
+    def _required_unstated(self, required: List[str], claims: List[Dict[str, Any]], outcome: Dict[str, Any],
+                           view: Dict[str, Any]) -> List[str]:
+        """The required refs no verified claim STATES: it cites the ref and its text carries that figure at its printed precision
+        (a nil balance may be written as nil). Citing the balance under "needs continued attention" is not stating it."""
+        values = {t["ref"]: t.get("yuan") for t in view.get("totals") or []}
+        values.update({d["ref"]: d.get("value") for d in view.get("derived") or []})
+        verdicts = outcome.get("verdicts") or []
+        out = []
+        for ref in required:
+            value = values.get(ref)
+            stated = False
+            for n, c in enumerate(claims):
+                if ref not in (c.get("cites") or []) or n >= len(verdicts) or verdicts[n].get("verdict") not in ("verified", "verified_inference"):
+                    continue
+                if value is None:
+                    stated = True
+                    break
+                spans = cl.text_amounts(str(c.get("text") or ""))
+                if any(abs(abs(sp["value"]) - abs(float(value))) <= sp["tolerance"] for sp in spans) or (
+                        abs(float(value)) < 0.5 and any(w in str(c.get("text") or "") for w in ("为零", "为0", "无余额", "nil", "zero"))):
+                    stated = True
+                    break
+            if not stated:
+                out.append(ref)
+        return out
+
+    def _settle_review(self, run: AgentRun, account: str, view: Dict[str, Any], claims: List[Dict[str, Any]],
+                       pre_review: List[Dict[str, Any]], verified: bool, review: Dict[str, Any], unresolved: List[str],
+                       usage: Dict[str, Any], export: bool, record: Dict[str, Any]) -> bool:
+        """After the writer answered an objection. Settled: every objected sentence is gone and nothing new was written (a drop
+        removes what was objected to), or the reviewer reads the changed paragraph once more and passes it. Not settled: the
+        reply changed nothing, an objected sentence is still there word for word, the change did not verify (the verified text
+        is kept), or the second reading still objects. An unsettled objection ends the turn as semantic_blocked."""
+        if not verified or cl_digest(claims) == cl_digest(pre_review):
+            if not verified:
+                T.call_tool(self.session, "validate_candidate", {"account": account, "claims": pre_review})
+            why = "the repair did not verify; the verified text is kept" if not verified else "the reply changed nothing"
+            return self._end_with_review(run, account, pre_review, dict(review, status="objected", settled=why), unresolved, record,
+                                         STOP_SEMANTIC_BLOCKED)
+        now = {_claim_sha(c) for c in claims}
+        still = [o for o in review["objections"] if o["claim_sha"] in now]
+        if still:
+            return self._end_with_review(run, account, claims, dict(review, status="objected", objections=still,
+                                                                   settled="an objected sentence is unchanged"),
+                                         unresolved, record, STOP_SEMANTIC_BLOCKED)
+        before = {_claim_sha(c) for c in pre_review}
+        if not review.get("missing") and all(_claim_sha(c) in before for c in claims):
+            return self._end_with_review(run, account, claims, dict(review, status="passed_after_repair", settled="the objected sentences were dropped"),
+                                         unresolved, record, STOP_DONE, export=export)
+        again = self._review_meaning(run, account, view, claims, usage)
+        if again["status"] == "passed":
+            return self._end_with_review(run, account, claims, dict(review, status="passed_after_repair", settled="read again and passed",
+                                                                   second=again), unresolved, record, STOP_DONE, export=export)
+        if again["status"] == "unavailable":
+            return self._end_with_review(run, account, claims, dict(review, status="unavailable", settled=again["why"], second=again),
+                                         unresolved, record, STOP_REVIEW_PENDING if run.stop_reason in ("", None) else run.stop_reason)
+        return self._end_with_review(run, account, claims, dict(again, status="objected", settled="read again and still objected",
+                                                               first=review), unresolved, record, STOP_SEMANTIC_BLOCKED)
+
+    def _end_with_review(self, run: AgentRun, account: str, claims: List[Dict[str, Any]], review: Optional[Dict[str, Any]],
+                         unresolved: List[str], record: Dict[str, Any], stop: str, export: bool = False) -> bool:
+        """End the prepared write. The review's state is written onto the candidate, where export reads it; an open objection
+        or a review that did not happen is listed as unresolved and the turn is not a finished paragraph."""
+        candidate = self.session.candidates.get(account)
+        if candidate is not None and review is not None:
+            candidate.review = {k: v for k, v in review.items()}
+        if review is not None:
+            run.report["review"] = dict(review, outcome=review.get("status"))
+            if review.get("status") in ("objected", "unavailable"):
+                lines = self._objection_lines(review) if review.get("status") == "objected" else [f"REVIEW_PENDING: {review.get('why') or review.get('settled')}"]
+                unresolved.extend(x for x in lines if x not in unresolved)
+        if stop == STOP_DONE:
+            accepted, _feedback, answer = self._gate_done({"account": account}, account, export)
+            record["accepted"] = accepted
+            if accepted:
+                run.answer, run.stop_reason = dict(answer or {}, unresolved=list(unresolved)), STOP_DONE
+                run.steps.append(record)
+                return True
+            stop = STOP_REJECTED
+        # not finished: the draft is shown with what stands against it
+        if candidate is not None:
+            run.answer = {"account": account, "text": cl.render_claims(candidate.claims), "claims": candidate.claims,
+                          "verdicts": candidate.outcome.get("verdicts"), "unresolved": list(unresolved),
+                          "source_version": self.session.source_version}
+        run.stop_reason = stop
+        record["review_end"] = stop
+        run.steps.append(record)
+        return True
 
     def _prepared_write(self, run: AgentRun, goal: str, account: str, export: bool, usage: Dict[str, Any], started: float) -> bool:
         """The paragraph for one known account, written once from evidence the controller read, then repaired locally.
@@ -794,7 +907,7 @@ class AgentController:
             run.report["prepared"]["seeded"] = len(claims)
         can_review = self.review and self.router is not None and R.ROLE_ESCALATION in self.router.roles
         pre_review: Optional[List[Dict[str, Any]]] = None          # the verified paragraph the review objected to
-        review_notes: List[str] = []
+        review: Optional[Dict[str, Any]] = None                     # this turn's review: status, reasons, objections
         while len(run.steps) < self.budget.max_steps:
             if time.perf_counter() - started > self.budget.max_seconds:
                 run.stop_reason = STOP_TIME
@@ -827,16 +940,9 @@ class AgentController:
                 codes = ["NOT_JSON"] if turn is None else ["BAD_ACTION"]
                 if router is not None:
                     router.mark_last_reply_unused()
-                if pre_review is not None:
-                    # the repair the review asked for came back unusable: the verified paragraph stands, the objections are listed
-                    T.call_tool(self.session, "validate_candidate", {"account": account, "claims": pre_review})
-                    unresolved.extend(n for n in review_notes if n not in unresolved)
-                    run.report["review"]["outcome"] = "reverted: the repair reply was not usable; the objections are listed as unresolved"
-                    accepted, _feedback, answer = self._gate_done({"account": account}, account, export)
-                    if accepted:
-                        run.answer, run.stop_reason = dict(answer or {}, unresolved=list(unresolved)), STOP_DONE
-                        run.steps.append(record)
-                        return True
+                if review is not None and review["status"] == "objected" and pre_review is not None:
+                    # the repair the review asked for came back unusable: the verified paragraph is kept, its objection stands
+                    return self._settle_review(run, account, view, pre_review, pre_review, False, review, unresolved, usage, export, record)
                 bad_replies += 1
                 if bad_replies >= 2:
                     run.steps.append(record)
@@ -863,49 +969,35 @@ class AgentController:
                     result = T.call_tool(self.session, "validate_candidate", {"account": account, "claims": claims})
                     self._absorb("validate_candidate", {"account": account, "claims": claims}, result)
                     outcome = (result.data or {}).get("outcome") or {}
-                    cited = {r for c in claims for r in list(c.get("cites") or []) + list(c.get("cause_cites") or [])}
-                    missing = [r for r in required if r not in cited]
+                    missing = self._required_unstated(required, claims, outcome, view)
                     record.update(claims=len(claims), verified=outcome.get("verified"), failed=outcome.get("failed"),
                                   unverified=outcome.get("unverified"))
-                    if pre_review is not None and not (result.ok and not missing):
-                        # the repair the review asked for did not verify: the paragraph that did stands, the objections are listed
-                        T.call_tool(self.session, "validate_candidate", {"account": account, "claims": pre_review})
-                        claims, result, missing = pre_review, None, []
-                        unresolved.extend(n for n in review_notes if n not in unresolved)
-                        run.report["review"]["outcome"] = "reverted: the repair did not verify; the objections are listed as unresolved"
-                    elif pre_review is not None:
-                        run.report["review"]["outcome"] = "repaired"
-                    if (result is None or result.ok) and not missing and can_review and pre_review is None and "review" not in run.report:
-                        reasons = self._review_reasons(view, claims)
-                        run.report["review"] = {"reasons": reasons}
-                        if reasons:
-                            found = self._review_meaning(run, account, view, claims, usage)
-                            if found is None:
-                                run.report["review"]["outcome"] = "no usable review reply; the verified paragraph stands"
-                            elif found[0] or found[1]:
-                                pre_review, (objections, absent) = list(claims), found
-                                rejected = dict(objections)
-                                if absent:
-                                    rejected[len(claims)] = absent
-                                review_notes = [o for objs in rejected.values() for o in objs]
-                                run.report["review"].update(objections=sum(len(v) for v in objections.values()), missing=len(absent))
-                                record.update(review=len(review_notes))
-                                run.steps.append(record)
-                                continue
+                    if review is not None and review["status"] == "objected" and pre_review is not None:
+                        # this draft answers the reviewer: settled only by a change the reviewer accepts, never by a repeat
+                        return self._settle_review(run, account, view, claims, pre_review, result.ok and not missing, review,
+                                                   unresolved, usage, export, record)
+                    if result.ok and not missing:
+                        if can_review:
+                            reasons = self._review_reasons(view, claims)
+                            if not reasons:
+                                review = {"status": "not_needed", "reasons": []}
                             else:
-                                run.report["review"]["outcome"] = "no objection"
-                        else:
-                            run.report["review"]["outcome"] = "not needed: nothing a reviewer must judge"
-                    if (result is None or result.ok) and not missing:
-                        accepted, feedback, answer = self._gate_done({"account": account}, account, export)
-                        record["accepted"] = accepted
-                        if accepted:
-                            answer = dict(answer or {}, unresolved=list(unresolved))
-                            run.answer, run.stop_reason = answer, STOP_DONE
-                            run.steps.append(record)
-                            return True
-                        codes = list(self._gate_codes)
-                        rejected = {}
+                                review = dict(self._review_meaning(run, account, view, claims, usage), reasons=reasons)
+                                if review["status"] == "objected":
+                                    pre_review = list(claims)
+                                    review["text_reviewed"] = cl.render_claims(claims)      # what the reviewer read, kept for the record
+                                    rejected = {o["index"]: [f"REVIEW: {o['why']}"] for o in review["objections"]}
+                                    if review["missing"]:
+                                        rejected.setdefault(len(claims), []).extend(
+                                            f"REVIEW_MISSING {m['ref']}: {m['why']}; add a claim that states it" for m in review["missing"])
+                                    run.report["review"] = {k: v for k, v in review.items()}
+                                    record.update(review=len(review["objections"]) + len(review["missing"]))
+                                    run.steps.append(record)
+                                    continue
+                                if review["status"] == "unavailable":
+                                    return self._end_with_review(run, account, claims, review, unresolved, record,
+                                                                 STOP_REVIEW_PENDING if run.stop_reason in ("", None) else run.stop_reason)
+                        return self._end_with_review(run, account, claims, review, unresolved, record, STOP_DONE, export=export)
                     else:
                         rejected = {}
                         for n, v in enumerate(outcome.get("verdicts") or []):
@@ -913,7 +1005,8 @@ class AgentController:
                                 bad = [f for f in v.get("findings") or [] if f.get("severity") in ("failed", "review")]
                                 rejected[n] = [f"{f['code']}: {f.get('message', '')}" for f in bad] or ["not verified"]
                         if missing:
-                            rejected[len(claims)] = [f"REQUIRED_NOT_STATED: no claim cites {', '.join(missing)}; add one ('add')"]
+                            rejected[len(claims)] = [f"REQUIRED_NOT_STATED: no verified claim cites {', '.join(missing)} AND writes its figure; "
+                                                     "add one ('add')"]
                         codes = sorted(outcome.get("by_code") or {}) + (["REQUIRED_NOT_STATED"] if missing else [])
                         record["feedback"] = " | ".join(o for objs in rejected.values() for o in objs)[:900]
                 if codes:
@@ -1328,5 +1421,7 @@ class AgentController:
             STOP_NEEDS_USER: "the sources need a decision from the user",
             STOP_MODEL_ERROR: "the model call failed",
             STOP_SESSION: "a cap over the whole working session was reached: " + str((run.report.get("budget") or {}).get("message") or ""),
+            STOP_SEMANTIC_BLOCKED: "the paragraph verifies, but the reviewer's objection to its meaning stands (listed under unresolved)",
+            STOP_REVIEW_PENDING: "a review of the paragraph's meaning was due and did not happen",
         }.get(run.stop_reason, run.stop_reason)
         return {"why_stopped": why, "known": known, "gaps": gaps, "next_steps": next_steps, "accounts_consulted": list(self.consulted)}

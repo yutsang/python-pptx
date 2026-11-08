@@ -817,7 +817,8 @@ class WorkSession:
             "derived": derived, "searched": searched,
             "candidates": {a: {"claims": c.claims, "outcome": c.outcome, "source_version": c.source_version, "claims_digest": c.claims_digest,
                                "origin": c.origin, "accepted": c.accepted, "invalid_reason": c.invalid_reason, "cite_ids": c.cite_ids,
-                               "turn": c.turn, "carried": c.carried, "context": c.context, "context_changes": c.context_changes}
+                               "turn": c.turn, "carried": c.carried, "context": c.context, "context_changes": c.context_changes,
+                               "review": c.review}
                            for a, c in self.source.candidates.items()},
             "exports": [{k: e.get(k) for k in ("path", "ok", "source_version", "touched_slide_numbers", "candidates")} | {"delivery": (e.get("delivery") or {}).get("status")}
                         for e in self.source.exports],
@@ -877,7 +878,7 @@ class WorkSession:
                 a, c["claims"], c["outcome"], c["source_version"], c["claims_digest"], origin=c.get("origin", "edit"),
                 accepted=bool(c.get("accepted")), invalid_reason=c.get("invalid_reason", ""), cite_ids=c.get("cite_ids") or {},
                 turn=int(c.get("turn") or 0), carried=bool(c.get("carried")), context=c.get("context") or {},
-                context_changes=list(c.get("context_changes") or []))
+                context_changes=list(c.get("context_changes") or []), review=c.get("review") or {})
         for e in data.get("exports") or []:
             self.source.exports.append({**e, "delivery": {"status": e.get("delivery")}, "restored": True})
         if not same:

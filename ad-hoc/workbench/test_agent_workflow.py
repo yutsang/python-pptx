@@ -536,33 +536,99 @@ class PreparedWrite(unittest.TestCase):
         self.assertEqual([c["text"] for c in work.source.candidates[ACCOUNT].claims], [self.BALANCE, self.MOVE])
         self.assertIn("数字不符", turn.unresolved)
 
-    def _reviewed(self, after_review):
+    def _reviewed(self, after_review, review=None):
+        """A seeded write that adds a cause, a reviewer that objects to it (claim 2), and a writer whose post-review reply is
+        after_review(view). `review(n)` replaces the reviewer's n-th reply."""
         def fn(system, user, n):
             if "REVIEW:" in user:
                 return after_review(writer_view(user))
             return {"add": [dict(self.CAUSE)]}
         writer = Writer(fn)
-        reviewer = Writer(lambda system, user, n: {"objections": [{"index": 2, "why": "附注未说明回款节奏"}], "missing": []})
+        objection = {"objections": [{"index": 2, "why": "附注未说明回款节奏"}], "missing": []}
+        reviewer = Writer(lambda system, user, n: review(n) if review else objection)
         work = self._work(writer, escalation=reviewer, mode="escalate", config=self.REVIEWED)
-        return work, work.edit("撰写应收账款的段落", ACCOUNT), writer, reviewer
+        return work, work.edit("撰写应收账款的段落", ACCOUNT, accept=True), writer, reviewer
 
-    def test_the_stronger_model_reads_a_paragraph_with_a_cause_and_its_objection_is_repaired(self):
+    # -- review comments 2026-11-08 (Codex): an objection is settled by a change the reviewer accepts, never by a repeat ------------
+
+    def test_an_empty_fix_does_not_settle_an_objection(self):
+        work, turn, writer, reviewer = self._reviewed(lambda view: {"fix": []})
+        self.assertFalse(turn.ok, "the objected sentence is still there")
+        self.assertEqual(turn.stop_reason, "semantic_blocked")
+        candidate = work.source.candidates[ACCOUNT]
+        self.assertEqual(candidate.review["status"], "objected")
+        self.assertFalse(candidate.accepted, "a draft with an open objection is not accepted")
+        self.assertIn(self.CAUSE["text"], [c["text"] for c in candidate.claims])
+        self.assertTrue(any(u.startswith("REVIEW:") for u in turn.unresolved))
+        self.assertEqual(len(reviewer.users), 1, "nothing changed, so nothing is sent for a second review")
+
+    def test_dropping_the_objected_sentence_settles_it_without_a_second_review(self):
         work, turn, writer, reviewer = self._reviewed(lambda view: {"fix": [{"index": 2, "drop": "原因未能从附注核实"}]})
         self.assertTrue(turn.ok, turn.report)
         self.assertIn("Judge meaning only", reviewer.systems[0])
-        self.assertEqual(turn.report["review"]["outcome"], "repaired")
+        self.assertEqual(work.source.candidates[ACCOUNT].review["status"], "passed_after_repair")
         self.assertEqual([c["text"] for c in work.source.candidates[ACCOUNT].claims], [self.BALANCE, self.MOVE])
         books = work.shared.summary()
         self.assertEqual((books["by_purpose"]["review"]["calls"], books["escalations"]), (1, 0), "a review is not an escalation")
-        self.assertEqual(len(writer.users), 2)
+        self.assertTrue(work.source.candidates[ACCOUNT].accepted)
 
-    def test_a_repair_after_review_that_does_not_verify_keeps_the_verified_paragraph(self):
-        work, turn, writer, reviewer = self._reviewed(lambda view: {"fix": [{"index": 2, "claim": amount_claim(view, P2, "余额为999.0万元")}]})
+    def test_a_rewritten_sentence_is_read_again_and_stays_blocked_if_the_reviewer_still_objects(self):
+        rewrite = lambda view: {"fix": [{"index": 2, "claim": dict(self.CAUSE, text="增加主要系回款周期变化所致")}]}
+        work, turn, writer, reviewer = self._reviewed(rewrite)
+        self.assertEqual(len(reviewer.users), 2, "a changed sentence is reviewed again")
+        self.assertEqual((turn.ok, turn.stop_reason, work.source.candidates[ACCOUNT].review["status"]), (False, "semantic_blocked", "objected"))
+        passes = lambda n: {"objections": [{"index": 2, "why": "附注未说明回款节奏"}], "missing": []} if n == 1 else {"objections": [], "missing": []}
+        work, turn, writer, reviewer = self._reviewed(rewrite, review=passes)
         self.assertTrue(turn.ok, turn.report)
-        self.assertTrue(turn.report["review"]["outcome"].startswith("reverted"))
-        self.assertEqual([c["text"] for c in work.source.candidates[ACCOUNT].claims], [self.BALANCE, self.MOVE, self.CAUSE["text"]])
-        self.assertTrue(work.source.candidates[ACCOUNT].validated)
-        self.assertTrue(any(u.startswith("REVIEW:") for u in turn.unresolved), "the objection is not lost")
+        self.assertEqual(work.source.candidates[ACCOUNT].review["status"], "passed_after_repair")
+
+    def test_a_repair_that_does_not_verify_keeps_the_verified_text_but_the_objection_follows_it_to_the_deck(self):
+        work, turn, writer, reviewer = self._reviewed(lambda view: {"fix": [{"index": 2, "claim": amount_claim(view, P2, "余额为999.0万元")}]})
+        self.assertFalse(turn.ok)
+        self.assertEqual(turn.stop_reason, "semantic_blocked")
+        candidate = work.source.candidates[ACCOUNT]
+        self.assertEqual([c["text"] for c in candidate.claims], [self.BALANCE, self.MOVE, self.CAUSE["text"]])
+        self.assertTrue(candidate.validated, "mechanically the text still verifies")
+        self.assertEqual(candidate.review["status"], "objected")
+        candidate.accepted = True                                        # even if a person accepts it, the deck says why it is not ready
+        from fdd_utils.agent.export import merged_results, session_delivery
+        delivery = session_delivery(work.source, merged_results(work.source, [ACCOUNT], first_generation=True), edited=[ACCOUNT],
+                                    first_generation=True)
+        found = [(f.code, f.severity, f.account) for f in delivery.findings if f.code == "SEMANTIC_OBJECTION"]
+        self.assertEqual(found, [("SEMANTIC_OBJECTION", "blocked", ACCOUNT)])
+
+    def test_a_review_that_did_not_happen_is_not_a_passed_review(self):
+        for reply in ({}, {"objections": []}, "not json"):
+            work, turn, writer, reviewer = self._reviewed(lambda view: {"fix": []}, review=lambda n, r=reply: r)
+            self.assertFalse(turn.ok, reply)
+            self.assertEqual((turn.stop_reason, work.source.candidates[ACCOUNT].review["status"]), ("review_pending", "unavailable"), reply)
+
+        def broken(system, user, max_tokens):
+            raise RuntimeError("gateway down")
+        writer = Writer(lambda system, user, n: {"add": [dict(self.CAUSE)]})
+        work = self._work(writer, escalation=broken, mode="escalate", config=self.REVIEWED)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT, accept=True)
+        self.assertEqual((turn.ok, turn.stop_reason, work.source.candidates[ACCOUNT].review["status"]), (False, "review_pending", "unavailable"))
+        self.assertFalse(work.source.candidates[ACCOUNT].accepted)
+
+    def test_a_passed_review_is_recorded_on_the_candidate(self):
+        work, turn, writer, reviewer = self._reviewed(lambda view: {"fix": []}, review=lambda n: {"objections": [], "missing": []})
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual(work.source.candidates[ACCOUNT].review["status"], "passed")
+
+    def test_a_citation_of_the_balance_is_not_a_statement_of_it(self):
+        def fn(system, user, n):
+            view = writer_view(user)
+            if n == 1:
+                return {"draft": {"claims": [{"kind": "descriptive", "periods": [P2], "cites": [total_ref(view, P2)], "text": "应收账款需要持续关注。"}],
+                                  "unresolved": []}}
+            return {"fix": [], "add": [amount_claim(view, P2, GOOD)]}
+        writer = Writer(fn)
+        work = self._work(writer)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertIn("REQUIRED_NOT_STATED", writer.users[1], "citing the balance without writing it does not count")
+        self.assertTrue(turn.ok, turn.report)
+        self.assertIn(GOOD, [c["text"] for c in work.source.candidates[ACCOUNT].claims])
 
     def test_python_sentences_verify_in_english_and_for_an_income_statement_line(self):
         work = self._work(Writer(lambda *a: {}))
@@ -740,6 +806,36 @@ class WholeDatabookTrial(unittest.TestCase):
                          {"calls": 1, "failed": 1, "response_cache": 1, "in": 1000, "cached": 400, "out": 100})
         self.assertEqual(got["total"]["cost"], round((1000 * 12 + 100 * 24) / 1e6, 4))
         self.assertIn("error", E.legacy_usage(str(run), self.CFG, ledger=tmp / "missing.jsonl"), "no ledger: said, not estimated")
+
+    def test_an_arm_that_fails_halfway_keeps_what_it_did_and_what_it_spent(self):
+        import entity_trial as E
+        tmp = tempfile.mkdtemp(prefix="trial_fail_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        source = session_on(book)
+        source.load_params = {"workbook": book}
+        from test_claims import build as build_contract
+        other = build_contract(account=OTHER)
+        other.binding = source.binding.to_dict()
+        source.contracts[OTHER] = other
+        opened = lambda path, **kw: W.WorkSession(source, **{k: v for k, v in kw.items() if k != "config"}, config={"agent": {}})
+        real, calls = E.coverage, {"n": 0}
+
+        def coverage_then_fail(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 2:
+                raise RuntimeError("disk full")
+            return real(*a, **kw)
+        rows = []
+        setup = E.arm_setup(self.CFG, "pro", self.args())
+        with mock.patch.object(W.WorkSession, "open", side_effect=opened), mock.patch.object(E, "coverage", side_effect=coverage_then_fail), \
+                mock.patch.object(E, "OUT_DIR", Path(tmp)):
+            res = E.run_arm("pro", setup, self.CFG, book, Path(tmp), R.Limits(), select=lambda work: [ACCOUNT, OTHER],
+                            scripted={"primary": E.ScriptedWriter("x")}, stamp="t", deck=False, checkpoint=rows.append)
+        self.assertIn("disk full", res["error"])
+        self.assertEqual((res["done"], len(rows), rows[0]["case"]), (1, 1, 1), "the finished case is kept and was checkpointed")
+        self.assertEqual(res["books"]["calls"], 2, "both accounts' calls are on the books, the failed one's too")
+        self.assertTrue(res.get("session_file"))
 
     def test_the_scripted_writer_writes_the_latest_balance_it_is_shown(self):
         import entity_trial as E

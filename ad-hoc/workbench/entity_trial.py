@@ -52,7 +52,7 @@ import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
@@ -123,8 +123,51 @@ class _Bar:
             self.bar.close()
 
 
-def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str, workdir: Path, limits: Any, *, limit: int = 0,
-            scripted: Optional[Dict[str, Any]] = None, stamp: str = "") -> Dict[str, Any]:
+def code_fingerprint() -> Dict[str, Any]:
+    """sha256 of the code a trial depends on, line endings normalised: the company folder is not a git checkout, so this is how a
+    run says which frozen version it used."""
+    import hashlib
+    files = sorted(list((ROOT / "fdd_utils" / "agent").glob("*.py"))
+                   + [ROOT / "fdd_utils" / "ai" / n for n in ("claims.py", "validator.py", "evidence_contract.py")]
+                   + [HERE / n for n in ("entity_trial.py", "agent_acceptance.py")])
+    total = hashlib.sha256()
+    for f in files:
+        total.update(f.relative_to(ROOT).as_posix().encode())
+        total.update(f.read_bytes().replace(b"\r\n", b"\n"))
+    return {"sha256": total.hexdigest(), "short": total.hexdigest()[:12], "files": len(files)}
+
+
+def coverage(source: Any, key: str, candidate: Any, language: str) -> Dict[str, Any]:
+    """What the paragraph covers, by Python, for the record (not a gate beyond the balance): the latest balance stated (its figure
+    written in a verified claim that cites it), the movement into it stated, which notes it cites, how many detail lines the
+    evidence the writer saw left out (the writer and the reviewer saw the same cut)."""
+    from fdd_utils.agent import controller as C
+    from fdd_utils.agent import tools as T
+    view = T.get_account_evidence(source, key)
+    ctl = C.AgentController(source, lambda *a: {}, language=language)
+    required = ctl._required_refs(view)
+    latest = (view.get("periods") or [""])[-1]
+    move = next((d["ref"] for d in view.get("derived") or [] if d.get("kind") == "movement" and d.get("valid", True) and d.get("value")
+                 and list(d.get("periods") or [])[-1:] == [latest]), None)
+    notes = [n["ref"] for n in view.get("notes") or [] if n.get("ref")]
+    out = {"required": required, "balance_stated": None, "movement": move, "movement_stated": None, "notes": len(notes),
+           "notes_cited": 0, "notes_not_cited": notes, "components_not_shown": view.get("components_not_shown")}
+    if candidate is None:
+        return out
+    claims, outcome = candidate.claims, candidate.outcome
+    cited = {r for c in claims for r in list(c.get("cites") or []) + list(c.get("cause_cites") or [])}
+    out["balance_stated"] = (not ctl._required_unstated(required, claims, outcome, view)) if required else None
+    out["movement_stated"] = (not ctl._required_unstated([move], claims, outcome, view)) if move else None
+    out["notes_cited"] = len([n for n in notes if n in cited])
+    out["notes_not_cited"] = [n for n in notes if n not in cited]
+    return out
+
+
+def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str, workdir: Path, limits: Any, *,
+            select: Callable[[Any], List[str]], scripted: Optional[Dict[str, Any]] = None, stamp: str = "", deck: bool = True,
+            checkpoint: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
+    """One arm on its own copy and session. Every account's row is checkpointed as it finishes; an exception ends the arm with
+    what it spent so far recorded (it is never lost, and never counted as a success)."""
     from fdd_utils.agent import routing as R
     from fdd_utils.agent.flag import agent_budget
     from fdd_utils.agent.workspace import WorkSession
@@ -137,66 +180,80 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
     if scripted is not None:
         kwargs.update(model=scripted["primary"], escalation=scripted.get("escalation"), model_name=f"scripted-{name}")
     started_all = time.perf_counter()
-    work = WorkSession.open(str(copy_path), **kwargs)
-    if scripted is not None and scripted.get("holder") is not None:
-        scripted["holder"]["source"] = work.source
-    books = work.shared
-    accounts = work.entity_accounts()
-    if limit:
-        accounts = accounts[:limit]
-    order = list(work.source.contracts)
-    marks = [books.calls]
-    clock = [time.perf_counter()]
-    per: List[Dict[str, Any]] = []
-    bar = _Bar(len(accounts), f"{name}")
-
-    def on_account(key: str, turn: Any) -> None:
-        d = A._books_delta(books, marks[-1])
-        pr = d.get("provider_reported") or {}
-        routing = (turn.report or {}).get("routing") or {}
-        per.append({"account_index": order.index(key), "ok": bool(turn.ok), "stop_class": routing.get("stop_class"),
-                    "stop_reason": turn.stop_reason, "calls": d["calls"], "in": pr.get("prompt", 0), "cached": pr.get("cached_prompt", 0),
-                    "out": pr.get("completion", 0), "charged": d["charged_tokens"], "cost": d.get("cost"), "escalations": d["escalations"],
-                    "fallback": (turn.report or {}).get("prepared_fallback"), "unresolved": len(turn.unresolved or []),
-                    "seeded": ((turn.report or {}).get("prepared") or {}).get("seeded"),
-                    "review": {k: v for k, v in ((turn.report or {}).get("review") or {}).items() if k != "reasons"} or None,
-                    "verification": dict(turn.verification or {}), "seconds": round(time.perf_counter() - clock[-1], 2)})
-        marks.append(books.calls)
-        clock.append(time.perf_counter())
-        bar.step(ok=sum(p["ok"] for p in per), tokens=f"{books.charged_tokens:,}", cost=f"{books.cost or 0:.3f}")
-
-    stopped = ""
-    done: Dict[str, Any] = {"rows": []}
+    result: Dict[str, Any] = {"arm": name, "routing": setup["routing"], "prepared_write": setup["prepare"], "seed": bool(setup.get("seed")),
+                              "review": bool(setup.get("review")), "escalate_after": setup.get("escalate_after"),
+                              "models": {role: {"model": (sel or {}).get("model"), "provider": (sel or {}).get("provider"),
+                                                "max_output": (sel or {}).get("max_output")}
+                                         for role, sel in (("primary", setup["primary"]), ("escalation", setup.get("escalation"))) if sel},
+                              "accounts": 0, "done": 0, "ok": 0, "per_account": [], "_texts": {}}
+    work = None
     try:
-        done = work.draft_entity(accounts, on_account=on_account)
-        stopped = next((r.get("error") or "" for r in done["rows"] if r.get("stop_reason") == "budget_session"), "")
+        work = WorkSession.open(str(copy_path), **kwargs)
+        if scripted is not None and scripted.get("holder") is not None:
+            scripted["holder"]["source"] = work.source
+        books = work.shared
+        accounts = select(work)
+        ranked = sorted(work.source.contracts)
+        result.update(accounts=len(accounts), order=list(accounts), sorted_index={k: ranked.index(k) for k in accounts},
+                      in_scope={k: work.source.in_scope(k) for k in accounts})
+        marks, clock = [books.calls], [time.perf_counter()]
+        per: List[Dict[str, Any]] = result["per_account"]
+        bar = _Bar(len(accounts), f"{name}")
+
+        def on_account(key: str, turn: Any) -> None:
+            d = A._books_delta(books, marks[-1])
+            pr = d.get("provider_reported") or {}
+            routing = (turn.report or {}).get("routing") or {}
+            c = work.source.candidates.get(key)
+            review = dict((c.review if c is not None else {}) or {})
+            row = {"case": accounts.index(key) + 1, "sorted_index": ranked.index(key), "ok": bool(turn.ok), "stop_reason": turn.stop_reason,
+                   "stop_class": routing.get("stop_class"), "mechanical": ({k: c.outcome.get(k) for k in ("verified", "inference", "failed", "unverified")}
+                                                                             | {"validated": bool(c.validated)}) if c is not None else None,
+                   "review_status": review.get("status"), "review_objections": len(review.get("objections") or []) + len(review.get("missing") or []),
+                   "coverage": {k: v for k, v in coverage(work.source, key, c, work.source.language).items() if k not in ("required",)},
+                   "unresolved": len(turn.unresolved or []), "calls": d["calls"], "in": pr.get("prompt", 0), "cached": pr.get("cached_prompt", 0),
+                   "out": pr.get("completion", 0), "charged": d["charged_tokens"], "cost": d.get("cost"), "escalations": d["escalations"],
+                   "review_calls": ((d.get("by_purpose") or {}).get("review") or {}).get("calls", 0),
+                   "review_cost": ((d.get("by_purpose") or {}).get("review") or {}).get("cost"),
+                   "fallback": (turn.report or {}).get("prepared_fallback"), "seeded": ((turn.report or {}).get("prepared") or {}).get("seeded"),
+                   "seconds": round(time.perf_counter() - clock[-1], 2)}
+            per.append(row)
+            result["_texts"][key] = {"text": cl.render_claims(c.claims) if c is not None else "", "accepted": bool(c is not None and c.accepted and c.validated),
+                                     "unresolved": list(turn.unresolved or []), "review": review}
+            marks.append(books.calls)
+            clock.append(time.perf_counter())
+            result.update(done=len(per), ok=sum(p["ok"] for p in per), books=A._books_delta(books, 0))
+            if checkpoint is not None:
+                checkpoint(dict(row, arm=name))
+            bar.step(ok=result["ok"], tokens=f"{books.charged_tokens:,}", cost=f"{books.cost or 0:.3f}")
+
+        try:
+            done = work.draft_entity(accounts, on_account=on_account)
+            result["stopped"] = next((r.get("error") or "" for r in done["rows"] if r.get("stop_reason") == "budget_session"), "")
+        finally:
+            bar.close()
+        if deck:
+            OUT_DIR.mkdir(parents=True, exist_ok=True)
+            exported = work.export(out_path=str(OUT_DIR / f"trial_{name}_{stamp}.pptx"), first_generation=True)
+            data = exported.get("data") or {}
+            findings: Dict[str, int] = {}
+            for f in (data.get("delivery") or {}).get("findings") or []:
+                findings[f.get("code")] = findings.get(f.get("code"), 0) + 1
+            result.update(deck=_rel(data.get("path") or ""), export_ok=bool(exported.get("ok")), export_error=(exported.get("error") or {}).get("code"),
+                          delivery=(data.get("delivery") or {}).get("status"), findings=findings)
+    except Exception as exc:                                            # noqa: BLE001
+        import traceback
+        result["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+        result["traceback_tail"] = traceback.format_exc().splitlines()[-6:]
     finally:
-        bar.close()
-    unresolved = {r["account"]: r.get("unresolved") or [] for r in done.get("rows") or []}
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    exported = work.export(out_path=str(OUT_DIR / f"trial_{name}_{stamp}.pptx"), first_generation=True)
-    session_file = work.save(str(OUT_DIR / f"trial_{name}_{stamp}.agent-session.json"))
-    data = exported.get("data") or {}
-    findings: Dict[str, int] = {}
-    for f in (data.get("delivery") or {}).get("findings") or []:
-        findings[f.get("code")] = findings.get(f.get("code"), 0) + 1
-    texts = {}
-    for key in accounts:
-        c = work.source.candidates.get(key)
-        if c is not None:
-            texts[key] = {"text": cl.render_claims(c.claims), "accepted": bool(c.accepted and c.validated),
-                          "verdicts": {k: c.outcome.get(k) for k in ("verified", "inference", "failed", "unverified")},
-                          "unresolved": unresolved.get(key) or []}
-    books_all = A._books_delta(books, 0)
-    return {"arm": name, "routing": setup["routing"], "prepared_write": setup["prepare"], "seed": bool(setup.get("seed")),
-            "review": bool(setup.get("review")),
-            "models": {role: {"model": (sel or {}).get("model"), "provider": (sel or {}).get("provider"), "max_output": (sel or {}).get("max_output")}
-                       for role, sel in (("primary", setup["primary"]), ("escalation", setup.get("escalation"))) if sel},
-            "escalate_after": setup.get("escalate_after"), "accounts": len(accounts), "done": len(per), "ok": sum(p["ok"] for p in per),
-            "stopped": stopped, "books": books_all, "per_account": per, "wall_seconds": round(time.perf_counter() - started_all, 1),
-            "deck": _rel((data.get("path") or "")), "export_ok": bool(exported.get("ok")), "export_error": (exported.get("error") or {}).get("code"),
-            "delivery": (data.get("delivery") or {}).get("status"), "findings": findings, "session_file": _rel(session_file),
-            "order": order, "_texts": texts}
+        if work is not None:
+            result["books"] = A._books_delta(work.shared, 0)
+            try:
+                result["session_file"] = _rel(work.save(str(OUT_DIR / f"trial_{name}_{stamp}.agent-session.json")))
+            except Exception as exc:                                    # noqa: BLE001
+                result["session_file_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
+        result["wall_seconds"] = round(time.perf_counter() - started_all, 1)
+    return result
 
 
 def _rel(path: str) -> Optional[str]:
@@ -320,6 +377,8 @@ def legacy_usage(run_id: str, cfg: Dict[str, Any], ledger: Optional[Path] = None
     if end is None:
         end = datetime.fromtimestamp((Path(folder) / "results.yml").stat().st_mtime)
     file_name = Path(str(ident.get("workbook") or "")).name
+    attribution = (f"calls for file {file_name!r} from the run's start to its identity time, plus or minus five minutes" if file_name else
+                   "time window only: the run identity names no workbook, so calls for other files in that window are included")
     lo, hi = (start - timedelta(minutes=5)).isoformat(timespec="seconds"), (end + timedelta(minutes=5)).isoformat(timespec="seconds")
     by_model: Dict[str, Dict[str, Any]] = {}
     rows = 0
@@ -340,6 +399,7 @@ def legacy_usage(run_id: str, cfg: Dict[str, Any], ledger: Optional[Path] = None
                 continue
             if row.get("ok") is False:
                 m["failed"] += 1
+                m["failed_estimated_in"] = m.get("failed_estimated_in", 0) + int(row.get("estimated_prompt_tokens") or 0)
                 continue
             m["calls"] += 1
             if row.get("prompt_tokens") is None:
@@ -350,10 +410,11 @@ def legacy_usage(run_id: str, cfg: Dict[str, Any], ledger: Optional[Path] = None
     for model, m in by_model.items():
         price = F.price_for(cfg, str(m.get("provider") or ""), model)
         m["cost"] = None if price is None else round((m["in"] * price[0] + m["out"] * price[1]) / 1e6, 4)
-    total = {k: sum(m[k] for m in by_model.values()) for k in ("calls", "failed", "response_cache", "in", "cached", "out", "estimated_calls")}
+    total = {k: sum(m.get(k, 0) for m in by_model.values()) for k in ("calls", "failed", "failed_estimated_in", "response_cache", "in", "cached", "out",
+                                                                     "estimated_calls")}
     costs = [m["cost"] for m in by_model.values() if m["cost"] is not None]
     total["cost"] = round(sum(costs), 4) if costs and len(costs) == len(by_model) else None
-    return {"run": run_id, "file": file_name, "window": [lo, hi], "rows": rows, "by_model": by_model, "total": total,
+    return {"run": run_id, "file": file_name, "window": [lo, hi], "rows": rows, "by_model": by_model, "total": total, "attribution": attribution,
             "basis": "ledger rows for the run's file in its time window; provider-reported tokens; cached input priced at the full price_in"}
 
 
@@ -366,10 +427,18 @@ def _num(n: Any) -> str:
 
 
 def summary_text(report: Dict[str, Any]) -> str:
-    lines = [f"WHOLE-DATABOOK TRIAL {report['stamp']}  ({'SCRIPTED: plumbing only, no model wrote anything' if report.get('scripted') else 'real models'})",
-             f"  accounts in scope: {report.get('accounts_in_scope')}" + (f" (limited to {report['limit']})" if report.get("limit") else ""),
+    cases = report.get("cases")
+    fp = report.get("code_fingerprint") or {}
+    lines = [f"TRIAL {report['stamp']}  ({'SCRIPTED: plumbing only, no model wrote anything' if report.get('scripted') else 'real models'})  "
+             f"code {fp.get('short')}  workbook {str(report.get('databook_sha256') or '')[:12]}",
+             (f"  cases (sorted-contract indices): {cases}" if cases else f"  accounts in scope: {report.get('accounts_in_scope')}"
+              + (f" (limited to {report['limit']})" if report.get("limit") else "")),
+             f"  declared allowance: {report.get('caps')} (one ceiling over every arm; spent {((report.get('allowance') or {}).get('spent'))})",
              "  arm      ok/acc  calls        in    cached       out   cost(yuan)  tok/acc  yuan/acc  esc  fallbk   secs  deck"]
     for name, res in (report.get("arms") or {}).items():
+        if res.get("not_started"):
+            lines.append(f"  {name:7s} NOT STARTED: {res['not_started']}")
+            continue
         b = res.get("books") or {}
         pr = b.get("provider_reported") or {}
         n = max(res.get("done") or 0, 1)
@@ -378,22 +447,24 @@ def summary_text(report: Dict[str, Any]) -> str:
         fall = sum(1 for p in res.get("per_account") or [] if p.get("fallback"))
         lines.append(f"  {name:7s} {res.get('ok')}/{res.get('accounts'):<4} {b.get('calls', 0):5d} {pr.get('prompt', 0):9,d} {pr.get('cached_prompt', 0):9,d} "
                      f"{pr.get('completion', 0):9,d}   {_num(cost):>9}  {tok // n:7,d}  {(cost or 0) / n:8.4f}  {b.get('escalations', 0):3d}  {fall:6d} "
-                     f"{res.get('wall_seconds', 0):6.0f}  {res.get('delivery') or res.get('export_error')}"
-                     + (f"  STOPPED {res['stopped']}" if res.get("stopped") else ""))
+                     f"{res.get('wall_seconds', 0):6.0f}  {res.get('delivery') or res.get('export_error') or '-'}"
+                     + (f"  STOPPED {res['stopped']}" if res.get("stopped") else "") + (f"  ERROR {res['error']}" if res.get("error") else ""))
         roles = []
         for role, v in (b.get("by_role") or {}).items():
             roles.append(f"{role} {v.get('models_reported') or v.get('model')}: {v['calls']} calls, in {v.get('prompt_provider', 0):,} "
                          f"(cached {v.get('cached_prompt', 0):,}), out {v.get('completion_provider', 0):,}, {_num(v.get('cost'))} yuan")
         lines.append("           " + " | ".join(roles))
+        stops: Dict[str, int] = {}
+        for p in res.get("per_account") or []:
+            stops[str(p.get("stop_reason"))] = stops.get(str(p.get("stop_reason")), 0) + 1
+        lines.append(f"           end states {stops}")
         rev = (b.get("by_purpose") or {}).get("review")
-        if rev:
-            outcomes: Dict[str, int] = {}
+        if res.get("review"):
+            statuses: Dict[str, int] = {}
             for p in res.get("per_account") or []:
-                o = str(((p.get("review") or {}).get("outcome") or "")).split(":")[0]
-                if o:
-                    outcomes[o] = outcomes.get(o, 0) + 1
-            lines.append(f"           of which review by the stronger model: {rev['calls']} calls, in {rev['prompt_provider']:,}, out {rev['completion_provider']:,}, "
-                         f"{_num(rev.get('cost'))} yuan; outcomes {outcomes}")
+                statuses[str(p.get("review_status"))] = statuses.get(str(p.get("review_status")), 0) + 1
+            lines.append(f"           review: {statuses}" + (f"; {rev['calls']} calls, in {rev['prompt_provider']:,}, out {rev['completion_provider']:,}, "
+                                                            f"{_num(rev.get('cost'))} yuan (inside the totals above)" if rev else "; no review call"))
         if res.get("seed"):
             lines.append(f"           Python wrote {sum(int(p.get('seeded') or 0) for p in res.get('per_account') or [])} sentence(s) itself")
         if res.get("findings"):
@@ -402,58 +473,98 @@ def summary_text(report: Dict[str, Any]) -> str:
             lines.append(f"           {b['calls_without_provider_usage']} call(s) without provider usage (estimated, not in the columns above)")
         if (b.get("cached_input_pricing") or "").startswith(tuple("0123456789")):
             lines.append("           " + b["cached_input_pricing"])
+    if cases:
+        lines.append("  per case: arm case(index) end | mech v/i/f/u | review | balance movement notes | unresolved | calls tokens yuan secs")
+        for name, res in (report.get("arms") or {}).items():
+            for p in res.get("per_account") or []:
+                m = p.get("mechanical") or {}
+                cov = p.get("coverage") or {}
+                lines.append(f"    {name:7s} {p['case']:2d}({p['sorted_index']:2d}) {str(p.get('stop_reason')):17s} | "
+                             f"{m.get('verified', '-')}/{m.get('inference', '-')}/{m.get('failed', '-')}/{m.get('unverified', '-')} | "
+                             f"{str(p.get('review_status') or '-'):19s} | {_yn(cov.get('balance_stated'))} {_yn(cov.get('movement_stated'))} "
+                             f"{cov.get('notes_cited', 0)}/{cov.get('notes', 0)}{'' if not cov.get('components_not_shown') else ' +' + str(cov['components_not_shown']) + ' lines not shown'} | "
+                             f"{p.get('unresolved', 0)} | {p.get('calls')} {p.get('in', 0) + p.get('out', 0):,} {_num(p.get('cost'))} {p.get('seconds')}")
     leg = report.get("legacy_usage") or {}
     if leg.get("total"):
         t = leg["total"]
-        lines.append(f"  legacy run {leg['run']} (ledger, its time window): {t['calls']} calls, in {t['in']:,} (cached {t['cached']:,}), "
-                     f"out {t['out']:,}, {_num(t.get('cost'))} yuan; failed {t['failed']}, response cache {t['response_cache']}; "
-                     + "; ".join(f"{m}: {v['calls']} calls {_num(v.get('cost'))} yuan" for m, v in leg["by_model"].items()))
-        lines.append("    the legacy run includes its executive-summary and mapping calls; the arms above write commentary only "
-                     "(their summary band is spliced, no call)")
+        lines.append(f"  legacy run {leg['run']} (ledger): {t['calls']} calls, in {t['in']:,} (cached {t['cached']:,}), out {t['out']:,}, "
+                     f"{_num(t.get('cost'))} yuan; failed {t['failed']} (est. input {t.get('failed_estimated_in', 0):,}, not costed), "
+                     f"response cache {t['response_cache']}")
+        lines.append(f"    NOT directly comparable: {leg.get('attribution')}; failed calls are not costed and cached input is at full price "
+                     "there; it includes summary and mapping calls the arms do not make")
     elif leg.get("error"):
         lines.append(f"  legacy run: {leg['error']}")
     if report.get("quality"):
-        lines.append(f"  side by side (local, holds client text): {report['quality']}")
+        lines.append(f"  side by side with a review form per case (local, holds client text): {report['quality']}")
     return "\n".join(lines)
+
+
+def _yn(value: Any) -> str:
+    return "-" if value is None else ("yes" if value else "NO")
 
 
 def _numbers(text: str) -> set:
     return A._numbers(text)
 
 
+REVIEW_FORM = ("來源內容 review（逐項填寫，對照 workbook 原始資料）：\n"
+               "- 數字、期間、口徑：\n"
+               "- 意思是否與來源一致（有無沒有依據的原因、把餘額當流量、父子項重複、跨期套用）：\n"
+               "- 遺漏的重要事實、附註或限制：\n"
+               "- unresolved 是否合理：\n"
+               "- 結論（可用 / 需修改 / 不可用）：")
+
+
 def quality_markdown(report: Dict[str, Any], legacy: Dict[str, str], order: List[str]) -> str:
     arms = report.get("arms") or {}
-    out = [f"# Whole-databook trial {report['stamp']}",
-           "", "Local file: it holds the workbook's commentary. Do not commit it or paste it anywhere public.", "",
-           f"Arms: {', '.join(arms)}. Legacy run: {report.get('legacy_run') or 'none given'}.", ""]
-    keys = []
+    fp = report.get("code_fingerprint") or {}
+    out = [f"# Trial {report['stamp']}", "",
+           "Local file: it holds the workbook's commentary. Do not commit it or paste it anywhere public.", "",
+           f"Arms: {', '.join(arms)}. Code {fp.get('short')}. Workbook {str(report.get('databook_sha256') or '')[:12]}. "
+           f"Legacy run: {report.get('legacy_run') or 'none given'}. Cases: {report.get('cases') or 'all in scope'}.", "",
+           "A failed or blocked case is kept: its text, its objections and what it cost are below like any other.", ""]
+    keys: List[str] = list(order)
     for res in arms.values():
         for k in res.get("_texts") or {}:
             if k not in keys:
                 keys.append(k)
-    for key in sorted(keys, key=lambda k: order.index(k) if k in order else 10 ** 6):
-        out.append(f"## {key} (index {order.index(key) if key in order else '?'})")
+    for key in keys:
+        rows = {name: next((p for p in res.get("per_account") or [] if res.get("order") and key in res["order"]
+                            and p["case"] == res["order"].index(key) + 1), {}) for name, res in arms.items()}
+        any_row = next((r for r in rows.values() if r), {})
+        out.append(f"## case {any_row.get('case', '?')}: {key} (sorted index {any_row.get('sorted_index', '?')})")
         old = legacy.get(key, "")
         if legacy:
             out.append(f"**legacy** ({len(old)} chars)\n\n{old or '(no legacy paragraph)'}\n")
         for name, res in arms.items():
             t = (res.get("_texts") or {}).get(key)
+            row = rows.get(name) or {}
             if not t:
-                out.append(f"**{name}**: no draft\n")
+                out.append(f"**{name}**: no draft" + (f" (arm error: {res['error']})" if res.get("error") else "") + "\n")
                 continue
-            row = next((p for p in res.get("per_account") or [] if order and p["account_index"] == order.index(key)), {})
-            status = "accepted" if t["accepted"] else f"NOT ACCEPTED ({row.get('stop_reason') or 'not verified'})"
-            missing = sorted(_numbers(old) - _numbers(t["text"])) if old else []
-            out.append(f"**{name}** {status}; verdicts {t['verdicts']}; calls {row.get('calls')}, tokens in {row.get('in')} out {row.get('out')}"
-                       + (f", fell back to the tool loop: {row.get('fallback')}" if row.get("fallback") else "") + f" ({len(t['text'])} chars)\n")
+            m, cov, review = row.get("mechanical") or {}, row.get("coverage") or {}, t.get("review") or {}
+            out.append(f"**{name}**: end `{row.get('stop_reason')}`; mechanical {m}; review `{review.get('status') or '-'}`; "
+                       f"balance stated {_yn(cov.get('balance_stated'))}, movement stated {_yn(cov.get('movement_stated'))}, "
+                       f"notes cited {cov.get('notes_cited', 0)}/{cov.get('notes', 0)}, detail lines not shown to the writer {cov.get('components_not_shown')}; "
+                       f"calls {row.get('calls')}, tokens in {row.get('in')} (cached {row.get('cached')}) out {row.get('out')}, "
+                       f"{_num(row.get('cost'))} yuan, {row.get('seconds')} s"
+                       + (f"; fell back to the tool loop: {row.get('fallback')}" if row.get("fallback") else "") + "\n")
             out.append(t["text"] or "(empty)")
-            if row.get("review"):
-                out.append(f"\n_review by the stronger model_: {row['review']}")
+            if review.get("text_reviewed") and review["text_reviewed"] != t["text"]:
+                out.append(f"\n_the paragraph the reviewer read (before the repair)_: {review['text_reviewed']}")
+            if review.get("objections") or review.get("missing"):
+                out.append("\n_reviewer objections_: " + "; ".join([f"[{o.get('index')}] {o.get('why')}" for o in review.get("objections") or []]
+                                                                  + [f"missing {x.get('ref')}: {x.get('why')}" for x in review.get("missing") or []])
+                           + (f" ({review.get('settled')})" if review.get("settled") else ""))
             if t.get("unresolved"):
                 out.append("\n_unresolved_: " + "; ".join(t["unresolved"]))
-            if missing:
-                out.append(f"\n_legacy figures not in this text_: {', '.join(missing[:20])}")
-            out.append("")
+            if cov.get("notes_not_cited"):
+                out.append(f"\n_notes not cited_: {', '.join(cov['notes_not_cited'][:30])}")
+            if old:
+                missing = sorted(_numbers(old) - _numbers(t["text"]))
+                if missing:
+                    out.append(f"\n_legacy figures not in this text_: {', '.join(missing[:20])}")
+            out.append("\n" + REVIEW_FORM + "\n")
     return "\n".join(out)
 
 
@@ -469,26 +580,66 @@ def _arms(args: argparse.Namespace) -> List[str]:
     return wanted
 
 
+def _cases(args: argparse.Namespace) -> List[int]:
+    return [int(x) for x in str(args.cases or "").split(",") if x.strip()]
+
+
+def selector(args: argparse.Namespace) -> Callable[[Any], List[str]]:
+    """Which accounts an arm writes: the cases by their index in the sorted contract list (the ten-case study's numbering), or
+    every account in scope (optionally the first --limit)."""
+    cases = _cases(args)
+
+    def select(work: Any) -> List[str]:
+        if cases:
+            ranked = sorted(work.source.contracts)
+            bad = [i for i in cases if not 0 <= i < len(ranked)]
+            if bad:
+                raise ValueError(f"case index out of range {bad}: this workbook has {len(ranked)} contracts")
+            return [ranked[i] for i in cases]
+        accounts = work.entity_accounts()
+        return accounts[:args.limit] if args.limit else accounts
+    return select
+
+
+def _sha_problem(args: argparse.Namespace, sha: str) -> str:
+    want = str(args.expect_sha or "").strip().lower()
+    return "" if not want or sha.lower().startswith(want) else f"the workbook's sha256 is {sha[:12]}..., not {want}...: not the same bytes"
+
+
 def cmd_plan(args: argparse.Namespace) -> int:
     from fdd_utils.agent.session import SourceSession
     cfg = A._config_or_empty()
-    print("WHOLE-DATABOOK TRIAL PLAN (nothing sent)")
+    sha = _sha(args.databook)
+    fp = code_fingerprint()
+    print(f"TRIAL PLAN (nothing sent)  code {fp['short']}  workbook {sha[:12]}")
     source = SourceSession.load(args.databook)
-    accounts = [k for k in source.contracts if not str(k).startswith("__") and source.in_scope(k)]
-    print(f"  accounts in scope: {len(accounts)}" + (f" (the run would take the first {args.limit})" if args.limit else ""))
+    cases = _cases(args)
+    if cases:
+        ranked = sorted(source.contracts)
+        print(f"  cases {cases}: " + ", ".join(f"{i}{'' if source.in_scope(ranked[i]) else ' (out of scope)'}" for i in cases if 0 <= i < len(ranked))
+              + (f"; out of range: {[i for i in cases if not 0 <= i < len(ranked)]}" if any(not 0 <= i < len(ranked) for i in cases) else ""))
+    else:
+        accounts = [k for k in source.contracts if not str(k).startswith("__") and source.in_scope(k)]
+        print(f"  accounts in scope: {len(accounts)}" + (f" (the run would take the first {args.limit})" if args.limit else ""))
     from fdd_utils.agent import flag as F
     for name in _arms(args):
         setup = arm_setup(cfg, name, args)
         prices = {role: F.price_for(cfg, (sel or {}).get("provider") or "", (sel or {}).get("model") or "")
                   for role, sel in (("primary", setup["primary"]), ("escalation", setup.get("escalation"))) if sel}
-        print(f"  {name:6s} writes: {setup['primary'].get('provider')}::{setup['primary'].get('model')}"
+        print(f"  {name:8s} writes: {setup['primary'].get('provider')}::{setup['primary'].get('model')}"
               + (f"; repairs after {setup.get('escalate_after') or 'the policy'} rejection(s): {setup['escalation'].get('provider')}::{setup['escalation'].get('model')}"
                  if setup.get("escalation") else "")
-              + f"; prepared write {'on' if setup['prepare'] else 'OFF (tool loop)'}; max_output {setup['primary'].get('max_output')}; prices {prices}")
+              + f"; prepared write {'on' if setup['prepare'] else 'OFF (tool loop)'}; seed {bool(setup.get('seed'))}; review {bool(setup.get('review'))}; "
+              f"max_output {setup['primary'].get('max_output')}; prices {prices}")
+    caps = {"max_calls": int(args.max_calls) or None, "max_tokens": int(args.max_tokens) or None, "max_cost": float(args.max_cost) or None}
+    print(f"  declared allowance: {caps} (one ceiling over every arm)")
     problems = [] if args.scripted else A.preflight(cfg, A.preview_roles(cfg))
+    if _sha_problem(args, sha):
+        problems.append(_sha_problem(args, sha))
     leg = legacy_usage(args.legacy_run, cfg) if args.legacy_run else {}
     if leg:
-        print("  legacy run: " + (leg.get("error") or f"{leg['total']['calls']} ledger calls in its window, {_num(leg['total'].get('cost'))} yuan"))
+        print("  legacy run: " + (leg.get("error") or f"{leg['total']['calls']} ledger calls in its window, {_num(leg['total'].get('cost'))} yuan; "
+                                  f"{leg.get('attribution')}"))
     print("  a run may start: " + ("yes" if not problems else "NO -- " + " | ".join(problems)))
     return 0 if not problems else 1
 
@@ -497,24 +648,37 @@ def cmd_run(args: argparse.Namespace) -> int:
     from fdd_utils.agent.routing import Limits
     cfg = A._config_or_empty()
     names = _arms(args)
-    if not args.scripted:
-        problems = A.preflight(cfg, A.preview_roles(cfg))
-        if not args.i_accept_paid_calls:
-            problems.append("--i-accept-paid-calls was not given (or use --scripted for the free run)")
-        if problems:
-            print("NOT STARTED (nothing was sent):")
-            for p in problems:
-                print("  -", p)
-            return 2
+    sha = _sha(args.databook)
+    problems = [] if args.scripted else A.preflight(cfg, A.preview_roles(cfg))
+    if not args.scripted and not args.i_accept_paid_calls:
+        problems.append("--i-accept-paid-calls was not given (or use --scripted for the free run)")
+    if _sha_problem(args, sha):
+        problems.append(_sha_problem(args, sha))
+    if problems:
+        print("NOT STARTED (nothing was sent):")
+        for p in problems:
+            print("  -", p)
+        return 2
     stamp = time.strftime("%Y%m%d_%H%M%S")
     caps = {"max_calls": int(args.max_calls) or None, "max_tokens": int(args.max_tokens) or None, "max_cost": float(args.max_cost) or None}
     allowance = A.Allowance(caps, len(names))
-    report: Dict[str, Any] = {"stamp": stamp, "scripted": bool(args.scripted), "databook_sha256": _sha(args.databook), "limit": args.limit,
-                              "legacy_run": args.legacy_run or None, "arms": {}, "caps": caps}
+    deck = not args.no_deck and not _cases(args)
+    report: Dict[str, Any] = {"stamp": stamp, "scripted": bool(args.scripted), "databook_sha256": sha, "limit": args.limit,
+                              "cases": _cases(args) or None, "legacy_run": args.legacy_run or None, "arms": {}, "caps": caps,
+                              "code_fingerprint": code_fingerprint(), "deck": deck}
     workdir = Path(tempfile.mkdtemp(prefix="entity_trial_"))
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    progress_file = OUT_DIR / f"trial_{stamp}.progress.jsonl"
     legacy = legacy_texts(args.legacy_run)
-    order: List[str] = []
-    print(f"WHOLE-DATABOOK TRIAL: arms {', '.join(names)}" + (" (scripted, no model calls)" if args.scripted else " (PAID)"), flush=True)
+
+    def checkpoint(row: Dict[str, Any]) -> None:              # numbers only, one line per finished account, as it finishes
+        with progress_file.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps({k: v for k, v in row.items() if k != "coverage"} | {"coverage": {k: v for k, v in (row.get("coverage") or {}).items()
+                                                                                                    if k != "notes_not_cited"}},
+                                ensure_ascii=False, default=str) + "\n")
+
+    print(f"TRIAL: arms {', '.join(names)}" + (" (scripted, no model calls)" if args.scripted else " (PAID)")
+          + f"; code {report['code_fingerprint']['short']}; allowance {caps}", flush=True)
     try:
         for name in names:
             share = allowance.next(name)
@@ -522,31 +686,39 @@ def cmd_run(args: argparse.Namespace) -> int:
                 report["arms"][name] = {"arm": name, "not_started": allowance.given[-1]["not_started"]}
                 continue
             setup = arm_setup(cfg, name, args)
-            res = run_arm(name, setup, cfg, args.databook, workdir, Limits(**share), limit=args.limit,
-                          scripted=scripted_for(name) if args.scripted else None, stamp=stamp)
+            res = run_arm(name, setup, cfg, args.databook, workdir, Limits(**share), select=selector(args),
+                          scripted=scripted_for(name) if args.scripted else None, stamp=stamp, deck=deck, checkpoint=checkpoint)
             allowance.charge(res.get("books"))
             report["arms"][name] = res
-            report["accounts_in_scope"] = res["accounts"] if not args.limit else report.get("accounts_in_scope") or res["accounts"]
-            order = order or list(res.get("order") or [])
-            print(f"  {name}: {res['ok']}/{res['accounts']} accepted, deck {res.get('delivery') or res.get('export_error')}", flush=True)
+            report["accounts_in_scope"] = report.get("accounts_in_scope") or res.get("accounts")
+            print(f"  {name}: {res.get('ok')}/{res.get('accounts')} finished" + (f", deck {res.get('delivery') or res.get('export_error')}" if deck else "")
+                  + (f"; ERROR {res['error']}" if res.get("error") else ""), flush=True)
+            _write_reports(report, legacy, stamp)                       # after every arm: a later failure loses nothing
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
         report["allowance"] = allowance.report()
-    report["legacy_usage"] = legacy_usage(args.legacy_run, cfg) if args.legacy_run else {}
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    if not order:
-        order = sorted({k for res in report["arms"].values() for k in (res.get("_texts") or {})})
+        report["legacy_usage"] = legacy_usage(args.legacy_run, cfg) if args.legacy_run else {}
+        text = _write_reports(report, legacy, stamp)
+    print(text)
+    print(f"numbers (local, git-ignored, no account names): {(OUT_DIR / f'trial_{stamp}.json').relative_to(ROOT)}; "
+          f"per account as it finished: {progress_file.relative_to(ROOT)}")
+    return 0
+
+
+def _write_reports(report: Dict[str, Any], legacy: Dict[str, str], stamp: str) -> str:
+    order: List[str] = []
+    for res in (report.get("arms") or {}).values():
+        order = order or list(res.get("order") or [])
     quality = OUT_DIR / f"trial_quality_{stamp}.md"
     quality.write_text(quality_markdown(report, legacy, order), encoding="utf-8")
     report["quality"] = str(quality.relative_to(ROOT))
     numbers = {k: v for k, v in report.items()}
-    numbers["arms"] = {n: {k: v for k, v in r.items() if k not in ("_texts", "order")} for n, r in report["arms"].items()}
+    numbers["arms"] = {n: {k: v for k, v in r.items() if k not in ("_texts", "order", "sorted_index", "in_scope")}
+                       | {"in_scope_count": sum(1 for v in (r.get("in_scope") or {}).values() if v)} for n, r in report["arms"].items()}
     (OUT_DIR / f"trial_{stamp}.json").write_text(json.dumps(numbers, ensure_ascii=False, indent=1, default=str), encoding="utf-8")
     text = summary_text(report)
     (OUT_DIR / f"trial_{stamp}.txt").write_text(text + "\n", encoding="utf-8")
-    print(text)
-    print(f"numbers (local, git-ignored, no account names): {(OUT_DIR / f'trial_{stamp}.json').relative_to(ROOT)}")
-    return 0
+    return text
 
 
 def _sha(path: str) -> str:
@@ -566,15 +738,18 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.add_argument("--databook", required=True)
         p.add_argument("--legacy-run", default="", help="a legacy run of this workbook: its text side by side, its ledger usage")
         p.add_argument("--arms", default=DEFAULT_ARMS, help=f"comma list of {', '.join(ARMS)} (default {DEFAULT_ARMS})")
+        p.add_argument("--cases", default="", help="comma list of indices into the sorted contract list (the ten-case study); no deck")
+        p.add_argument("--expect-sha", default="", help="refuse to start unless the workbook's sha256 starts with this")
+        p.add_argument("--no-deck", action="store_true", help="do not export a deck (always off with --cases)")
         p.add_argument("--limit", type=int, default=0, help="only the first N accounts in scope (a cheap pilot); 0 = all")
-        p.add_argument("--escalate-after", type=int, default=1, help="mixed: rejected drafts before the stronger model repairs (default 1)")
+        p.add_argument("--escalate-after", type=int, default=1, help="mixed/seeded/reviewed: rejected drafts before the stronger model repairs (default 1)")
         p.add_argument("--max-output", type=int, default=4000, help="output allowance per call for every role (0 = config's)")
         p.add_argument("--flash", default="", help="provider::model for the cheaper role (default agent.models.primary)")
         p.add_argument("--pro", default="", help="provider::model for the stronger role (default agent.models.escalation)")
         p.add_argument("--scripted", action="store_true", help="a scripted writer instead of models: free, proves the flow only")
         p.add_argument("--max-calls", type=int, default=0, help="0 (default) = no cap; one ceiling over every arm")
         p.add_argument("--max-tokens", type=int, default=0)
-        p.add_argument("--max-cost", type=float, default=0.0)
+        p.add_argument("--max-cost", type=float, default=0.0, help="yuan at config prices; one ceiling over every arm")
         if name == "run":
             p.add_argument("--i-accept-paid-calls", action="store_true")
     args = ap.parse_args(argv)

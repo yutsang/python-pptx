@@ -70,6 +70,21 @@ def text_fragments(text: str, width: int = 14) -> List[str]:
     return [flat[i:i + width] for i in range(0, max(len(flat) - width, 1), width * 2)][:40]
 
 
+def review_findings(session: SourceSession, accounts: Iterable[str]) -> List[Finding]:
+    """The meaning review's state on each exported candidate (controller.py): an objection that stands blocks the deck; a review
+    that was due and did not happen leaves it for a person. Accepting the draft does not clear either."""
+    out: List[Finding] = []
+    for account in accounts:
+        candidate = session.candidates.get(account)
+        review = (candidate.review if candidate is not None else {}) or {}
+        if review.get("status") == "objected":
+            why = "; ".join(o.get("why", "") for o in review.get("objections") or []) or "; ".join(m.get("why", "") for m in review.get("missing") or [])
+            out.append(Finding("SEMANTIC_OBJECTION", "blocked", f"the reviewer's objection to this paragraph stands: {why[:200]}", account))
+        elif review.get("status") == "unavailable":
+            out.append(Finding("REVIEW_PENDING", "review", f"a review of this paragraph's meaning was due and did not happen: {str(review.get('why') or '')[:160]}", account))
+    return out
+
+
 def session_delivery(session: SourceSession, results: Dict[str, Any], edited: Iterable[str] = (), first_generation: bool = False):
     """The delivery decision for results made against this session's sources: the run's own
     findings plus three it cannot see -- a Financials sheet that ties to almost nothing, a base run nothing ties to
@@ -80,13 +95,20 @@ def session_delivery(session: SourceSession, results: Dict[str, Any], edited: It
                      f"only {pairing['agreeing_latest']} of {pairing['compared']} accounts tie to the Financials sheet on their latest period; "
                      "the sheet may belong to another entity or period")] if pairing["suspect"] else []
     edited = set(edited)
+    extra += review_findings(session, [a for a in edited if a in results])
     if first_generation:
         # nothing from a base run is in this deck, so nothing about one applies; the summary band is the exporter's splice
         extra.append(Finding("SUMMARY_SPLICED", "review", "the executive summary band is the exporter's splice of each account's first "
                              "sentence; no summary was written for this first generation"))
         for account in session.contracts:
             if not str(account).startswith("__") and session.in_scope(account) and account not in results:
-                extra.append(Finding("ACCOUNT_NOT_DRAFTED", "blocked", "in scope, but the agent has no accepted paragraph for it", account))
+                status = ((session.candidates.get(account).review if session.candidates.get(account) else {}) or {}).get("status")
+                if status == "objected":
+                    extra.append(Finding("SEMANTIC_OBJECTION", "blocked", "not in the deck: the reviewer's objection to its draft stands", account))
+                elif status == "unavailable":
+                    extra.append(Finding("REVIEW_PENDING", "blocked", "not in the deck: its draft's review was due and did not happen", account))
+                else:
+                    extra.append(Finding("ACCOUNT_NOT_DRAFTED", "blocked", "in scope, but the agent has no accepted paragraph for it", account))
         return decide_delivery(selection=session.selection, ai_results=results, bs_is_results=session.bs_is_results, extra_findings=extra)
     check = session.base_run_check or {}
     if check.get("status") == "mismatch":
