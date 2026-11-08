@@ -62,8 +62,10 @@ sys.path.insert(0, str(ROOT))
 import agent_acceptance as A  # noqa: E402
 
 OUT_DIR = ROOT / "fdd_utils" / "output" / "agent_trial"
-ARMS = ("pro", "flash", "mixed", "seeded", "reviewed", "loop")
-DEFAULT_ARMS = "pro,flash,mixed"           # the mechanisms under comparison; seeded / reviewed were measured 2026-11-08 and dropped
+ARMS = ("pro_lead", "flash_lead", "mixed_lead", "pro", "flash", "mixed", "seeded", "reviewed", "loop")
+# the model leads (understands, decides, checks); Python reads, computes and verifies as a tool. pro / flash / mixed are the
+# Python-gated prepared write, kept to compare against; seeded / reviewed were measured 2026-11-08 and dropped
+DEFAULT_ARMS = "pro_lead,flash_lead,mixed_lead"
 
 
 # ---------------------------------------------------------------------------------------------------------------------------
@@ -77,6 +79,12 @@ def arm_setup(cfg: Dict[str, Any], name: str, args: argparse.Namespace) -> Dict[
     cheap, strong = dict(r["primary"]), dict(r["escalation"])
     for sel in (cheap, strong):
         sel["max_output"] = int(args.max_output) if args.max_output else sel.get("max_output")
+    if name == "pro_lead":
+        return {"primary": strong, "escalation": None, "routing": "single", "prepare": True, "lead": True}
+    if name == "flash_lead":
+        return {"primary": cheap, "escalation": None, "routing": "single", "prepare": True, "lead": True}
+    if name == "mixed_lead":                     # the strong model leads (understands, checks, decides), the cheap one writes
+        return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "lead": True}
     if name == "pro":
         return {"primary": strong, "escalation": None, "routing": "single", "prepare": True}
     if name == "flash":
@@ -100,6 +108,7 @@ def arm_config(cfg: Dict[str, Any], setup: Dict[str, Any]) -> Dict[str, Any]:
     agent["prepared_write"] = bool(setup["prepare"])
     agent["seed_facts"] = bool(setup.get("seed"))
     agent["review_meaning"] = bool(setup.get("review"))
+    agent["lead_write"] = bool(setup.get("lead"))
     return out
 
 
@@ -357,8 +366,13 @@ class ScriptedWriter:
     def __call__(self, system: str, user: str, max_tokens: int) -> Dict[str, Any]:
         self.calls += 1
         view = _writer_view(user)
-        if "Judge meaning only" in system:
-            reply: Dict[str, Any] = {"objections": [], "missing": []}
+        if "You lead the writing" in system:
+            reply: Dict[str, Any] = {"points": [], "cautions": [], "difficulty": "simple", "writer": "cheap"}
+        elif "You check ONE paragraph" in system:
+            n = len([line for line in user.splitlines() if line.startswith("  [")])
+            reply = {"claims": [{"index": i, "verdict": "ok", "why": "scripted"} for i in range(n)], "missing": []}
+        elif "Judge meaning only" in system:
+            reply = {"objections": [], "missing": []}
         elif "KEPT (Python wrote these" in user and "REJECTED" not in user:
             reply = {"add": [], "unresolved": [f"{r}: scripted writer defers it" for r in _must_refs(user)]}
         elif view is None:
@@ -389,7 +403,7 @@ def scripted_for(name: str) -> Dict[str, Any]:
         holder: Dict[str, Any] = {}
         primary, good = A.scripted_models(lambda: holder["source"], wrong_first=True)
         return {"primary": A.Scripted(primary, "scripted-cheap"), "escalation": A.Scripted(good, "scripted-strong"), "holder": holder}
-    if name in ("mixed", "seeded", "reviewed"):
+    if name in ("mixed", "seeded", "reviewed", "mixed_lead"):
         return {"primary": ScriptedWriter("cheap", wrong_first=(name == "mixed")), "escalation": ScriptedWriter("strong")}
     return {"primary": ScriptedWriter(name)}
 
@@ -534,6 +548,10 @@ def summary_text(report: Dict[str, Any]) -> str:
         flagged = sum(1 for p in res.get("per_account") or [] if any(k in (p.get("flags") or {}) for k in
                                                                        ("deferred_note", "note_amount", "cause_not_proven", "note_wording_unchecked", "detail_caveat")))
         lines.append(f"           material notes: {stated} stated, {deferred} deferred (flagged), of {must}; accounts with a human check: {flagged}")
+        purposes = {k: v for k, v in (b.get("by_purpose") or {}).items() if k in ("understand", "write", "check", "fix")}
+        if purposes:
+            lines.append("           by step: " + "; ".join(f"{k} {v['calls']} calls, in {v['prompt_provider']:,} out {v['completion_provider']:,}, "
+                                                          f"{_num(v.get('cost'))} yuan" for k, v in purposes.items()))
         rev = (b.get("by_purpose") or {}).get("review")
         if res.get("review"):
             statuses: Dict[str, int] = {}

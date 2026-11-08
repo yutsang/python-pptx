@@ -65,6 +65,13 @@ def prepared_write(config: Optional[Dict[str, Any]] = None) -> bool:
     return True if value is None else bool(value)
 
 
+def lead_write(config: Optional[Dict[str, Any]] = None) -> bool:
+    """agent.lead_write (default false): the model leads each paragraph -- it reads the evidence and records what must be said,
+    decides who writes, checks every claim against what it cites and the verifier's report, and decides. Python reads the workbook,
+    computes, and verifies as a tool. With agent.models.escalation set, that model leads and the primary writes."""
+    return bool(_agent_block(config).get("lead_write"))
+
+
 def seed_facts(config: Optional[Dict[str, Any]] = None) -> bool:
     """agent.seed_facts (default false): in a prepared write Python writes the balance and movement sentences and the model adds
     the rest. Off until a paid comparison (entity_trial.py, arm 'seeded') shows it helps."""

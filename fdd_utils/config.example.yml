@@ -256,6 +256,11 @@ agent:
   # the escalation model for meaning (needs agent.models.escalation); a repair that does not verify keeps the verified text.
   seed_facts: false
   review_meaning: false
+  # The model leads each paragraph: it reads the evidence and records what must be said, decides who writes, checks every claim
+  # against what it cites and the verifier's report, and decides; Python reads, computes and verifies as a tool. With
+  # agent.models.escalation set, that model leads and agent.models.primary writes. A claim it keeps against the verifier is
+  # listed for a person. Off until entity_trial.py (pro_lead / flash_lead / mixed_lead) shows it works.
+  lead_write: false
   models:                  # provider "" = agent.models decides nothing; then --model / the app's selection, else local
     primary:    {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Flash model id
     escalation: {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Pro model id

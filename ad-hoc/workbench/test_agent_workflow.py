@@ -829,6 +829,112 @@ class PreparedWrite(unittest.TestCase):
         self.assertEqual(delivery.status, "blocked")
 
 
+class LeadWrite(unittest.TestCase):
+    """agent.lead_write: the model leads (understands, decides who writes, checks every claim and decides); Python reads, computes
+    and verifies as a tool whose report the lead reads."""
+
+    def _work(self, writer, lead=None):
+        tmp = tempfile.mkdtemp(prefix="lead_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        source = session_on(book)
+        source.load_params = {"workbook": book}
+        return W.WorkSession(source, model=writer, escalation=lead, model_name="m", policy=R.Policy(mode="escalate" if lead else "single"),
+                             budget=C.Budget(max_steps=10), prepare=True, config={"agent": {"lead_write": True}})
+
+    @staticmethod
+    def lead(check, writer="cheap"):
+        """A lead that reads the evidence (one point: the balance) and answers checks with check(n_claims, round)."""
+        state = {"round": 0}
+
+        def fn(system, user, n):
+            if "You lead the writing" in system:
+                view = writer_view(user)
+                return {"points": [{"point": "最新余额", "refs": [total_ref(view, P2)], "why": "the balance"}], "cautions": [],
+                        "difficulty": "simple", "writer": writer}
+            if "You check ONE paragraph" in system:
+                state["round"] += 1
+                return check(len([l for l in user.splitlines() if l.startswith("  [")]), state["round"])
+            return {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}}      # asked to write (strong)
+        return Writer(fn)
+
+    @staticmethod
+    def all_ok(n, rnd):
+        return {"claims": [{"index": i, "verdict": "ok", "why": "true to what it cites"} for i in range(n)], "missing": []}
+
+    def test_the_lead_reads_decides_and_checks_and_the_cheap_model_writes(self):
+        writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
+        lead = self.lead(self.all_ok)
+        work = self._work(writer, lead)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT, accept=True)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual((len(lead.users), len(writer.users)), (2, 1), "the lead understands and checks; the cheap model writes")
+        self.assertIn("POINTS TO MAKE", writer.users[0])
+        purposes = work.shared.summary()["by_purpose"]
+        self.assertEqual((purposes["understand"]["calls"], purposes["check"]["calls"]), (1, 1))
+        self.assertIn("verifier: verified", lead.users[1], "the check reads the verifier's report")
+        self.assertEqual(work.source.candidates[ACCOUNT].review["status"], "lead_accepted")
+        self.assertTrue(work.source.candidates[ACCOUNT].accepted)
+        self.assertTrue(turn.report["lead"]["understanding"]["points"], "the understanding is kept in the state")
+
+    def test_the_lead_sends_back_one_claim_with_what_must_change_and_the_rest_stays(self):
+        def write(system, user, n):
+            view = writer_view(user)
+            if n == 1:
+                return {"draft": {"claims": [amount_claim(view, P2, GOOD),
+                                             {"kind": "descriptive", "periods": [P2], "cites": [total_ref(view, P2)], "text": "应收账款需要持续关注。"}],
+                                  "unresolved": []}}
+            return {"fix": [{"index": 0, "claim": amount_claim(view, P2, "改写")}, {"index": 1, "drop": "空泛"}]}
+        check = lambda n, rnd: ({"claims": [{"index": 0, "verdict": "ok", "why": "ok"}, {"index": 1, "verdict": "fix", "why": "空泛",
+                                                                                    "fix": "删去或写出具体事实", "by": "cheap"}], "missing": []}
+                                if rnd == 1 else self.all_ok(n, rnd))
+        writer, lead = Writer(write), self.lead(check)
+        work = self._work(writer, lead)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertIn("CHECK: 空泛", writer.users[1])
+        self.assertEqual([c["text"] for c in work.source.candidates[ACCOUNT].claims], [GOOD], "the kept claim is not rewritten")
+
+    def test_a_claim_the_lead_keeps_against_the_verifier_is_accepted_and_goes_to_a_person(self):
+        writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD),
+                                                                       amount_claim(writer_view(user), P1, "2024年12月31日余额150.0万元")],
+                                                            "unresolved": []}})
+        work = self._work(writer, self.lead(self.all_ok))
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        candidate = work.source.candidates[ACCOUNT]
+        self.assertFalse(candidate.outcome["ok"], "the verifier's own result is kept as it was")
+        self.assertTrue(candidate.validated)
+        self.assertEqual([o["claim"] for o in candidate.review["overruled"]], [1])
+        self.assertIn("verifier_overruled", [f["kind"] for f in candidate.flags])
+        from fdd_utils.agent.export import review_findings
+        self.assertIn("VERIFIER_OVERRULED", [f.code for f in review_findings(work.source, [ACCOUNT])])
+
+    def test_a_check_without_a_verdict_for_every_claim_is_no_check(self):
+        writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
+        lead = self.lead(lambda n, rnd: {"claims": [], "missing": []})
+        work = self._work(writer, lead)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT, accept=True)
+        self.assertEqual((turn.ok, turn.stop_reason), (False, "review_pending"))
+        self.assertEqual(len(lead.users), 3, "asked once more, then left to a person")
+        self.assertFalse(work.source.candidates[ACCOUNT].accepted)
+
+    def test_the_lead_can_give_a_hard_account_to_the_strong_model(self):
+        writer = Writer(lambda system, user, n: {"draft": {"claims": [], "unresolved": []}})
+        lead = self.lead(self.all_ok, writer="strong")
+        work = self._work(writer, lead)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual((len(writer.users), len(lead.users)), (0, 3), "the strong model understood, wrote and checked")
+
+    def test_with_one_model_it_leads_writes_and_checks(self):
+        lead = self.lead(self.all_ok)
+        work = self._work(lead)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual(len(lead.users), 3)
+
+
 class WholeDatabookTrial(unittest.TestCase):
     """entity_trial.py: the arms are what they say, and the legacy row is what the ledger recorded for that run, nothing else."""
 

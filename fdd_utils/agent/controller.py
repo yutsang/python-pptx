@@ -331,6 +331,32 @@ REVIEW_SYSTEM = (
     "- a material fact in the notes left out (give its N ref under 'missing').\n"
     "Object only where EVIDENCE shows the problem; a style preference is not an objection."
 )
+LEAD_UNDERSTAND_SYSTEM = (
+    "You lead the writing of ONE account's paragraph for a financial due diligence report. EVIDENCE is what Python read from the\n"
+    "workbook (figures by basis, figures Python computed, notes, checks, what each period permits). Read it and decide what the\n"
+    "paragraph must say: the latest balance (or the period's amount for an income-statement line), the movements that matter, the\n"
+    "composition where it means something, every material note (related parties, retentions, deposits, impairment, collateral,\n"
+    "adjustments, reclassifications, agreements, ageing, conditions) and every caveat (basis differences, part-year figures,\n"
+    "lines that cannot be added up). Then say how hard the account is and whether the cheap or the strong model should write it."
+)
+LEAD_UNDERSTAND_PROTOCOL = (
+    "Reply with exactly ONE JSON object and nothing else:\n"
+    '  {"points": [{"point": "<what must be said>", "refs": ["F/D/N refs it rests on"], "why": "<why it matters>"}],\n'
+    '   "cautions": ["<what the writer must not get wrong>"], "difficulty": "simple" | "complex", "writer": "cheap" | "strong"}'
+)
+LEAD_CHECK_SYSTEM = (
+    "You check ONE paragraph of a financial due diligence report. For each claim you see what it cites, as read from the workbook,\n"
+    "and what a verifier tool found (it checks figures, periods, signs and citations mechanically, and can be wrong in both\n"
+    "directions). You decide. A claim is ok only when it is true to what it cites and worth keeping; 'fix' when it is wrong,\n"
+    "misleading, unsupported or badly written (say exactly what must change); 'human' when the evidence here cannot settle it.\n"
+    "You may keep a claim the tool refused when what it cites shows the claim is right: say why. Also name the points the\n"
+    "paragraph fails to make, and for each fix say whether the cheap or the strong model should make it."
+)
+LEAD_CHECK_PROTOCOL = (
+    "Reply with exactly ONE JSON object and nothing else. EVERY claim index needs a verdict:\n"
+    '  {"claims": [{"index": <n>, "verdict": "ok" | "fix" | "human", "why": "...", "fix": "<what it must say>", "by": "cheap" | "strong"}],\n'
+    '   "missing": [{"point": "...", "refs": ["..."], "by": "cheap" | "strong"}]}'
+)
 CLAIM_SCHEMA = (
     "A claim is {\"kind\": amount|movement|composition|share|difference|annualized|cause|descriptive, \"text\",\n"
     '  "periods": [ISO dates], "cites": [F/D refs], "cause_cites": [N refs], "inference": false}.\n'
@@ -394,8 +420,12 @@ def system_prompt(mode: str, session: SourceSession, language: str, remembered: 
 
 class AgentController:
     def __init__(self, session: SourceSession, model: Model, *, budget: Optional[Budget] = None, language: Optional[str] = None,
-                 memory: Optional[Memory] = None, prepare: bool = False, seed: bool = False, review: bool = False):
+                 memory: Optional[Memory] = None, prepare: bool = False, seed: bool = False, review: bool = False,
+                 lead: bool = False):
         self.session = session
+        #: the paragraph is led by the model: it understands, decides who writes, checks every claim and decides (agent.lead_write)
+        self.lead = lead
+        self._lead_header = False
         #: prepared write only: Python writes the balance and movement sentences and the model adds the rest (seed); the stronger
         #: model reads a verified paragraph for meaning when Python finds something a reviewer must judge (review)
         self.seed, self.review = seed, review
@@ -452,7 +482,11 @@ class AgentController:
         if account and resolved_account is None:
             run.stop_reason, run.question = STOP_NEEDS_USER, f"The account '{account}' matches no single account in this workbook."
             return self._finish(run, usage, started)
-        if mode == "edit" and resolved_account and self.prepare:
+        if mode == "edit" and resolved_account and self.lead:
+            if self._led_write(run, goal, resolved_account, export, usage, started):
+                return self._finish(run, usage, started)
+            no_progress, last_signature = 0, self._signature()
+        elif mode == "edit" and resolved_account and self.prepare:
             if self._prepared_write(run, goal, resolved_account, export, usage, started):
                 return self._finish(run, usage, started)
             run.report["prepared_fallback"] = run.report.get("prepared_fallback") or "the writer asked for the tool loop"
@@ -774,7 +808,8 @@ class AgentController:
             parts.append(earlier)
         must = getattr(self, "_must", None) or []
         if must:
-            parts.append("MUST ADDRESS (state it citing the ref, or name the ref in 'unresolved' with the reason):\n"
+            parts.append(("POINTS TO MAKE (the lead's reading of the evidence; state each citing its refs, or say in 'unresolved' why not):\n"
+                          if self._lead_header else "MUST ADDRESS (state it citing the ref, or name the ref in 'unresolved' with the reason):\n")
                          + "\n".join(f"  {m['ref']} ({m['why']}): {m['text']}" for m in must))
         if required:
             parts.append("REQUIRED: a claim must cite " + ", ".join(required) + " (the latest balance the deck uses, or the difference that replaces it).")
@@ -1012,6 +1047,207 @@ class AgentController:
                                          unresolved, record, STOP_REVIEW_PENDING if run.stop_reason in ("", None) else run.stop_reason)
         return self._end_with_review(run, account, claims, dict(again, status="objected", settled="read again and still objected",
                                                                first=review), unresolved, record, STOP_SEMANTIC_BLOCKED)
+
+    # -- the lead-written paragraph (agent.lead_write): the model understands, decides, writes, checks; Python reads and computes ---
+
+    def _lead_roles(self) -> Tuple[str, str, str]:
+        """(lead, cheap, strong): the lead understands and checks; the cheap model writes unless the lead sends the work to the strong
+        one. With one model configured all three are that model."""
+        roles = self.router.roles if self.router is not None else {}
+        lead = R.ROLE_ESCALATION if R.ROLE_ESCALATION in roles else R.ROLE_PRIMARY
+        return lead, R.ROLE_PRIMARY, lead
+
+    def _lead_call(self, run: AgentRun, role: str, system: str, user: str, max_tokens: int, usage: Dict[str, Any], purpose: str) -> Optional[str]:
+        if self.router is not None and role in self.router.roles:
+            called = self._call_model(run, system, user, max_tokens, usage, role=role, purpose=purpose)
+        else:
+            called = self._call_model(run, system, user, max_tokens, usage)
+        return None if called is None else called[0]
+
+    def _evidence_of(self, account: str, claim: Dict[str, Any]) -> List[str]:
+        """What one claim cites, as read from the workbook: the scoped evidence a check reads instead of the whole account."""
+        contract = self.session.contracts.get(account)
+        out = []
+        for ref in list(claim.get("cites") or []) + list(claim.get("cause_cites") or []):
+            item = (contract.fact(ref) or contract.note(ref) or next((d for d in contract.derived if d.get("ref") == ref), None)) if contract else None
+            if item is None:
+                out.append(f"{ref}: (no such ref)")
+            elif item.get("text") and not item.get("basis"):
+                out.append(f"{ref} note: {str(item['text'])[:400]}")
+            else:
+                out.append(f"{ref}: {item.get('period') or item.get('periods')} {item.get('basis') or item.get('kind')} {item.get('line') or ''} "
+                           f"{item.get('value')} {('= ' + item['formula']) if item.get('formula') else ''}".rstrip())
+        return out
+
+    def _check_user(self, account: str, points: List[Dict[str, Any]], cautions: List[str], claims: List[Dict[str, Any]],
+                    outcome: Dict[str, Any]) -> str:
+        verdicts = outcome.get("verdicts") or []
+        lines = [f"ACCOUNT: {account}", "POINTS the paragraph must make (your own reading of the evidence):"]
+        lines += [f"  - {p['point']} (refs {', '.join(p['refs']) or '-'})" for p in points] or ["  (none recorded)"]
+        if cautions:
+            lines.append("CAUTIONS: " + "; ".join(cautions))
+        lines.append("PARAGRAPH, claim by claim, with what each cites and what the verifier tool found:")
+        for n, c in enumerate(claims):
+            v = verdicts[n] if n < len(verdicts) else {}
+            found = [f"{f.get('code')}: {str(f.get('message') or '')[:220]}" for f in v.get("findings") or [] if f.get("severity") in ("failed", "review")]
+            lines.append(f"  [{n}] {c.get('text')}\n      cites: " + " | ".join(self._evidence_of(account, c))
+                         + f"\n      verifier: {v.get('verdict', '?')}" + (" -- " + " | ".join(found) if found else ""))
+        return "\n".join(lines) + "\n\n" + LEAD_CHECK_PROTOCOL + "\nYour JSON object:"
+
+    @staticmethod
+    def _read_check(text: str, n_claims: int) -> Optional[Dict[str, Any]]:
+        """The check, held to its protocol: a verdict (ok | fix | human) for EVERY claim. Anything less is no check."""
+        turn, _ = parse_turn(text)
+        if turn is None or not isinstance(turn.get("claims"), list):
+            return None
+        verdicts: Dict[int, Dict[str, Any]] = {}
+        for item in turn["claims"]:
+            try:
+                n = int((item or {}).get("index"))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if 0 <= n < n_claims and str(item.get("verdict")) in ("ok", "fix", "human"):
+                verdicts[n] = item
+        if len(verdicts) != n_claims:
+            return None
+        missing = [m for m in turn.get("missing") or [] if isinstance(m, dict) and str(m.get("point") or "").strip()]
+        return {"verdicts": verdicts, "missing": missing}
+
+    def _led_write(self, run: AgentRun, goal: str, account: str, export: bool, usage: Dict[str, Any], started: float) -> bool:
+        """One account, led by the model. Python has read the evidence and computed what it computes; the lead model reads it and
+        records what the paragraph must say (its understanding, kept in the state) and who should write it; the writer writes;
+        the verifier tool reports on figures, periods and citations; the lead checks every claim against what it cites and that
+        report, and decides: keep, fix (and who fixes), or leave to a person. It may overrule the tool, and then a person is told."""
+        view = self._prepare_evidence(account)
+        if view is None:
+            run.report["prepared_fallback"] = "the account's evidence could not be read"
+            return False
+        self._view, self._must, self._lead_header = view, [], True
+        lead, cheap, strong = self._lead_roles()
+        answer_lang = "繁體中文" if self.language in ("Chi", "Chn") else "English"
+        text = self._lead_call(run, lead, LEAD_UNDERSTAND_SYSTEM + f"\nWrite each point in {answer_lang}.",
+                               f"EVIDENCE for {account}:\n{_compact(view)}\n\nREQUEST: {goal}\n\n{LEAD_UNDERSTAND_PROTOCOL}\nYour JSON object:",
+                               2500, usage, "understand")
+        if text is None:
+            return True
+        plan, _ = parse_turn(text)
+        plan = plan or {}
+        known = {f["ref"] for f in self.session.contracts[account].facts} | {n["ref"] for n in self.session.contracts[account].notes} | \
+            {d["ref"] for d in self.session.contracts[account].derived}
+        points = [{"point": str(p.get("point")), "refs": [r for r in (p.get("refs") or []) if r in known], "why": str(p.get("why") or "")}
+                  for p in plan.get("points") or [] if isinstance(p, dict) and str(p.get("point") or "").strip()]
+        cautions = [str(c) for c in plan.get("cautions") or []][:8]
+        writer = strong if plan.get("writer") == "strong" else cheap
+        run.report["lead"] = {"understanding": {"points": points, "cautions": cautions, "difficulty": plan.get("difficulty")},
+                              "writer": writer, "rounds": []}
+        self._must = [{"ref": ", ".join(p["refs"]) or "-", "why": p["why"], "text": p["point"]} for p in points]
+        system = writer_system_prompt(self.language)
+        claims: List[Dict[str, Any]] = []
+        rejected: Dict[int, List[str]] = {}
+        unresolved: List[str] = []
+        bad = 0
+        for rnd in range(1, 4):
+            step = len(run.steps) + 1
+            text = self._lead_call(run, writer, system, self._writer_user(goal, account, view, [], claims, rejected, unresolved),
+                                   self.WRITE_ALLOWANCE, usage, "write" if not claims else "fix")
+            if text is None:
+                return True
+            turn, error = parse_turn(text)
+            record: Dict[str, Any] = {"step": step, "action": "write" if not claims else "fix", "role": writer, "lead": True}
+            if turn is None or not ("draft" in turn or "fix" in turn or "add" in turn):
+                bad += 1
+                record["error"] = error or "neither a draft nor a fix"
+                run.steps.append(record)
+                if bad >= 2:
+                    return self._end_led(run, account, claims, unresolved, record, STOP_REJECTED, export, {}, [], points)
+                continue
+            if "draft" in turn:
+                body = turn.get("draft") if isinstance(turn.get("draft"), dict) else {}
+                new = [c for c in (self._clean_claim(x) for x in body.get("claims") or []) if c is not None]
+                unresolved.extend(str(u) for u in body.get("unresolved") or [] if str(u) not in unresolved)
+                claims = ([c for n, c in enumerate(claims) if n not in rejected] + new) if claims else new
+            else:
+                claims, _ignored = self._merge_fix(claims, rejected, turn, unresolved)
+            if not claims:
+                run.steps.append(record)
+                return self._end_led(run, account, claims, unresolved, record, STOP_REJECTED, export, {}, [], points)
+            claims = [self._with_cited_periods(account, c) for c in claims]
+            result = T.call_tool(self.session, "validate_candidate", {"account": account, "claims": claims})
+            self._absorb("validate_candidate", {"account": account, "claims": claims}, result)
+            outcome = (result.data or {}).get("outcome") or {}
+            check = None
+            for _try in range(2):                                    # a check that is not the protocol is asked again once
+                text = self._lead_call(run, lead, LEAD_CHECK_SYSTEM, self._check_user(account, points, cautions, claims, outcome),
+                                       2500, usage, "check")
+                if text is None:
+                    return True
+                check = self._read_check(text, len(claims))
+                if check is not None:
+                    break
+            if check is None:
+                run.steps.append(record)
+                return self._end_led(run, account, claims, unresolved, record, STOP_REVIEW_PENDING, export, {}, [], points)
+            verdicts, missing = check["verdicts"], check["missing"]
+            fixes = {n: v for n, v in verdicts.items() if v["verdict"] == "fix"}
+            record.update(claims=len(claims), fixes=len(fixes), missing=len(missing),
+                          human=sum(1 for v in verdicts.values() if v["verdict"] == "human"))
+            run.report["lead"]["rounds"].append({"claims": len(claims), "fix": len(fixes), "missing": len(missing), "verifier_ok": outcome.get("ok")})
+            if not fixes and not missing:
+                run.steps.append(record)
+                return self._end_led(run, account, claims, unresolved, record, STOP_DONE, export, verdicts, [], points, outcome)
+            if rnd == 3:
+                run.steps.append(record)
+                return self._end_led(run, account, claims, unresolved, record, STOP_SEMANTIC_BLOCKED, export, verdicts, missing, points, outcome)
+            v_by = {n: v for n, v in enumerate(outcome.get("verdicts") or [])}
+            rejected = {n: [f"CHECK: {v.get('why', '')} -> {v.get('fix', '')}".strip()]
+                        + [f"{f.get('code')}: {str(f.get('message') or '')[:200]}" for f in (v_by.get(n) or {}).get("findings") or []
+                           if f.get("severity") in ("failed", "review")] for n, v in fixes.items()}
+            if missing:
+                rejected[len(claims)] = [f"MISSING: {m.get('point')} (refs {', '.join(m.get('refs') or []) or '-'}); add a claim that states it"
+                                         for m in missing]
+            items = list(fixes.values()) + missing
+            writer = strong if any(str(i.get("by")) == "strong" for i in items) else cheap
+            run.steps.append(record)
+        return True
+
+    def _end_led(self, run: AgentRun, account: str, claims: List[Dict[str, Any]], unresolved: List[str], record: Dict[str, Any], stop: str,
+                 export: bool, verdicts: Dict[int, Dict[str, Any]], missing: List[Dict[str, Any]], points: List[Dict[str, Any]],
+                 outcome: Optional[Dict[str, Any]] = None) -> bool:
+        """End a lead-written paragraph. The lead's verdicts are written on the candidate (review) with what a person must check:
+        claims it left to a person, verifier findings it overruled, fixes still open. Accepted means the LEAD accepted it."""
+        candidate = self.session.candidates.get(account)
+        outcome = outcome or (candidate.outcome if candidate is not None else {})
+        tool = {n: v for n, v in enumerate(outcome.get("verdicts") or [])}
+        overruled = [{"claim": n, "why": str(v.get("why") or "")[:300],
+                      "verifier": sorted({f.get("code") for f in (tool.get(n) or {}).get("findings") or [] if f.get("severity") in ("failed", "review")})}
+                     for n, v in verdicts.items() if v["verdict"] == "ok" and (tool.get(n) or {}).get("verdict") not in ("verified", "verified_inference", None)]
+        human = [{"claim": n, "why": str(v.get("why") or "")[:300]} for n, v in verdicts.items() if v["verdict"] == "human"]
+        open_fixes = [{"claim": n, "why": str(v.get("why") or "")[:300], "fix": str(v.get("fix") or "")[:300]}
+                      for n, v in verdicts.items() if v["verdict"] == "fix"] + [{"missing": m.get("point")} for m in missing]
+        review = {"status": "lead_accepted" if stop == STOP_DONE else ("objected" if stop == STOP_SEMANTIC_BLOCKED else "unavailable"),
+                  "lead_accepted": stop == STOP_DONE, "overruled": overruled, "human": human, "open": open_fixes,
+                  "objections": [{"index": o.get("claim", -1), "why": o.get("why") or o.get("missing") or ""} for o in open_fixes]}
+        if candidate is not None:
+            candidate.review = review
+            flags = self._flags(account, self._view or {}, [], candidate.claims, candidate.outcome, unresolved, escalated=False)
+            flags += [{"kind": "lead_left_to_person", "claim": h["claim"], "why": h["why"]} for h in human]
+            flags += [{"kind": "verifier_overruled", "claim": o["claim"], "why": o["why"], "text": ",".join(o["verifier"])} for o in overruled]
+            flags += [{"kind": "open_fix", "text": str(o.get("fix") or o.get("missing") or "")[:200]} for o in open_fixes]
+            candidate.flags = flags
+            run.report["flags"] = list(flags)
+        run.report["review"] = dict(review, outcome=review["status"])
+        if stop == STOP_DONE:
+            accepted, _feedback, answer = self._gate_done({"account": account}, account, export)
+            record["accepted"] = accepted
+            if accepted:
+                run.answer, run.stop_reason = dict(answer or {}, unresolved=list(unresolved)), STOP_DONE
+                return True
+            stop = STOP_REJECTED
+        if candidate is not None:
+            run.answer = {"account": account, "text": cl.render_claims(candidate.claims), "claims": candidate.claims,
+                          "verdicts": candidate.outcome.get("verdicts"), "unresolved": list(unresolved), "source_version": self.session.source_version}
+        run.stop_reason = stop
+        return True
 
     def _end_with_review(self, run: AgentRun, account: str, claims: List[Dict[str, Any]], review: Optional[Dict[str, Any]],
                          unresolved: List[str], record: Dict[str, Any], stop: str, export: bool = False) -> bool:

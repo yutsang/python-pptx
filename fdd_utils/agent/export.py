@@ -77,13 +77,17 @@ def review_findings(session: SourceSession, accounts: Iterable[str]) -> List[Fin
     for account in accounts:
         candidate = session.candidates.get(account)
         review = (candidate.review if candidate is not None else {}) or {}
+        for o in review.get("overruled") or []:
+            out.append(Finding("VERIFIER_OVERRULED", "review", f"claim {o.get('claim')}: the lead model kept it against the verifier "
+                               f"({', '.join(o.get('verifier') or [])}): {str(o.get('why') or '')[:160]}", account))
         if review.get("status") == "objected":
             why = "; ".join(o.get("why", "") for o in review.get("objections") or []) or "; ".join(m.get("why", "") for m in review.get("missing") or [])
             out.append(Finding("SEMANTIC_OBJECTION", "blocked", f"the reviewer's objection to this paragraph stands: {why[:200]}", account))
         elif review.get("status") == "unavailable":
             out.append(Finding("REVIEW_PENDING", "review", f"a review of this paragraph's meaning was due and did not happen: {str(review.get('why') or '')[:160]}", account))
         flags = [f for f in ((candidate.flags if candidate is not None else []) or [])
-                 if f.get("kind") in ("deferred_note", "note_amount", "cause_not_proven", "note_wording_unchecked", "detail_caveat")]
+                 if f.get("kind") in ("deferred_note", "note_amount", "cause_not_proven", "note_wording_unchecked", "detail_caveat",
+                                      "lead_left_to_person", "open_fix")]
         if flags:
             kinds: Dict[str, int] = {}
             for f in flags:

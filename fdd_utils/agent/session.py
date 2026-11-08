@@ -67,7 +67,9 @@ class Candidate:
 
     @property
     def validated(self) -> bool:
-        return bool(self.outcome.get("ok")) and not self.invalid_reason
+        """The verifier passed it, or the lead model accepted it (agent.lead_write), having seen what the verifier found; a claim the
+        lead kept against the verifier is listed in review["overruled"] and goes to a person (export: VERIFIER_OVERRULED)."""
+        return (bool(self.outcome.get("ok")) or bool((self.review or {}).get("lead_accepted"))) and not self.invalid_reason
 
 
 def capture_cite_ids(contract: ec.EvidenceContract, claims: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:

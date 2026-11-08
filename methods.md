@@ -367,6 +367,26 @@ exporter's splice of first sentences (`SUMMARY_SPLICED`, review); no summary
 call is made. The model cannot reach this export: it is a tool the session
 calls and the prompt does not list.
 
+**The model leads (`agent.lead_write`).** Python reads the workbook, computes
+what it computes and verifies as a tool; the model understands and decides. For
+one account the lead model reads the evidence and records what the paragraph
+must say (points with the refs they rest on, cautions, how hard the account is)
+and whether the cheap or the strong model writes it; that understanding is kept
+in the turn's report. The writer writes from the evidence and those points. The
+verifier checks figures, periods, signs and citations and reports; the lead
+then reads each claim with what it cites and that report and gives every claim
+a verdict, ok, fix (what must change, and which model makes the change) or
+human, and names the points the paragraph misses. A check without a verdict for
+every claim is asked again once, and then the paragraph waits for a person
+(`review_pending`). Fixes are local (kept claims stay as they are), and after
+three checks an open fix leaves the paragraph `semantic_blocked`. The lead may
+keep a claim the verifier refused, saying why: the candidate then counts as
+validated, the verifier's own result is kept, and export lists the claim
+(`VERIFIER_OVERRULED`) for a person, with claims the lead left to a person and
+fixes still open. With `agent.models.escalation` set that model leads and the
+primary writes (`mixed_lead`); with one model it does everything. Calls are
+recorded by step (understand, write, check, fix).
+
 The detail check now recognises a nested layout: a line equal, to the yuan, to
 the sum of the run of lines right under it (or right above it, a subtotal),
 with two lines at least. When the top level then ties to the total, detail is
