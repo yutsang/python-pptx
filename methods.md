@@ -724,7 +724,33 @@ length and listed each period's movement: on the client file the paragraphs ran
 inflates how many of the team's figures an arm appears to state.
 `ad-hoc/workbench/score_reference.py` reads a trial's review file and the team's
 report text and prints, per arm, the team's figures stated (accepted only, in the
-deck including marked drafts, all text) and the length against the team's.
+deck including marked drafts, all text) and the length against the team's. With
+the length given (2026-11-09 rerun) every arm came to 1.3 to 1.4 times the team's
+length, as legacy does.
+
+**What a person is shown, and why (2026-11-09).** A sentence-level review of the
+client file's first trial (621 sentences across three arms, every figure and
+name read against the visible sheets) found 33 to 55 marks per arm on sentences
+that were right, against 9 to 22 real problems marked and 6 to 14 not marked.
+Most of the needless marks were three state flags on verified sentences (an
+amount taken from a note, a cause citing a note, a detail line whose level was
+unknown) and every note-based cause. So: those three flags no longer turn a
+sentence orange (they stay on the candidate and in the review file); a cause
+citing a note is read as the note's own statement, and not marked, when at least
+60% of its content bigrams are in the notes it cites (77 of the 90 such
+sentences in the rerun; the rest were advice and causes the writer added); and
+four checks were added for wrong sentences the review found unmarked: a
+company, bank or firm name the account's evidence does not carry
+(`NAME_NOT_IN_EVIDENCE`, held for a person: a model named the wrong insurer); a
+movement into an earlier period written without that period
+(`MOVEMENT_END_UNSTATED`, red: "较2024年12月31日减少187.86万元" after the March
+2026 balance was the 2025-on-2024 change); an adjustment written against its own
+direction (调增/调减 are direction words, and each bridge adjustment carries the
+account's own direction: on a bridge that shows costs by their effect on
+profit, negative, an expense line's sign is turned, which the model had copied
+the wrong way five times); and an unfilled template ("2023年ZZ月", rows 客商1,
+客商2) is not read as a table. On the rerun's paragraphs the marks would fall to
+roughly half (60 to 27 for the cheaper model, 85 to 40 for the stronger).
 Each arm gets a fresh copy and session, drafts every in-scope account, and
 exports a first-generation deck. `plan` sends nothing; `run --scripted` runs the
 whole flow with a scripted writer, free; `run --i-accept-paid-calls` is the paid

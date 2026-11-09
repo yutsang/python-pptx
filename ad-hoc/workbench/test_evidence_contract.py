@@ -198,6 +198,24 @@ class HiddenSheets(unittest.TestCase):
                                     digest=self.digest(False))
         self.assertTrue(visible.facts)
 
+    def test_an_expense_adjustment_is_written_in_the_expenses_own_direction(self):
+        # client file, 2026-11-09: the period bridges show costs by their effect on profit (negative), so -60.2万元 on 财务费用
+        # raised the expense; a model copied the sign and wrote 调减
+        from fdd_utils.workbook.authority import adjustment_bridge
+
+        def bridge(cost_sign, adj):
+            cells = {(1, 1): 500 * cost_sign, (1, 3): 500 * cost_sign, (2, 1): 484 * cost_sign, (2, 2): adj,
+                     (2, 3): 484 * cost_sign + adj, (3, 2): -adj}
+            sheet = {"cells": {"r": [k[0] for k in cells], "c": [k[1] for k in cells], "v": list(cells.values())},
+                     "col_labels": {"1": "TB", "2": "Audit ADJ#4", "3": "审定数"},
+                     "row_labels": {"1": "营业成本", "2": "财务费用", "3": "投资收益"}, "texts": []}
+            return adjustment_bridge({"sheets": {"2025": sheet}}, "财务费用")["lines"]
+        # costs shown negative (by their effect on profit): -602 on the expense line raised the expense
+        self.assertTrue(any("+60.2万元（调增）" in x for x in bridge(-1, -602.0)), bridge(-1, -602.0))
+        # costs shown positive: the sign is the expense's own
+        self.assertTrue(any("-60.2万元（调减）" in x for x in bridge(+1, -602.0)), bridge(+1, -602.0))
+        self.assertTrue(any("+60.2万元（调增）" in x for x in bridge(+1, 602.0)), bridge(+1, 602.0))
+
     def test_adjustment_entries_ignore_a_hidden_register(self):
         from fdd_utils.workbook.authority import adjustment_entries
         sheet = {"status": "unmapped", "cells": {"r": [1], "c": [2], "v": [1500.0]},
@@ -390,6 +408,19 @@ class SupportingTables(unittest.TestCase):
         grid[2][0:3] = ["乙租户", 12.0, 6.0]
         found = sp.find_supporting_blocks(pd.DataFrame(grid), [], periods=[P1, P2])
         self.assertTrue(all(c["period"] == P1 and not c["assumed"] for c in found[0]["columns"]))
+
+    def test_an_unfilled_template_is_not_a_table(self):
+        from fdd_utils.workbook import supporting as sp
+        grid = [[None] * 6 for _ in range(8)]
+        grid[0][0:2] = ["其他应收款账龄分析- 2023年ZZ月ZZ日", "人民币千元"]
+        grid[1][0:4] = ["客商", "1年以内", "1-2年", "合计"]
+        grid[2][0:4] = ["客商1", 10.0, 5.0, 15.0]
+        grid[3][0:4] = ["客商2", 20.0, 0.0, 20.0]
+        grid[4][0:4] = ["客商3", 1.0, 1.0, 2.0]
+        self.assertEqual(sp.find_supporting_blocks(pd.DataFrame(grid), [], periods=[P1, P2]), [])
+        grid[0][0] = "其他应收款账龄分析"
+        grid[2][0], grid[3][0], grid[4][0] = "甲公司", "乙公司", "丙公司"
+        self.assertEqual(len(sp.find_supporting_blocks(pd.DataFrame(grid), [], periods=[P1, P2])), 1)   # negative control
 
     def test_a_table_that_repeats_the_schedules_own_lines_is_skipped(self):
         c = ec.build_contract("AR", account_frame(clean_rows()), statement_type="BS", financials={P1: 100.0, P2: 100.0})

@@ -107,6 +107,41 @@ class MovementsOverPeriods(unittest.TestCase):
         self.assertEqual(cl._bare("'*甲物流科技(中国)有限公司"), "甲物流科技(中国)有限公司")
 
 
+class ReviewFindings20261109(unittest.TestCase):
+    """Three kinds of wrong sentence a sentence-level review of the client file found accepted with no mark (2026-11-09)."""
+
+    def test_a_company_name_the_evidence_does_not_carry_is_held_for_a_person(self):
+        rows = [("甲财产保险股份有限公司苏州市分公司", "detail", {P1: 99000, P2: 166000}), ("Total", "total", {P1: 99000, P2: 166000})]
+        c = build(rows=rows, notes=[])
+        cite = [ref(c, P2, "甲财产保险股份有限公司苏州市分公司")]
+        wrong = verdict("2025年12月31日余额主要为预付乙财产保险股份有限公司苏州市分公司的保险费16.6万元", c, cite, [P2], kind="composition")
+        self.assertIn("NAME_NOT_IN_EVIDENCE", {f["code"] for f in wrong["findings"]}, wrong["findings"])
+        self.assertEqual(wrong["verdict"], "unverified")
+        right = verdict("2025年12月31日余额主要为预付甲财产保险股份有限公司苏州市分公司的保险费16.6万元", c, cite, [P2], kind="composition")
+        self.assertNotIn("NAME_NOT_IN_EVIDENCE", {f["code"] for f in right["findings"]}, right["findings"])
+        generic = verdict("2025年12月31日目标公司应收账款余额130.0万元", build(), [ref(build(), P2)], [P2])
+        self.assertNotIn("NAME_NOT_IN_EVIDENCE", {f["code"] for f in generic["findings"]})
+
+    def test_a_movement_into_an_earlier_period_must_name_that_period(self):
+        p0 = "2023-12-31"
+        rows = [("甲公司", "detail", {p0: 1000000, P1: 862000, P2: 929000}), ("Total", "total", {p0: 1000000, P1: 862000, P2: 929000})]
+        c = build(rows=rows, periods=(p0, P1, P2), notes=[])
+        cl.standard_derived(c)
+        d1 = next(d["ref"] for d in c.derived if d.get("kind") == cl.KIND_MOVEMENT and d["periods"] == [p0, P1])
+        bare = verdict("较2023年12月31日减少13.8万元", c, [d1], [p0, P1], kind="movement")
+        self.assertIn("MOVEMENT_END_UNSTATED", codes(bare))
+        named = verdict("2024年12月31日较2023年12月31日减少13.8万元", c, [d1], [p0, P1], kind="movement")
+        self.assertNotIn("MOVEMENT_END_UNSTATED", codes(named), named["findings"])
+
+    def test_an_adjustment_written_the_other_way_from_its_note_fails(self):
+        c = build(notes=["「2025」Audit ADJ#4：+60.2万元（调增）（对方科目：投资收益）"], statement="IS")
+        note = c.notes[0]["ref"]
+        wrong = verdict("2025年度审计调整调减本科目60.2万元", c, [note], [P2], kind="descriptive")
+        self.assertTrue({"DIRECTION_UNSUPPORTED", "SIGN_ERROR"} & codes(wrong), wrong["findings"])
+        right = verdict("2025年度审计调整调增本科目60.2万元", c, [note], [P2], kind="descriptive")
+        self.assertFalse({"DIRECTION_UNSUPPORTED", "SIGN_ERROR"} & codes(right), right["findings"])
+
+
 class Correct(unittest.TestCase):
     def test_a_cited_amount_in_the_right_period_is_verified(self):
         c = build()
@@ -663,10 +698,15 @@ class DeckColours(unittest.TestCase):
         claims = [good, wrong, cause, noted]
         outcome = cl.verify_candidate(claims, {c.account: c}, default_account=c.account)
         self.assertEqual([v["verdict"] for v in outcome["verdicts"]][:3], ["verified", "failed", "failed"])
-        flags = [{"kind": "note_amount", "claim": 3, "text": noted["text"]}, {"kind": "deferred_note", "ref": "N1"}]
+        flags = [{"kind": "lead_left_to_person", "claim": 3, "text": noted["text"]}, {"kind": "deferred_note", "ref": "N1"}]
         reviews = cl.to_legacy_result(c.account, claims, outcome, flags=flags)["agent_4_validation"]["clause_reviews"]
         self.assertEqual([r["category"] for r in reviews], ["data-backed", "hallucination", "reasoning", "reasoning"])
-        self.assertEqual(reviews[3]["code"], "NOTE_AMOUNT")
+        self.assertEqual(reviews[3]["code"], "LEAD_LEFT_TO_PERSON")
+        # an amount taken from a note no longer turns a verified sentence orange (2026-11-09: the review found such marks on
+        # right sentences far more often than on wrong ones)
+        quiet = [{"kind": "note_amount", "claim": 3, "text": noted["text"]}, {"kind": "detail_caveat", "claim": 3, "text": ""}]
+        self.assertEqual(cl.to_legacy_result(c.account, claims, outcome, flags=quiet)["agent_4_validation"]["clause_reviews"][3]["category"],
+                         "data-backed")
         self.assertEqual([r["category"] for r in cl.to_legacy_result(c.account, claims, outcome)["agent_4_validation"]["clause_reviews"]][3],
                          "data-backed")
 
@@ -1096,9 +1136,14 @@ class CauseIsNotJustRelevance(unittest.TestCase):
         c = build(notes=notes or self.NOTE)
         return verdict("2025年12月31日应收账款余额130.0万元，" + text, c, [ref(c, P2)], [P2], cause_cites=[c.notes[0]["ref"]])
 
-    def test_a_related_note_makes_the_cause_marked_not_verified(self):
+    def test_a_cause_in_the_notes_own_words_is_verified_and_one_that_goes_beyond_it_is_marked(self):
+        # mostly the note's words: the note's own statement (2026-11-09; marking all of them buried the real problems)
         v = self.cause("主要系甲公司因装修免租期延迟收取租金所致")
-        self.assertEqual(v["verdict"], "verified_inference")
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+        self.assertEqual(v["dimensions"]["causal"], "from_note")
+        # about the same thing, but saying more than the note does: marked for a person
+        v = self.cause("主要系甲公司经营困难、资金紧张而延迟支付租金所致")
+        self.assertEqual(v["verdict"], "verified_inference", v["findings"])
         self.assertEqual(v["dimensions"]["causal"], "related_unchecked")
         self.assertIn("CAUSE_NOTE_RELATED_UNCHECKED", {f["code"] for f in v["findings"]})
         self.assertNotIn("CAUSE_SUPPORTED", {f["code"] for f in v["findings"]})

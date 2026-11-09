@@ -573,14 +573,17 @@ class Reading(unittest.TestCase):
         again = self.call("search_notes", query="装修 免租期", account=ACCOUNT).data["hits"][0]
         self.assertEqual(again["ref"], hit["ref"])                           # not filed twice
 
-    def test_a_searched_remark_can_be_cited_for_a_cause_and_is_marked_not_verified(self):
+    def test_a_searched_remark_can_be_cited_for_a_cause(self):
         ref = self.call("search_notes", query="装修 免租期", account=ACCOUNT).data["hits"][0]["ref"]
         view = cl.evidence_view(self.session.contracts[ACCOUNT])
         claim = {"account": ACCOUNT, "kind": "cause", "periods": [P2], "cites": [total_ref(view, P2)], "cause_cites": [ref],
                  "text": "2025年12月31日应收账款余额130.0万元，主要系甲公司租金因装修免租期延迟收取所致"}
         verdict = cl.verify_claim(claim, self.session.contracts)
-        self.assertEqual(verdict["verdict"], "verified_inference", verdict["findings"])
-        self.assertIn("CAUSE_NOTE_RELATED_UNCHECKED", {f["code"] for f in verdict["findings"]})
+        # in the remark's own words: read as the remark's statement, not marked (2026-11-09, claims.NOTE_FAITHFUL)
+        self.assertEqual(verdict["verdict"], "verified", verdict["findings"])
+        self.assertIn("CAUSE_FROM_NOTE", {f["code"] for f in verdict["findings"]})
+        beyond = dict(claim, text="2025年12月31日应收账款余额130.0万元，主要系甲公司经营困难、资金紧张而延迟支付租金所致")
+        self.assertEqual(cl.verify_claim(beyond, self.session.contracts)["verdict"], "verified_inference")
 
     def test_search_notes_do_not_count_as_a_change_in_the_workbook(self):
         before = self.session.snapshot()[ACCOUNT]["notes"]

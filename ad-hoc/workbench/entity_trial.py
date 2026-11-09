@@ -272,7 +272,8 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                                      "unresolved": list(turn.unresolved or []), "review": review,
                                      "sources": sources_for_review(work.source, key, c),
                                      "flags": list((c.flags if c is not None else []) or []),
-                                     "refusals": refusals(c) if not (c is not None and c.accepted and c.validated) else []}
+                                     "refusals": refusals(c) if not (c is not None and c.accepted and c.validated) else [],
+                                     "deck_marks": deck_marks(key, c)}
             marks.append(books.calls)
             clock.append(time.perf_counter())
             result.update(done=len(per), ok=sum(p["ok"] for p in per), books=A._books_delta(books, 0))
@@ -333,6 +334,18 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                 result["session_file_error"] = f"{type(exc).__name__}: {str(exc)[:160]}"
         result["wall_seconds"] = round(time.perf_counter() - started_all, 1)
     return result
+
+
+def deck_marks(account: str, candidate: Any) -> List[Dict[str, Any]]:
+    """The sentences the deck colours, with the colour and the reason, as the export decides them (claims.to_legacy_result):
+    what a person is actually shown, which the state's flags alone are not (most flags no longer colour a sentence)."""
+    from fdd_utils.ai import claims as cl
+    if candidate is None or not candidate.claims or not (candidate.outcome or {}).get("verdicts"):
+        return []
+    reviews = cl.to_legacy_result(account, candidate.claims, candidate.outcome, flags=candidate.flags)["agent_4_validation"]["clause_reviews"]
+    colour = {"hallucination": "red", "reasoning": "orange"}
+    return [{"claim": n, "colour": colour[r["category"]], "text": r["clause"], "why": str(r.get("reason") or "")[:200]}
+            for n, r in enumerate(reviews) if r["category"] in colour]
 
 
 def refusals(candidate: Any) -> List[Dict[str, Any]]:
@@ -588,7 +601,7 @@ def summary_text(report: Dict[str, Any]) -> str:
         stated = sum((p.get("coverage") or {}).get("must_stated", 0) for p in res.get("per_account") or [])
         deferred = sum((p.get("flags") or {}).get("deferred_note", 0) for p in res.get("per_account") or [])
         flagged = sum(1 for p in res.get("per_account") or [] if any(k in (p.get("flags") or {}) for k in
-                                                                       ("deferred_note", "note_amount", "cause_not_proven", "note_wording_unchecked", "detail_caveat")))
+                                                                       ("deferred_note", "cause_not_proven", "note_wording_unchecked")))
         lines.append(f"           material notes: {stated} stated, {deferred} deferred (flagged), of {must}; accounts with a human check: {flagged}")
         mk = res.get("marked") or {}
         if mk.get("accounts"):
@@ -721,11 +734,13 @@ def quality_markdown(report: Dict[str, Any], legacy: Dict[str, str], order: List
                 out.append("\n_reviewer objections_: " + "; ".join([f"[{o.get('index')}] {o.get('why')}" for o in review.get("objections") or []]
                                                                   + [f"missing {x.get('ref')}: {x.get('why')}" for x in review.get("missing") or []])
                            + (f" ({review.get('settled')})" if review.get("settled") else ""))
+            out.append("\n_marked in the deck_ (what a person is shown): " + ("none" if not t.get("deck_marks") else ""))
+            out.extend(f"- [{m['claim']}] {m['colour'].upper()}: {m['text']}\n  why: {m['why']}" for m in t.get("deck_marks") or [])
             if t.get("refusals"):
                 out.append("\n_why the verifier refused (the last draft)_:")
                 out.extend(f"- [{r['claim']}] {r['text']}\n  " + "\n  ".join(r["messages"]) for r in t["refusals"])
             if t.get("flags"):
-                out.append("\n_flags for a person (set by the state)_:")
+                out.append("\n_state flags (on the record; only the ones under 'marked in the deck' are coloured)_:")
                 out.extend(f"- {f.get('kind')}{(' ' + f['ref']) if f.get('ref') else ''}{(' claim ' + str(f['claim'])) if f.get('claim') is not None else ''}: "
                            f"{f.get('why') or ''} {f.get('text') or ''}".rstrip() for f in t["flags"])
             if t.get("unresolved"):
@@ -841,7 +856,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 2
     stamp = time.strftime("%Y%m%d_%H%M%S")
     caps = {"max_calls": int(args.max_calls) or None, "max_tokens": int(args.max_tokens) or None, "max_cost": float(args.max_cost) or None}
-    allowance = A.Allowance(caps, len(names))
+    # The cap is one ceiling against a runaway, never a quota per arm: each arm may spend all that the arms before it left.
+    # Split evenly (runs=len(names)), a 6-yuan cap gave the stronger model 2 yuan and stopped it at 17 of 26 accounts, so the
+    # arm had to be paid for again (2026-11-09). Put the cheap arms first; set the cap well above the estimate.
+    allowance = A.Allowance(caps, 1)
     deck = not args.no_deck and not _cases(args)
     report: Dict[str, Any] = {"stamp": stamp, "scripted": bool(args.scripted), "databook_sha256": sha, "limit": args.limit,
                               "cases": _cases(args) or None, "legacy_run": args.legacy_run or None, "arms": {}, "caps": caps,

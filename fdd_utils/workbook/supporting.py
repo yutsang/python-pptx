@@ -287,6 +287,15 @@ def _names_another_entity(title: str, entity: str) -> bool:
     return bool(marks(name)) and not (marks(name) & marks(own))
 
 
+def _is_template(block: Dict[str, Any]) -> bool:
+    """A layout left unfilled: a placeholder date in the title ("2023年ZZ月ZZ日") or placeholder rows (客商1, 客商2). On the
+    client file a model wrote "账龄分析显示…" from an empty ageing template (2026-11-09)."""
+    if re.search(r"(?:ZZ|XX|xx)\s*[年月日]|\b20(?:ZZ|XX|xx)\b", str(block.get("title") or "")):
+        return True
+    labels = [str(x.get("label") or "").strip() for x in block.get("rows") or []]
+    return sum(1 for label in labels if re.fullmatch(r"(?:客商|供应商|客户|公司|项目|租户)\s*\d+", label)) >= 2
+
+
 def find_supporting_blocks(raw: pd.DataFrame, exclude: Sequence[Region], *, periods: Sequence[str], multiplier: float = 1.0,
                            entity: str = "", max_blocks: int = 4, scale: float = 0.0) -> List[Dict[str, Any]]:
     """The tables on a tab outside `exclude` (the main schedules), largest first, at most `max_blocks`. A table titled for
@@ -305,7 +314,7 @@ def find_supporting_blocks(raw: pd.DataFrame, exclude: Sequence[Region], *, peri
         if r1 - r0 < 2 or c1 - c0 < 1:
             continue
         block = read_block(raw, region, periods=periods, multiplier=multiplier)
-        if block is None or _names_another_entity(block["title"], entity):
+        if block is None or _names_another_entity(block["title"], entity) or _is_template(block):
             continue
         block["size"] = max((abs(v) for x in block["rows"] for v in x["values"].values()), default=0.0)
         if scale > 0 and block["size"] > 10 * scale:

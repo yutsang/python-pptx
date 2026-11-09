@@ -324,8 +324,8 @@ def text_percents(text: str) -> List[Dict[str, Any]]:
     return out
 
 
-_UP = ("增加", "增长", "上升", "提高", "上涨", "增至", "升至", "新增", "扩大", "增幅", "increase", "rose", "grew", "higher")
-_DOWN = ("减少", "下降", "降低", "下滑", "减至", "降至", "缩减", "收窄", "降幅", "decrease", "fell", "declined", "lower")
+_UP = ("增加", "增长", "上升", "提高", "上涨", "增至", "升至", "新增", "扩大", "增幅", "调增", "increase", "rose", "grew", "higher")
+_DOWN = ("减少", "下降", "降低", "下滑", "减至", "降至", "缩减", "收窄", "降幅", "调减", "decrease", "fell", "declined", "lower")
 _CHANGE_CUES = ("变动", "变化", "change")
 _COMPOSITION_CUES = ("其中", "包括", "主要为", "主要是", "主要来自", "分别", "构成", "组成", "占比", "占总", "占该", "比重", "份额",
                      "of which", "including", "composed of", "share of")
@@ -342,6 +342,41 @@ _FORWARD_RE = re.compile(r"预计|预期|有望|expected to|is expected|forecast
 _ANNUAL_WORD = ("年化", "annualis", "annualiz")
 _FORECAST_WORD = ("预计全年", "全年预测", "全年预计", "预计全年度", "full-year forecast", "expected full-year", "forecast")
 _ANNUAL_ANY = _ANNUAL_WORD + _FORECAST_WORD + ("全年", "full year", "full-year")
+#: share of a cause sentence's content bigrams that must be in the notes it cites for it to read as the note's own statement
+NOTE_FAITHFUL = 0.6
+
+_ORG = re.compile(r"[一-鿿A-Za-z（）()·]{2,40}?(?:股份有限公司|有限责任公司|有限公司|分公司|公司|银行|事务所|集团)")
+_ORG_END = re.compile(r"(?:股份有限公司|有限责任公司|有限公司|分公司|公司|银行|事务所|集团)$")
+_ORG_GENERIC = re.compile(r"^(?:目标|本|该|母|子|关联|项目|总|分|上市|贵|我|其|一家|两家|多家|各|上述|以上|该等)?(?:公司|银行|集团|事务所)$")
+
+
+def _org_core(name: str) -> str:
+    """A company name for comparison: no brackets or their contents, no spaces."""
+    return re.sub(r"[（(][^）)]*[）)]|\s|[·*＊'‘’]", "", str(name or ""))
+
+
+def names_not_in_evidence(text: str, contract: Any) -> List[str]:
+    """Company, bank and firm names the sentence writes that the account's evidence (its lines, notes and tables, the related
+    accounts' included) does not contain. A model wrote one insurer's name for the other insurer the tab names, and nothing
+    checked a name (client file, 2026-11-09). A name is accepted when it is in the evidence, or a company name from the
+    evidence is inside it (the sentence's own words run into the match: "其中应付甲公司")."""
+    pool_text = " ".join([str(f.get("line") or "") for f in contract.facts] + [str(n.get("text") or "") for n in contract.notes]
+                         + [str(f.get("table_title") or "") for f in contract.facts])
+    pool = _org_core(pool_text)
+    known = {_org_core(m.group(0)) for m in _ORG.finditer(pool_text)}
+    known |= {_org_core(_bare(f.get("line"))) for f in contract.facts if _ORG_END.search(_bare(f.get("line")))}
+    known = {k for k in known if len(k) >= 3 and not _ORG_GENERIC.match(k)}
+    out = []
+    for m in _ORG.finditer(str(text or "")):
+        name = _org_core(m.group(0))
+        if len(name) < 6 or _ORG_GENERIC.match(name):
+            continue
+        if name in pool or any(k in name for k in known):
+            continue
+        out.append(m.group(0))
+    return out
+
+
 _GENERIC = {"金额", "余额", "增加", "减少", "主要", "所致", "导致", "由于", "因为", "本期", "期末", "上升", "下降", "原因",
             "较上", "上年", "增长", "变动", "系因", "主要系", "其中", "包括", "合计", "公司", "款项", "万元", "亿元"}
 
@@ -1090,6 +1125,17 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         elif not claim_periods:
             fail("PERIODS_UNDECLARED", "binding", "the sentence names a period but the claim declares none")
             break
+    # A movement into an earlier period, written without that period, reads as the change to the latest balance: "较2024年12月
+    # 31日减少187.86万元" after the March 2026 balance quoted the 2025-on-2024 change (client file, 2026-11-09).
+    mentioned = period_mentions(text)
+    latest_period = contract.periods[-1] if contract.periods else None
+    for d in cited_derived:
+        end = (d.get("periods") or [None])[-1]
+        if (d.get("kind") == KIND_MOVEMENT and end and latest_period and end != latest_period
+                and _has(text, _UP + _DOWN + _CHANGE_CUES) and not any(mention_matches(m, end) for m in mentioned)):
+            fail("MOVEMENT_END_UNSTATED", "binding",
+                 f"{d['ref']} is the change into {end}, but the sentence does not name {end}: a reader takes it as the change to the "
+                 "latest balance; name the period it ends in")
     for item in cited:
         periods = set(item.get("periods") or ([item["period"]] if item.get("period") else []))
         if claim_periods and periods and not periods <= claim_periods:
@@ -1252,6 +1298,11 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             if _has(text, _FORECAST_WORD) and not claim["inference"]:
                 fail("ANNUALIZED_AS_FORECAST", "arithmetic", f"a linear annualisation is not a forecast ({LINEAR_ANNUALIZATION_NOTE})")
 
+    # -- names ----------------------------------------------------------------------------------------
+    for name in names_not_in_evidence(text, contract):
+        review("NAME_NOT_IN_EVIDENCE", "names", f"'{name}' is not a name the evidence carries: write the name as the tab or a note "
+               "gives it, or leave it out")
+
     # -- cause --------------------------------------------------------------------------------------
     if claim["cause_cites"] or _CAUSE_RE.search(text) or _FORWARD_RE.search(text):
         checked.add("causal")
@@ -1267,12 +1318,21 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         for n, why in conflicts:
             fail("CAUSE_CONTRADICTS_NOTE", "causal", f"{n['ref']} says something the sentence reverses or changes: {why}")
         if related and not conflicts:
-            # Sharing words with a note shows the note is ABOUT this. It does not show the note says this.
-            # Only contradictions can be screened for here; entailment cannot, so the cause is marked
-            # (the deck renders it as reasoning) until a person has read the note against the sentence.
-            info("CAUSE_NOTE_RELATED_UNCHECKED", "causal",
-                 "cites " + ", ".join(n["ref"] for n in related) + ", which is about the same thing; "
-                 "no contradiction was found, but the wording was not checked against it")
+            # Sharing words with a note shows the note is ABOUT this. It does not show the note says this. Entailment cannot be
+            # read here, so the cause stays marked (orange) unless the sentence is mostly the note's own words: at least
+            # NOTE_FAITHFUL of its content bigrams are in the notes it cites. Marking every note-based cause put 21 to 52
+            # orange sentences in each arm's deck on the client file, and a sentence-level review found almost all of them right
+            # (2026-11-09); of 90 such sentences 77 reached 60%, and the rest were advice and causes the writer added.
+            words = _bigrams(text) - _bigrams(contract.account)
+            pool = set().union(*(_bigrams(n["text"]) for n in related + cited_notes))
+            cover = len(words & pool) / len(words) if words else 0.0
+            if cover >= NOTE_FAITHFUL:
+                info("CAUSE_FROM_NOTE", "causal", f"{cover:.0%} of the sentence's wording is in "
+                     + ", ".join(n["ref"] for n in related) + "; no contradiction was found")
+            else:
+                info("CAUSE_NOTE_RELATED_UNCHECKED", "causal",
+                     "cites " + ", ".join(n["ref"] for n in related) + f", which is about the same thing, but only {cover:.0%} of its "
+                     "wording is there and no contradiction was found; a person reads the note against it")
         elif notes and not related:
             fail("CAUSE_NOTE_UNRELATED", "causal", "the cited note(s) do not say what the sentence gives as the cause")
         elif not notes and claim["inference"]:
@@ -1347,7 +1407,7 @@ def cause_conflicts(claim_text: str, note_text: str, contract: Optional[Evidence
 
 def _verdict(claim: Dict[str, Any], findings: List[ClaimFinding], checked: set) -> Dict[str, Any]:
     dimensions = {}
-    for dim in ("citations", "amounts", "binding", "arithmetic", "causal", "coverage"):
+    for dim in ("citations", "amounts", "binding", "arithmetic", "causal", "coverage", "names"):
         mine = [f for f in findings if f.dimension == dim]
         if any(f.severity == "failed" for f in mine):
             dimensions[dim] = "failed"
@@ -1355,6 +1415,8 @@ def _verdict(claim: Dict[str, Any], findings: List[ClaimFinding], checked: set) 
             dimensions[dim] = "unverified"
         elif any(f.code == "CAUSE_NOTE_RELATED_UNCHECKED" for f in mine):
             dimensions[dim] = "related_unchecked"
+        elif any(f.code == "CAUSE_FROM_NOTE" for f in mine):
+            dimensions[dim] = "from_note"
         elif any(f.code == "CAUSE_INFERENCE" for f in mine):
             dimensions[dim] = "inference"
         else:
@@ -1415,8 +1477,11 @@ def render_claims(claims: List[Dict[str, Any]]) -> str:
 #: verifier dimensions where a failure means a figure the databook contradicts (wrong amount, period, line, basis, sum, or a
 #: ref that does not exist): red in the deck. A failure elsewhere (a cause with nothing behind it, wording) is orange.
 _RED_DIMENSIONS = ("amounts", "arithmetic", "binding", "citations")
-#: flags on a verified sentence that a person should read: orange in the deck
-HIGHLIGHT_FLAGS = ("note_amount", "cause_not_proven", "note_wording_unchecked", "detail_caveat", "lead_left_to_person")
+#: flags on a verified sentence that a person should read: orange in the deck. note_amount, note_wording_unchecked and
+#: detail_caveat were here until 2026-11-09: a sentence-level review of the client file found them on 33 to 55 right
+#: sentences per arm against 9 to 22 real problems, so the orange told a person nothing. They stay on the candidate and in
+#: the review file; a note-based cause the verifier cannot read as the note's own words is still orange through its verdict.
+HIGHLIGHT_FLAGS = ("cause_not_proven", "lead_left_to_person")
 
 
 def to_legacy_result(account: str, claims: List[Dict[str, Any]], outcome: Dict[str, Any],

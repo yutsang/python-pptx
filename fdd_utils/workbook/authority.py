@@ -375,6 +375,7 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
         grid: Dict[Tuple[int, int], float] = {
             (r, c): v for r, c, v in zip(cells.get("r", []), cells.get("c", []), cells.get("v", [])) if v}
         side = _bridge_sides(row_labels)
+        flip = _profit_signed(row_labels, col_labels, grid) and _is_expense(account)
         sheet_sums: Dict[str, float] = {}
         for row in own_rows[:1]:
             for (r, c), v in sorted(grid.items(), key=lambda kv: kv[0][1]):
@@ -410,7 +411,10 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
                 })
                 related.extend(x for x in list(others) + list(linked) if x not in related)
                 words = _register_words(registers, account, v, row_labels, label)
-                line = f"「{name}」{label}：{'+' if v > 0 else '-'}{abs(yuan) / 1e4:,.1f}万元"
+                # the account's own direction, said in words too: an expense line shown by its effect on profit (negative)
+                # reads the other way round, and a model copied "-60.2万元" on 财务费用 as 调减 when the expense rose
+                own = -v if flip else v
+                line = f"「{name}」{label}：{'+' if own > 0 else '-'}{abs(yuan) / 1e4:,.1f}万元（{'调增' if own > 0 else '调减'}）"
                 if others:
                     line += "（对方科目：" + "、".join(others[:3]) + "）"
                 if linked:
@@ -426,6 +430,20 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
                 values.append(abs(total))
     lines = [line for _, _, line in sorted(ranked, key=lambda item: (item[1], item[0]))[:limit]]
     return {"lines": lines, "values": values, "related": related}
+
+
+def _profit_signed(row_labels: Dict[int, str], col_labels: Dict[int, str], grid: Dict[Tuple[int, int], float]) -> bool:
+    """Does this bridge sheet show income-statement costs by their effect on profit (negative)? Read from its own cost
+    rows: 营业成本 or 管理费用 negative in an audited or adjusted column. On the client file (2026-11-09) the period bridges
+    did, so an adjustment of -60.2万元 on 财务费用 was an increase of the expense; written as the sheet shows it, the model
+    wrote 调减 for three expense adjustments that raised the expense and 调增 for two that lowered it."""
+    costs = [r for r, label in row_labels.items() if label in ("营业成本", "管理费用")]
+    after = [c for c, label in col_labels.items() if re.search(r"审定数|示意性调整后", label)]
+    return any(grid.get((r, c), 0) < 0 for r in costs for c in after)
+
+
+def _is_expense(account: str) -> bool:
+    return bool(re.search(r"成本|费用|税金及附加|支出|损失", str(account))) and not re.search(r"收入|收益", str(account))
 
 
 def _bridge_line(label: str) -> bool:
