@@ -109,7 +109,12 @@ def main() -> int:
 
     if not args.reference:
         return 0
-    text = Path(args.reference).read_text(encoding="utf-8")
+    raw = Path(args.reference).read_bytes()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:                 # a file written by `>` in a Windows console is in its code page
+        import locale
+        text = raw.decode(locale.getpreferredencoding(False) or "gbk", errors="replace")
     paras = _paragraphs(text, accounts)
     vals = {k: _values(s.contracts[k], views[k]) for k in accounts}
     counts = {"in view": 0, "cut": 0, "not read": 0}
