@@ -478,10 +478,11 @@ def system_prompt(mode: str, session: SourceSession, language: str, remembered: 
 class AgentController:
     def __init__(self, session: SourceSession, model: Model, *, budget: Optional[Budget] = None, language: Optional[str] = None,
                  memory: Optional[Memory] = None, prepare: bool = False, seed: bool = False, review: bool = False,
-                 lead: bool = False, plan: bool = False):
+                 lead: bool = False, plan: bool = False, tool_loop_on_repeat: bool = False):
         self.session = session
         #: prepared write only: the escalation model reads the evidence once and plans; the primary writes (agent.plan_first)
         self.plan = plan
+        self.tool_loop_on_repeat = tool_loop_on_repeat
         self._plan: Dict[str, Any] = {}
         #: the paragraph is led by the model: it understands, decides who writes, checks every claim and decides (agent.lead_write)
         self.lead = lead
@@ -1528,9 +1529,12 @@ class AgentController:
                         run.stop_reason = STOP_REJECTED
                         run.steps.append(record)
                         return True
-            # the same failure twice from the same draft: nothing new is happening; the tool loop can investigate
+            # the same failure twice from the same draft: nothing new is happening. The tool loop could investigate, but on the
+            # client file it cost 0.3 to 0.9 yuan an account on the stronger model and finished one of four (2026-11-09 trials);
+            # by default the write goes on (the router may escalate) and ends at max_rejections, the draft in the deck with its
+            # rejected sentences marked
             failed_now = (tuple(sorted(codes)), cl_digest(claims))
-            if codes and failed_now == last_failed:
+            if codes and failed_now == last_failed and self.tool_loop_on_repeat:
                 run.steps.append(record)
                 run.report["prepared_fallback"] = "the same draft failed the same way twice"
                 self._note("CONTROLLER: the draft below failed the same way twice: " + " | ".join(

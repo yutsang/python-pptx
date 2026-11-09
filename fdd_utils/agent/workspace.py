@@ -274,7 +274,8 @@ class WorkSession:
         controller = AgentController(self.source, self._router(), budget=self.budget or _default_budget(),
                                      language=self.source.language, memory=memory or self.memory, prepare=prepare,
                                      seed=F.seed_facts(self.config), review=F.review_meaning(self.config), lead=F.lead_write(self.config),
-                                     plan=F.plan_first(self.config))
+                                     plan=F.plan_first(self.config),
+                                     tool_loop_on_repeat=F.tool_loop_on_repeat(self.config))
         before = {a: c.claims_digest for a, c in self.source.candidates.items()}
         run = controller.run(request, mode=mode, account=account, export=False, turn_number=len(self.turns) + 1,
                              start_strong=bool(account) and self.plan.get(self.source.resolve_account(account) or account) == "pro")

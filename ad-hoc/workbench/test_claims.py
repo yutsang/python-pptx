@@ -337,8 +337,10 @@ class Cause(unittest.TestCase):
         c = build()
         n = c.notes[0]["ref"]
         v = verdict("2025年12月31日应收账款余额130.0万元，主要系甲公司租金延迟收取所致", c, [ref(c, P2)], [P2], cause_cites=[n])
-        # related and uncontradicted is as far as word overlap can go: the deck marks it, a person reads it
-        self.assertEqual(v["verdict"], "verified_inference", v["findings"])
+        # related and uncontradicted is as far as word overlap can go: on the record, not marked (36 of 60 needless marks were
+        # these in a sentence-level review, 2026-11-09)
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+        self.assertEqual(v["dimensions"]["causal"], "related_unchecked")
         self.assertEqual(v["dimensions"]["amounts"], "ok")
 
     def test_a_cited_note_about_something_else_does_not_support_it(self):
@@ -800,6 +802,67 @@ class FalseRejectsTrial3(unittest.TestCase):
         swapped = verdict("甲所余额22.36万元（2025年12月31日）", c, [ref(c, P2, "甲所"), ref(c, self.P3, "甲所")], [P2, self.P3])
         self.assertIn("WRONG_PERIOD", codes(swapped))
 
+
+class ReviewFindingsTrial4(unittest.TestCase):
+    """Wrong sentences the fourth trial's sentence-level review found unmarked, and right ones it found marked (2026-11-09)."""
+    P0, P3 = "2023-12-31", "2026-03-31"
+
+    def test_the_rest_must_be_the_rest_of_what_the_sentence_did_not_name(self):
+        rows = [("会计服务费", "detail", {P2: 75000}), ("审计费", "detail", {P2: 50000}), ("法律咨询费", "detail", {P2: 49000}),
+                ("招待费", "detail", {P2: 14000}), ("通讯费", "detail", {P2: 1300}), ("办公费", "detail", {P2: 700}),
+                ("Total", "total", {P2: 190000})]
+        c = build(rows=rows, notes=[], statement="IS", periods=(P2,), account="管理费用")
+        rest = cl.derive_sum(c, [ref(c, P2, "通讯费"), ref(c, P2, "办公费")])["ref"]
+        named = [ref(c, P2, line) for line in ("会计服务费", "审计费", "法律咨询费")]
+        short = verdict("其中会计服务费7.5万元、审计费5.0万元、法律咨询费4.9万元，其余2项合计0.2万元", c, named + [rest], [P2])
+        self.assertIn("REST_INCOMPLETE", codes(short))                     # 招待费 is in neither the named lines nor the rest
+        full = verdict("其中会计服务费7.5万元、审计费5.0万元、法律咨询费4.9万元、招待费1.4万元，其余2项合计0.2万元", c,
+                       named + [ref(c, P2, "招待费"), rest], [P2])
+        self.assertNotIn("REST_INCOMPLETE", codes(full), full["findings"])
+
+    def test_a_notes_rounding_gives_way_to_the_tabs_figure(self):
+        rows = [("在建工程", "detail", {self.P0: 187654321, P2: 0}), ("Total", "total", {self.P0: 187654321, P2: 0})]
+        c = build(rows=rows, notes=["2023年在建工程余额1.87亿元，系二期项目的开发建设成本"], periods=(self.P0, P2), account="在建工程")
+        n = c.notes[0]["ref"]
+        v = verdict("2023年12月31日在建工程余额为1.87亿元", c, [n], [self.P0])
+        self.assertIn("NOTE_FIGURE_ROUNDED", codes(v))
+        v = verdict("2023年12月31日在建工程余额为1.88亿元", c, [ref(c, self.P0), n], [self.P0])
+        self.assertEqual(codes(v), set(), v["findings"])
+
+    def test_in_an_expense_account_a_positive_gain_or_loss_line_is_a_loss(self):
+        rows = [("利息支出", "detail", {P1: 13000000, P2: 13700000}), ("汇兑损益", "detail", {P1: -3100000, P2: 5300000}),
+                ("Total", "total", {P1: 9900000, P2: 19000000})]
+        c = build(rows=rows, notes=[], statement="IS", account="财务费用")
+        self.assertIn("GAIN_LOSS_REVERSED", codes(verdict("2025年度汇兑损益收益530.0万元", c, [ref(c, P2, "汇兑损益")], [P2])))
+        self.assertEqual(codes(verdict("2025年度汇兑净损失530.0万元", c, [ref(c, P2, "汇兑损益")], [P2])), set())
+        self.assertIn("GAIN_LOSS_REVERSED", codes(verdict("2024年度汇兑损益收益-310.0万元", c, [ref(c, P1, "汇兑损益")], [P1])))
+        self.assertEqual(codes(verdict("2024年度汇兑净收益310.0万元", c, [ref(c, P1, "汇兑损益")], [P1])), set())
+
+    def test_an_adjustment_word_about_the_other_account_of_the_entry(self):
+        rows = [("银行借款", "detail", {P2: 25000000}), ("Total", "total", {P2: 25000000})]
+        c = build(rows=rows, notes=["「2025」管理层调整：+2,500.0万元（调增）（对方科目：长期借款）"], periods=(P2,),
+                  account="一年内到期的非流动负债")
+        n = c.notes[0]["ref"]
+        v = verdict("2025年管理层调整调增2,500.0万元，相应调减长期借款", c, [n], [P2])
+        self.assertNotIn("SIGN_ERROR", codes(v), v["findings"])
+        self.assertIn("SIGN_ERROR", codes(verdict("2025年管理层调整调减2,500.0万元", c, [n], [P2])))
+
+    def test_two_of_the_cited_lines_may_be_summed(self):
+        rows = [("土地-一期", "detail", {self.P3: 61050256}), ("土地-二期", "detail", {self.P3: 59996924}),
+                ("房屋", "detail", {self.P3: 544227700}), ("Total", "total", {self.P3: 665274880})]
+        c = build(rows=rows, notes=[], periods=(self.P3,), account="固定资产")
+        cites = [ref(c, self.P3, line) for line in ("土地-一期", "土地-二期", "房屋")]
+        text = "其中土地使用权净值约{}亿元（一期6105.0万元、二期5999.7万元），房屋净值5.44亿元"
+        self.assertEqual(codes(verdict(text.format("1.21"), c, cites, [self.P3])), set())
+        self.assertIn("AMOUNT_UNMATCHED", codes(verdict(text.format("1.25"), c, cites, [self.P3])))
+
+    def test_a_balance_sheet_account_named_with_fei_yong_is_not_an_expense(self):
+        from fdd_utils.workbook.authority import _is_expense
+        self.assertFalse(_is_expense("长期待摊费用"))      # its bridge adjustment was turned: an increase shown as 调减
+        self.assertFalse(_is_expense("开发支出"))
+        self.assertTrue(_is_expense("管理费用"))
+        self.assertTrue(_is_expense("营业外支出"))
+
 class DeckDelivery20261109(unittest.TestCase):
     """What reaches the slide: the marks a person must see, and figures rounded once from the exact value."""
 
@@ -1182,7 +1245,7 @@ class KindAndInferenceAreMetadata(unittest.TestCase):
     def test_a_cited_note_makes_the_check_not_the_declared_kind(self):
         note = self.up.notes[0]["ref"]
         text = "2025年12月31日应收账款余额130.0万元，主要系甲公司租金延迟收取所致"
-        self.always(self.up, text, [ref(self.up, P2)], (P2,), "verified_inference", cause_cites=[note])
+        self.always(self.up, text, [ref(self.up, P2)], (P2,), "verified", cause_cites=[note])
         self.never_verified(self.up, text.replace("130.0万元", "100.0万元"), [ref(self.up, P2)], (P2,), "AMOUNT_ELSEWHERE", cause_cites=[note])
 
     # -- a correct sentence stays correct whatever it is labelled ----------------------------------------------
@@ -1253,9 +1316,10 @@ class CauseIsNotJustRelevance(unittest.TestCase):
         v = self.cause("主要系甲公司因装修免租期延迟收取租金所致")
         self.assertEqual(v["verdict"], "verified", v["findings"])
         self.assertEqual(v["dimensions"]["causal"], "from_note")
-        # about the same thing, but saying more than the note does: marked for a person
+        # about the same thing, but saying more than the note does: on the record for a person, not coloured (no overlap
+        # threshold separated right from wrong ones in the review)
         v = self.cause("主要系甲公司经营困难、资金紧张而延迟支付租金所致")
-        self.assertEqual(v["verdict"], "verified_inference", v["findings"])
+        self.assertEqual(v["verdict"], "verified", v["findings"])
         self.assertEqual(v["dimensions"]["causal"], "related_unchecked")
         self.assertIn("CAUSE_NOTE_RELATED_UNCHECKED", {f["code"] for f in v["findings"]})
         self.assertNotIn("CAUSE_SUPPORTED", {f["code"] for f in v["findings"]})

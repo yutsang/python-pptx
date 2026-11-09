@@ -81,6 +81,13 @@ def plan_first(config: Optional[Dict[str, Any]] = None) -> bool:
     return bool(_agent_block(config).get("plan_first"))
 
 
+def tool_loop_on_repeat(config: Optional[Dict[str, Any]] = None) -> bool:
+    """agent.tool_loop_on_repeat (default false): when a prepared write's draft fails the same way twice, hand the turn to the
+    tool loop. On the client file the hand-over cost 0.3 to 0.9 yuan an account on the stronger model and finished one of four
+    (2026-11-09); off, the write goes on to max_rejections and the draft reaches the deck with its rejected sentences marked."""
+    return bool(_agent_block(config).get("tool_loop_on_repeat"))
+
+
 def seed_facts(config: Optional[Dict[str, Any]] = None) -> bool:
     """agent.seed_facts (default false): in a prepared write Python writes the balance and movement sentences and the model adds
     the rest. Off until a paid comparison (entity_trial.py, arm 'seeded') shows it helps."""

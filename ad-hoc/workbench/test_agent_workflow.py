@@ -624,6 +624,21 @@ class PreparedWrite(unittest.TestCase):
         self.assertNotIn(ACCOUNT, [f.account for f in delivery.findings if f.code == "ACCOUNT_NOT_DRAFTED"])
         self.assertEqual(T.call_tool(work.source, "export_candidate", {"accounts": [ACCOUNT]}).error["code"], "NOT_VALIDATED")
 
+    def test_the_same_draft_failing_twice_ends_the_write_without_the_tool_loop(self):
+        # the hand-over cost 0.3 to 0.9 yuan an account on the stronger model and finished one of four (2026-11-09)
+        def fn(system, user, n):
+            view = writer_view(user)
+            bad = amount_claim(view, P2, "2025年12月31日应收账款余额999.0万元")
+            if "REJECTED" in user:
+                return {"fix": [{"index": 1, "claim": bad}]}
+            return {"draft": {"claims": [amount_claim(view, P2, GOOD), bad], "unresolved": []}}
+        work = self._work(Writer(fn))
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertFalse(turn.ok)
+        self.assertIsNone(turn.report.get("prepared_fallback"), turn.report)
+        on = self._work(Writer(fn), config={"agent": {"tool_loop_on_repeat": True}})
+        self.assertEqual(on.edit("撰写应收账款的段落", ACCOUNT).report.get("prepared_fallback"), "the same draft failed the same way twice")
+
     def test_python_writes_the_balance_and_movement_and_the_model_only_adds(self):
         writer = Writer(lambda system, user, n: {"add": [], "unresolved": []})
         work = self._work(writer, config=self.SEEDED)

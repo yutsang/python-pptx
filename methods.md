@@ -787,8 +787,43 @@ yuan, 21 accepted; mixed 0.96, 20; planned 1.98, 20; routed 3.21, 20 (19 account
 dispatched to the stronger model). Of the team's 83 figures the deck carried 54%,
 54%, 52% and 51% (legacy 57% at 10.87 yuan), and planned wrote 1.8 times the
 team's length against 1.3 for the others. On coverage and cost the stronger
-model's share bought nothing on this file; whether it lowers the share of wrong
-sentences waits on the sentence-level review.
+model's share bought nothing on this file. The sentence-level review of that
+trial (560 sentences, every figure read against the visible sheets) counted
+wrong or unsupported sentences: flash 9 of 129, mixed 15 of 128, planned 25 of
+168, routed 6 of 135. The first trial's review had ranked them the same way
+(routed 7 unmarked wrong of 220, flash 14 of 243). So the stronger model writing
+the accounts it is dispatched halves the wrong sentences at about 3.2 yuan;
+repairing the cheaper model's drafts (mixed) does not; and planning first is
+the worst, partly because some of its traps were themselves wrong (it told the
+writer an adjustment decreased an asset that it increased). `plan_first` stays
+off.
+
+**Fourth trial review, what changed.** Of 90 listed marks, 23 were on problems
+and 60 on right sentences; 36 of those 60 were causes citing a note on the same
+subject at 21% to 59% wording overlap, with the one wrong sentence among them at
+47%. A cause citing a related note with no contradiction is no longer coloured
+(it stays on the record as `note_wording_unchecked`); a cause with no note still
+is. New checks for wrong sentences the review found unmarked:
+`REST_INCOMPLETE` (red) when the lines a sentence names and the rest it cites
+fall short of the total, because the view's rest sums only the lines it did not
+show; `NOTE_FIGURE_ROUNDED` (red) when a figure taken from a note differs in its
+last digit from the tab's exact figure for the period it is written under
+(1.87亿 in a note for 187,654,321); `GAIN_LOSS_REVERSED` (red) when a 损益 line
+in an expense account is called a gain while positive, or a loss while negative
+(a written minus turns the word). Right sentences no longer refused: two or
+three of the cited lines may be summed, not only all of them; 调增/调减 next to
+the other account of the entry is that account's side. A bug of 72bc66d is
+fixed: an account whose name contains 费用 was treated as an expense on a
+profit-signed bridge, so 长期待摊费用's adjustment was turned and the writer was
+shown an increase as 调减. An account whose tab is hidden is offered its Financials
+row (the visible sheet) as its totals, with no detail; before, it had no facts
+and every arm wrote nothing. When a draft fails the same way twice the write no
+longer hands the turn to the tool loop (`agent.tool_loop_on_repeat`, default
+off): that cost 0.3 to 0.9 yuan an account on the stronger model and finished one
+of four; the write now ends at the rejection limit and the draft goes into the
+deck marked. A paid `entity_trial.py run` now runs `migration_checks.py` first and
+sends nothing unless it is all green (`--skip-gate` to skip). On the three local
+databooks the verifier still accepts none of 667, 786 and 695 wrong claims.
 
 **What a person is shown, and why (2026-11-09).** A sentence-level review of the
 client file's first trial (621 sentences across three arms, every figure and

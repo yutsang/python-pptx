@@ -31,6 +31,7 @@ as such is what the deck renders in orange).
 """
 from __future__ import annotations
 
+import itertools
 import math
 import re
 from dataclasses import dataclass, field
@@ -760,7 +761,7 @@ def _placement_uncertain(text: str, w: Dict[str, Any], c_start: int, c_end: int)
 def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict[str, Any]],
                       share_truths: List[Dict[str, Any]],
                       percent_kinds: Optional[List[Tuple[int, str]]] = None,
-                      note_signs: Optional[set] = None) -> List[Tuple[str, str, str, str]]:
+                      note_signs: Optional[set] = None, counter_accounts: Iterable[str] = ()) -> List[Tuple[str, str, str, str]]:
     """[(severity, code, dimension, message)] for the direction words of one sentence.
 
     The result clause and the cause clause are read apart. A word in the result clause is a statement about the
@@ -826,6 +827,11 @@ def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict
     adjusted = set()
     for i in infos:
         w = i["w"]
+        if w["word"] in _ADJUST_WORDS and any(name in text[max(0, w["start"] - 12):w["end"] + 12] for name in counter_accounts):
+            # "调增一年内到期的非流动负债，相应调减长期借款": the word is the other account's side of the entry (a needless red
+            # mark on the client file, 2026-11-09); that account's paragraph carries its own direction
+            adjusted.add(id(i))
+            continue
         if w["word"] in _ADJUST_WORDS and note_signs and not i["cause"]:
             # an adjustment's direction is the cited note's (each bridge entry says 调增 or 调减 for this account), not a
             # movement's: "调减" beside a movement of the other sign was refused as unbound (2026-11-09)
@@ -982,10 +988,15 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             by_period.setdefault(f"{f['period']}|{f.get('table')}", []).append(f)     # one table's lines, never mixed with another's
     for group, parts in by_period.items():
         period = group.split("|")[0]
-        if len(parts) >= 2:
-            allowed.append((abs(sum(p["value"] for p in parts)), {"id": "sum(" + ",".join(p["ref"] for p in parts) + ")",
-                                                                 "period": period, "account": account, "line": "", "basis": BASIS_RAW,
-                                                                 "role": "sum", "ref": "sum", "value": sum(p["value"] for p in parts)},
+        # every cited line of a period, and any two or three of them: "土地使用权净值约1.21亿元（一期6105.03万元、二期5999.69万元）"
+        # cites the houses of the same table too, and the whole sum was the only one offered (a needless red mark, 2026-11-09)
+        subsets = [parts] if len(parts) >= 2 else []
+        if 3 <= len(parts) <= 12:
+            subsets += [list(c) for k in (2, 3) for c in itertools.combinations(parts, k) if len(c) < len(parts)]
+        for chosen in subsets:
+            allowed.append((abs(sum(p["value"] for p in chosen)), {"id": "sum(" + ",".join(p["ref"] for p in chosen) + ")",
+                                                                  "period": period, "account": account, "line": "", "basis": BASIS_RAW,
+                                                                  "role": "sum", "ref": "sum", "value": sum(p["value"] for p in chosen)},
                             "sum_of_cited"))
     for ref_n, figs in note_facts.items():
         for a in figs["amounts"]:
@@ -1060,6 +1071,65 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         else:
             fail("AMOUNT_UNMATCHED", "amounts",
                  f"'{span['written']}' ({_fmt(target)} yuan) is not accounted for by any cited fact")
+
+    # -- a note's figure where the tab has the exact one -----------------------------------
+    # "2023年在建工程余额1.87亿元" from a note whose author rounded 187,654,321 down: the tab's figure is 1.88亿元 (four sentences
+    # across the arms of one trial, 2026-11-09). Held to the tab only for the period the sentence writes it under.
+    for span, src, how in matched_sources:
+        if how != "note" or (src.get("currency") or "CNY") != "CNY":
+            continue
+        mention = attached_period(text, span["start"], span["end"], period_mentions(text))
+        if mention is None:
+            continue
+        exact = next((f for f in contract.facts if f.get("value") and mention_matches(mention, f["period"])
+                      and abs(abs(f["value"]) - span["value"]) <= 0.01 * abs(f["value"])
+                      and abs(abs(f["value"]) - span["value"]) > span["tolerance"]), None)
+        if exact is not None and not any(abs(abs(f["value"]) - span["value"]) <= span["tolerance"] for f in contract.facts
+                                         if f.get("value") and mention_matches(mention, f["period"])):
+            fail("NOTE_FIGURE_ROUNDED", "amounts",
+                 f"'{span['written']}' is the note's rounding; the tab gives {_fmt(exact['value'])} yuan ({exact['ref']}, "
+                 f"{exact['period']}): write the tab's figure")
+
+    # -- gain or loss -----------------------------------------------------------------------
+    # In an expense account a 损益 line is a loss when positive: "汇兑损益收益530.0万元" for +5,300,000 in 财务费用 was a loss
+    # called a gain, and "收益-310.0万元" for a net gain the reverse (2026-11-09 review). A written minus turns the word.
+    expense = bool(re.search(r"成本|费用|支出|损失", account)) and not re.search(r"收入|收益|待摊|预提|应付|预付", account)
+    for span, src, how in matched_sources:
+        if not expense or "损益" not in str(src.get("line") or "") or not src.get("value"):
+            continue
+        before = text[max(0, span["start"] - 14):span["start"]]
+        before = before[max(before.rfind("，"), before.rfind("、"), before.rfind("；")) + 1:]
+        says = "gain" if "收益" in before and "损失" not in before else ("loss" if "损失" in before and "收益" not in before else "")
+        if not says:
+            continue
+        if span.get("sign") == "-":
+            says = "loss" if says == "gain" else "gain"
+        truth = "loss" if src["value"] > 0 else "gain"
+        if says != truth:
+            fail("GAIN_LOSS_REVERSED", "amounts",
+                 f"'{span['written']}' is called a {'gain' if says == 'gain' else 'loss'}, but in this expense account "
+                 f"{src.get('ref')} ({_fmt(src['value'])} yuan) is a net {truth}")
+
+    # -- the rest ----------------------------------------------------------------------------
+    # "主要包括A、B、C，其余6项合计0.13万元": the rest a D ref sums is what the evidence view did not show. With shown lines
+    # left unnamed, the named lines and that rest fall short of the total and "其余" is false (three to four sentences a
+    # trial on the client file, 2026-11-09).
+    if re.search(r"其余|剩余|余下|其他\s*\d+\s*项|其他各项", text):
+        for d in cited_derived:
+            if d.get("kind") != KIND_SUM or d.get("value") is None or not d.get("inputs"):
+                continue
+            inputs = set(d["inputs"])
+            named = [f for f in cited_facts if f["role"] == ROLE_COMPONENT and f["period"] == d.get("period")
+                     and not f.get("nested_in") and f["id"] not in inputs]
+            total = _total_fact(contract, d.get("period"), BASIS_RAW) or _total_fact(contract, d.get("period"))
+            if not named or total is None:
+                continue
+            gap = total["value"] - sum(f["value"] for f in named) - d["value"]
+            if abs(gap) > max(0.005 * abs(total["value"]), 1000.0):
+                fail("REST_INCOMPLETE", "arithmetic",
+                     f"{d['ref']} sums only the lines the evidence did not show; with the {len(named)} lines named it leaves "
+                     f"{_fmt(gap)} yuan of {d.get('period')}'s total unaccounted for: name the other lines or call the rest by "
+                     "what it is")
 
     # -- percentages ----------------------------------------------------------------------
     # Bound like an amount: to the period the sentence writes it under, the line it names, and the
@@ -1337,7 +1407,11 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         written_signed = any(x["sign"] == "-" for x in percents)
         direction_shares = [t if written_signed else {**t, "value": t["magnitude"]} for t in share_truths]
         note_signs = {sg for figs in note_facts.values() for sg in figs["signs"]}
-        for finding in verify_directions(text, line_names, amount_truths, direction_shares, percent_kinds, note_signs):
+        counter = {a for n in contract.notes for m in re.finditer(r"对方科目[：:]([^）)；;]+)", str(n.get("text") or ""))
+                   for a in re.split(r"[、,，]", m.group(1)) if a.strip()}
+        counter |= {str(f.get("from_account")) for f in contract.facts if f.get("from_account")}
+        counter = sorted((a.strip() for a in counter if a.strip() and a.strip() != account), key=len, reverse=True)
+        for finding in verify_directions(text, line_names, amount_truths, direction_shares, percent_kinds, note_signs, counter):
             {"failed": fail, "review": review}[finding[0]](*finding[1:])
     for d in cited_derived:
         if d.get("kind") == KIND_MOVEMENT and not d.get("valid", True) and not any(f.code == "MOVEMENT_NOT_PERMITTED" for f in findings):
@@ -1496,7 +1570,11 @@ def _verdict(claim: Dict[str, Any], findings: List[ClaimFinding], checked: set) 
             dimensions[dim] = "ok" if dim in checked else "n/a"
     failed = any(f.severity == "failed" for f in findings)
     unverified = any(f.severity == "review" for f in findings)
-    marked = any(f.code in ("CAUSE_INFERENCE", "CAUSE_NOTE_RELATED_UNCHECKED") for f in findings)
+    # A cause that cites a note on the same subject, with no contradiction found, is not marked whatever its wording overlap:
+    # a sentence-level review of four arms (2026-11-09) found 36 of 60 needless marks were these, at overlaps from 21% to 59%,
+    # and the one wrong sentence among them sat at 47%, so no threshold separates them. It stays on the record
+    # (note_wording_unchecked). A cause with no note at all is still marked.
+    marked = any(f.code == "CAUSE_INFERENCE" for f in findings)
     caveats = [f.code for f in findings if f.code == "DETAIL_NESTING_UNKNOWN"]
     return {
         "claim_id": claim["id"], "account": claim["account"], "kind": claim["kind"], "text": claim["text"],
@@ -1578,7 +1656,7 @@ def to_legacy_result(account: str, claims: List[Dict[str, Any]], outcome: Dict[s
             category = "hallucination" if red else "reasoning"
             supported, reason, code = False, first.get("message", ""), first.get("code")
         elif verdict["verdict"] == "verified_inference":
-            marker = next((f for f in verdict["findings"] if f["code"] in ("CAUSE_INFERENCE", "CAUSE_NOTE_RELATED_UNCHECKED")), {})
+            marker = next((f for f in verdict["findings"] if f["code"] == "CAUSE_INFERENCE"), {})
             category, supported, reason, code = "reasoning", False, marker.get("message", "stated as an inference"), marker.get("code", "CAUSE_INFERENCE")
         elif n in marked:
             category, supported = "reasoning", False

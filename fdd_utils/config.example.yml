@@ -261,6 +261,12 @@ agent:
   # agent.models.escalation set, that model leads and agent.models.primary writes. A claim it keeps against the verifier is
   # listed for a person. Off until entity_trial.py (pro_lead / flash_lead / mixed_lead) shows it works.
   lead_write: false
+  # plan_first: the escalation model reads each account's evidence once and writes points and traps; the primary writes from
+  # them. The 2026-11-09 sentence review found the most wrong sentences in that arm (25 of 168): leave off.
+  plan_first: false
+  # tool_loop_on_repeat: when a draft fails the same way twice, hand the turn to the tool loop. Off: the write ends at the
+  # rejection limit and the draft goes into the deck marked (the hand-over cost 0.3-0.9 yuan an account on Pro, 2026-11-09).
+  tool_loop_on_repeat: false
   models:                  # provider "" = agent.models decides nothing; then --model / the app's selection, else local
     primary:    {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Flash model id
     escalation: {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Pro model id

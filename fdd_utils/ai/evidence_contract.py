@@ -375,8 +375,29 @@ def build_contract(
     attrs = getattr(df, "attrs", None) or {}
     sheet, hidden = _sheet_hidden(df, digest)
     if hidden:
-        contract.issues.append({"code": "SOURCE_SHEET_HIDDEN", "severity": "blocked",
-                                "message": f"the tab '{sheet}' is a hidden sheet; its figures are not offered as evidence"})
+        # The tab is never read, but the account's row on the (visible) Financials sheet is: 投资收益 on the client file has a
+        # hidden tab and a filled Financials row, and with no facts at all every arm wrote nothing (2026-11-09).
+        # Those figures are the deck's for the account, so they are its adjusted totals too; there is no detail.
+        fin = {str(p): float(v) for p, v in (financials or {}).items() if _number(v) is not None}
+        if not fin:
+            fin = _financials_from_edges(account, graph_facts)
+        if (binding.statement_source if binding else "") == "synthesized":
+            fin = {}
+        fin_sheet = (binding.financials_sheet if binding else "") or None
+        periods = sorted(fin)
+        contract.periods = periods
+        lengths, full = (_period_lengths(periods), set(_full_periods(periods))) if periods else ({}, set())
+        for p in periods:
+            contract.period_meta[p] = {"months": lengths.get(p), "full_period": p in full}
+        taken: set = set()
+        for p in periods:
+            for basis in (BASIS_FINANCIALS, BASIS_ADJUSTED):
+                contract.facts.append({"id": _fact_id(account, p, basis, "", taken), "account": account, "period": p, "basis": basis,
+                                       "role": ROLE_TOTAL, "line": "", "value": fin[p], "unit": "yuan", "sheet": fin_sheet,
+                                       "visible": True, "parser_version": PARSER_VERSION, "from_financials": True})
+        contract.issues.append({"code": "SOURCE_SHEET_HIDDEN", "severity": "info" if periods else "blocked",
+                                "message": f"the tab '{sheet}' is a hidden sheet; its figures are not offered as evidence"
+                                           + ("; the account's Financials figures are, with no detail" if periods else "")})
         return contract
 
     analysis = attrs.get("prompt_analysis_df")

@@ -443,7 +443,12 @@ def _profit_signed(row_labels: Dict[int, str], col_labels: Dict[int, str], grid:
 
 
 def _is_expense(account: str) -> bool:
-    return bool(re.search(r"成本|费用|税金及附加|支出|损失", str(account))) and not re.search(r"收入|收益", str(account))
+    """An income-statement cost line. Balance-sheet names that contain 费用 or 支出 are not: 长期待摊费用 was read as an expense
+    and its bridge adjustment turned (the client file's increase was shown to the writer as 调减, 2026-11-09 review)."""
+    name = str(account)
+    if re.search(r"待摊|预提|开发支出|应付|应收|预付|预收|资本化", name):
+        return False
+    return bool(re.search(r"成本|费用|税金及附加|支出|损失", name)) and not re.search(r"收入|收益", name)
 
 
 def _bridge_line(label: str) -> bool:

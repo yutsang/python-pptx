@@ -851,6 +851,22 @@ def cmd_plan(args: argparse.Namespace) -> int:
     return 0 if not problems else 1
 
 
+def _gate() -> str:
+    """Run the free offline checks (migration_checks.py) before money is spent; '' when all green, else why not. This machine and
+    the one that runs the trial differ (pandas 3's string dtype, Windows, the gitignored config), and a test that fails only
+    there has silently cost whole runs before (CLAUDE.md); one command now does both, the gate first."""
+    import subprocess
+    print("gate: migration_checks.py (free, 1-3 minutes) ...", flush=True)
+    done = subprocess.run([sys.executable, str(HERE / "migration_checks.py")], capture_output=True, text=True, encoding="utf-8",
+                          errors="replace")
+    last = next((line for line in reversed((done.stdout or "").splitlines()) if line.strip()), "")
+    print(f"gate: {last}", flush=True)
+    if done.returncode != 0 or not last.startswith("ALL GREEN"):
+        failing = [line for line in (done.stdout or "").splitlines() if line.startswith("FAIL")]
+        return "the offline checks are not all green: " + ("; ".join(failing)[:400] or last or "no summary line")
+    return ""
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     from fdd_utils.agent.routing import Limits
     cfg = A._config_or_empty()
@@ -861,6 +877,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         problems.append("--i-accept-paid-calls was not given (or use --scripted for the free run)")
     if _sha_problem(args, sha):
         problems.append(_sha_problem(args, sha))
+    if not problems and not args.scripted and not getattr(args, "skip_gate", False):
+        gate = _gate()
+        if gate:
+            problems.append(gate)
     if problems:
         print("NOT STARTED (nothing was sent):")
         for p in problems:
@@ -968,6 +988,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.add_argument("--max-cost", type=float, default=0.0, help="yuan at config prices; one ceiling over every arm")
         if name == "run":
             p.add_argument("--i-accept-paid-calls", action="store_true")
+            p.add_argument("--skip-gate", action="store_true", help="do not run migration_checks.py before a paid run")
     args = ap.parse_args(argv)
     from fdd_utils.agent.flag import parse_role
     A._OVERRIDES.clear()

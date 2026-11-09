@@ -188,12 +188,17 @@ class HiddenSheets(unittest.TestCase):
         return {"sheets": {"AR": {"hidden": hidden, "status": "mapped", "cells": {"r": [], "c": [], "v": []},
                                   "row_labels": {}, "col_labels": {}, "texts": []}}}
 
-    def test_account_on_a_hidden_tab_offers_no_facts(self):
+    def test_account_on_a_hidden_tab_offers_only_its_financials_figures(self):
         frame = account_frame(clean_rows())
-        hidden = ec.build_contract("AR", frame, statement_type="BS", financials={P1: 100.0, P2: 100.0},
+        hidden = ec.build_contract("AR", frame, statement_type="BS", financials={P1: 100.0, P2: 120.0},
                                    digest=self.digest(True))
-        self.assertEqual(hidden.facts, [])
-        self.assertEqual(hidden.issues[0]["code"], "SOURCE_SHEET_HIDDEN")
+        # nothing from the tab; the visible Financials row is the account's figure (投资收益, client file, 2026-11-09)
+        self.assertEqual({(f["basis"], f["role"], f["line"]) for f in hidden.facts},
+                         {(ec.BASIS_FINANCIALS, ec.ROLE_TOTAL, ""), (ec.BASIS_ADJUSTED, ec.ROLE_TOTAL, "")})
+        self.assertEqual(hidden.total(P2, ec.BASIS_ADJUSTED), 120.0)
+        self.assertEqual((hidden.issues[0]["code"], hidden.issues[0]["severity"]), ("SOURCE_SHEET_HIDDEN", "info"))
+        bare = ec.build_contract("AR", frame, statement_type="BS", digest=self.digest(True))
+        self.assertEqual((bare.facts, bare.issues[0]["severity"]), ([], "blocked"))
         visible = ec.build_contract("AR", frame, statement_type="BS", financials={P1: 100.0, P2: 100.0},
                                     digest=self.digest(False))
         self.assertTrue(visible.facts)

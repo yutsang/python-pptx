@@ -583,7 +583,10 @@ class Reading(unittest.TestCase):
         self.assertEqual(verdict["verdict"], "verified", verdict["findings"])
         self.assertIn("CAUSE_FROM_NOTE", {f["code"] for f in verdict["findings"]})
         beyond = dict(claim, text="2025年12月31日应收账款余额130.0万元，主要系甲公司经营困难、资金紧张而延迟支付租金所致")
-        self.assertEqual(cl.verify_claim(beyond, self.session.contracts)["verdict"], "verified_inference")
+        # beyond its words: on the record (related_unchecked), not coloured, since no overlap threshold separated right from
+        # wrong in the 2026-11-09 review
+        verdict = cl.verify_claim(beyond, self.session.contracts)
+        self.assertEqual((verdict["verdict"], verdict["dimensions"]["causal"]), ("verified", "related_unchecked"))
 
     def test_search_notes_do_not_count_as_a_change_in_the_workbook(self):
         before = self.session.snapshot()[ACCOUNT]["notes"]
