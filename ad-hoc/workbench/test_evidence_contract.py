@@ -197,6 +197,12 @@ class HiddenSheets(unittest.TestCase):
                          {(ec.BASIS_FINANCIALS, ec.ROLE_TOTAL, ""), (ec.BASIS_ADJUSTED, ec.ROLE_TOTAL, "")})
         self.assertEqual(hidden.total(P2, ec.BASIS_ADJUSTED), 120.0)
         self.assertEqual((hidden.issues[0]["code"], hidden.issues[0]["severity"]), ("SOURCE_SHEET_HIDDEN", "info"))
+        # what the writer and the dispatcher read: the view, the derived movements (a fact without a ref stopped a trial)
+        from fdd_utils.ai import claims as cl
+        cl.standard_derived(hidden)
+        view = cl.evidence_view(hidden)
+        self.assertTrue(all(f.get("ref") for f in hidden.facts))
+        self.assertIn(120.0, [t["yuan"] for t in view["totals"] if t["basis"] == ec.BASIS_ADJUSTED])
         bare = ec.build_contract("AR", frame, statement_type="BS", digest=self.digest(True))
         self.assertEqual((bare.facts, bare.issues[0]["severity"]), ([], "blocked"))
         visible = ec.build_contract("AR", frame, statement_type="BS", financials={P1: 100.0, P2: 100.0},
@@ -374,6 +380,35 @@ class SupportingTables(unittest.TestCase):
         self.assertNotIn("Check", found[0]["title"])
         self.assertTrue(found[0]["where"].startswith("B2:"), found[0]["where"])
         self.assertTrue(all(c["period"] == P2 and not c["assumed"] for c in found[0]["columns"]))     # the title's date
+
+    def test_a_line_repeated_under_each_section_takes_the_sections_name_and_a_count_column_is_no_amount(self):
+        from fdd_utils.workbook import supporting as sp
+        grid = [[None] * 8 for _ in range(12)]
+        grid[1][1:6] = ["固定资产 - 截至2025年12月31日（人民币千元）", None, None, None, None]
+        grid[2][1:6] = ["项目", "原值", "累计折旧", "净值", "折旧月数"]
+        grid[3][1:6] = ["土地使用权", 600.0, -50.0, 550.0, 480.0]
+        grid[4][1:6] = ["房屋建筑物", 3000.0, -700.0, 2300.0, 240.0]
+        grid[5][1:6] = ["一期合计", 3600.0, -750.0, 2850.0, None]
+        grid[6][1:6] = ["土地使用权", 500.0, -20.0, 480.0, 500.0]
+        grid[7][1:6] = ["房屋建筑物", 2500.0, -200.0, 2300.0, 240.0]
+        grid[8][1:6] = ["二期合计", 3000.0, -220.0, 2780.0, None]
+        grid[9][1:6] = ["合计", 6600.0, -970.0, 5630.0, None]
+        found = sp.find_supporting_blocks(pd.DataFrame(grid), [], periods=[P1, P2], multiplier=1000.0)
+        self.assertEqual(len(found), 1)
+        self.assertNotIn("折旧月数", [c["header"] for c in found[0]["columns"]])        # months were read as thousands of yuan
+        labels = [r["label"] for r in found[0]["rows"]]
+        self.assertEqual(labels[:6], ["一期土地使用权", "一期房屋建筑物", "一期合计", "二期土地使用权", "二期房屋建筑物", "二期合计"])
+        self.assertEqual(labels[-1], "合计")
+
+    def test_a_table_whose_lines_do_not_repeat_keeps_its_labels(self):
+        from fdd_utils.workbook import supporting as sp
+        grid = [[None] * 6 for _ in range(8)]
+        grid[1][1:4] = ["项目", "原值", "净值"]
+        grid[2][1:4] = ["房屋", 300.0, 250.0]
+        grid[3][1:4] = ["设备", 200.0, 150.0]
+        grid[4][1:4] = ["经营合计", 500.0, 400.0]
+        found = sp.find_supporting_blocks(pd.DataFrame(grid), [], periods=[P1, P2], multiplier=1000.0)
+        self.assertEqual([r["label"] for r in found[0]["rows"]], ["房屋", "设备", "经营合计"])
 
     def test_a_figure_in_the_header_row_is_no_column_name(self):
         from fdd_utils.workbook import supporting as sp

@@ -674,8 +674,10 @@ _FIGURE_TAIL = r"\s*(?:了|约|近|超过?|达到?|至|为)?\s*[-+−－]?\d[\d,
 
 def direction_words(text: str) -> List[Dict[str, Any]]:
     """Every direction word in the sentence: {start, end, sign (+1 rise / -1 fall), word}."""
+    # "无新增投入", "未增加": a negated direction word says nothing moved (a sentence saying capital had no new contribution was
+    # refused as claiming an increase, 2026-11-09 review)
     return [{"start": m.start(), "end": m.end(), "sign": _DIRECTION_WORDS[m.group(0).lower()], "word": m.group(0)}
-            for m in _DIRECTION_RE.finditer(text)]
+            for m in _DIRECTION_RE.finditer(text) if not re.search(r"(?:无|未|没有|并无|尚无|不)\s*$", text[max(0, m.start() - 3):m.start()])]
 
 
 def _clause_of(text: str, pos: int) -> Tuple[int, int]:
@@ -1154,6 +1156,15 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                                    "line": a_fact["line"] if a_fact["role"] in _LINE_ROLES else "",
                                    "ref": f"movement({a_fact['ref']},{b_fact['ref']})", "item": None,
                                    "base": a_fact["value"], "end": b_fact["value"]})
+    # "占应付账款余额的80.0%": a cited line over a cited total of the same period is arithmetic on the citations (five right
+    # shares were refused in one paragraph, 2026-11-09)
+    totals_by_period = {f["period"]: f for f in cited_facts if f["role"] == ROLE_TOTAL and f.get("value")}
+    for f in cited_facts:
+        t = totals_by_period.get(f["period"])
+        if f["role"] in _LINE_ROLES and t is not None and f is not t:
+            share = f["value"] / t["value"] * 100
+            pct_candidates.append({"pct": abs(share), "signed": share, "kind": "share", "periods": [f["period"]],
+                                   "line": f["line"], "ref": f"share({f['ref']},{t['ref']})", "item": None, "base": None, "end": None})
     share_truths = share_movements(cited_derived)
     for t in share_truths:                    # "占比下降6.2个百分点": the difference of two shares, in points
         pct_candidates.append({"pct": abs(t["value"]) * 100, "signed": t["value"] * 100, "kind": "points", "periods": t["periods"],
@@ -1290,6 +1301,10 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         between = text[mention["end"]:span["start"]]
         if re.search(r"[至达]", between) and source.get("period") == latest_declared:
             continue                                    # "由2024年末的100万元增至130万元": the amount after 至 is the later period
+        if re.search(r"[由从]\s*(?:的)?\s*$", text[max(0, span["start"] - 4):span["start"]]) and \
+                re.match(r"\s*(?:增加|减少|上升|下降|回升|回落|下滑|增|降|减|升)[至到]", text[span["end"]:span["end"] + 6]) and \
+                any(mention_matches(mention, p) and p > str(source.get("period") or "") for p in contract.periods):
+            continue                                    # "2024年由2.50亿元增至4.80亿元": the amount after 由 is where the year began
         other = next((f for f in cited_facts if f is not source and mention_matches(mention, f["period"])), None)
         if other is not None and abs(abs(other["value"]) - abs(span["value"])) > span["tolerance"]:
             fail("WRONG_PERIOD", "binding",
@@ -1448,6 +1463,9 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                 notes.append(note)
         related = [n for n in notes if len(_bigrams(text) & _bigrams(n["text"])) >= 2]
         conflicts = [(n, c) for n in related for c in cause_conflicts(text, n["text"], contract)]
+        if len(related) > 1:
+            # a sentence listing several lines cites a note per line; each note naming its own line is no contradiction
+            conflicts = [(n, c) for n, c in conflicts if not c.startswith("a different line")]
         for n, why in conflicts:
             fail("CAUSE_CONTRADICTS_NOTE", "causal", f"{n['ref']} says something the sentence reverses or changes: {why}")
         if related and not conflicts:
@@ -1512,7 +1530,7 @@ def _cue_classes(text: str) -> set:
     return {name for name, words in _CUES.items() if any(w in work for w in words)}
 
 
-_SOFT_NEGATION = ("无", "不存在")
+_SOFT_NEGATION = ("无", "不存在", "不")
 _NOT_NEGATION = ("无形", "无锡", "无论", "无息")
 
 
@@ -1545,7 +1563,9 @@ def cause_conflicts(claim_text: str, note_text: str, contract: Optional[Evidence
             found.append(f"opposite direction ({a} / {b})")
             break
     if contract is not None:
-        labels = {f["line"] for f in contract.facts if f["role"] == ROLE_COMPONENT and f["line"] and f["line"] != contract.account}
+        # bare labels: a counterparty row is starred in the tab ("*甲公司") and never in prose, so with the star kept a sentence
+        # naming the note's own counterparty was charged with "a different line" (2026-11-09 review)
+        labels = {_bare(f["line"]) for f in contract.facts if f["role"] == ROLE_COMPONENT and f["line"] and f["line"] != contract.account}
         in_claim, in_note = {l for l in labels if l in claim_text}, {l for l in labels if l in note_text}
         if in_claim and in_note and not (in_claim & in_note):
             found.append(f"a different line ({', '.join(sorted(in_claim))} against {', '.join(sorted(in_note))})")

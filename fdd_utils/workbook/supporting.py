@@ -24,6 +24,10 @@ Region = Tuple[int, int, int, int]          # first row, last row, first column,
 _WORKING = ("check", "差异", "差額", "差额", "对账", "核对", "diff", "variance to", "tie-out", "勾稽")
 _TOTAL = ("total", "合计", "总计", "小计", "合計", "總計", "小計")
 _RATE_HEADER = ("%", "率", "rate", "比例", "占比")
+# columns that count or size something other than money: a fixed-asset table's 折旧月数 (hundreds of months) was read as an
+# amount and scaled with the table's 千元 into hundreds of thousands of yuan (client file, 2026-11-09)
+_COUNT_HEADER = ("月数", "年限", "期限", "天数", "面积", "数量", "单价", "平方米", "㎡", "months", "useful life", "years of", "area",
+                 "quantity", "unit price")
 _THOUSAND = ("千元", "'000", "’000", "k cny")
 # columns that number or date an entry rather than measure it (a voucher listing has them all)
 _CODE_HEADER = ("凭证", "编码", "编号", "代码", "序号", "期间", "日期", "code", "no.", "voucher", "date", "account no")
@@ -218,7 +222,7 @@ def read_block(raw: pd.DataFrame, region: Region, *, periods: Sequence[str], mul
         head = " ".join(t for t in parts if t).strip()
         if not text[(head_rows[-1], c)] and not (len(head_rows) == 1 and head):
             continue                                   # a column nobody named is a working calculation, not a measure
-        if not head or any(h in head.lower() for h in _RATE_HEADER + _CODE_HEADER + _WORKING):
+        if not head or any(h in head.lower() for h in _RATE_HEADER + _CODE_HEADER + _WORKING + _COUNT_HEADER):
             continue
         if coerce_numeric(text[(head_rows[-1], c)]) is not None and not re.search(r"[A-Za-z一-鿿]", text[(head_rows[-1], c)]):
             continue                                   # a figure in the header row (a check's difference) names nothing
@@ -261,6 +265,20 @@ def read_block(raw: pd.DataFrame, region: Region, *, periods: Sequence[str], mul
             rows.append({"label": label, "row": r, "values": values, "total": any(t in label.lower() for t in _TOTAL)})
     if sum(len(x["values"]) for x in rows) < 3 or len(rows) < 2:
         return None
+    # The same line under several sections, each closed by its own subtotal ("一期合计", "二期合计"): each is named by its section.
+    # Read as written, phase one's 房屋建筑物 was taken for the whole account's and a sentence gave phase one's houses as the
+    # account's when both phases together were nearly twice that (client file, 2026-11-09 review).
+    plain = [x["label"] for x in rows if not x["total"]]
+    if len(plain) != len(set(plain)):
+        start = 0
+        for i, x in enumerate(rows):
+            m = re.fullmatch(r"\s*(.+?)\s*(?:合计|小计|subtotal|total)\s*", x["label"], re.I)
+            if x["total"] and m and m.group(1).strip():
+                section = m.group(1).strip()
+                for y in rows[start:i]:
+                    if not y["total"] and not y["label"].startswith(section):
+                        y["label"] = section + y["label"]
+                start = i + 1
     if not any(abs(v) > 0.005 for x in rows for v in x["values"].values()):
         return None                                    # every figure nil: nothing to say
     entry_like = sum(1 for x in rows if re.fullmatch(r"\s*(\d{4}[/.-]\d{1,2}[/.-]\d{1,2}.*|\d{4,}\s*)", x["label"]))

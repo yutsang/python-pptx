@@ -863,6 +863,42 @@ class ReviewFindingsTrial4(unittest.TestCase):
         self.assertTrue(_is_expense("管理费用"))
         self.assertTrue(_is_expense("营业外支出"))
 
+
+class ReviewFindingsTrial5(unittest.TestCase):
+    """Refusals read from the fourth and fifth trials' review files (2026-11-09): right sentences marked red or orange."""
+    P0, P3 = "2023-12-31", "2026-03-31"
+
+    def test_a_starred_counterparty_is_the_same_line_as_the_prose_name(self):
+        rows = [("*甲建设有限公司", "detail", {P2: 700000}), ("二期总包结算", "detail", {P2: 690000}),
+                ("Total", "total", {P2: 800000})]
+        c = build(rows=rows, notes=["*甲建设有限公司 | 应付工程款"], periods=(P2,), account="应付账款")
+        self.assertEqual(cl.cause_conflicts("其中甲建设有限公司的应付工程款70.0万元，包括二期总包结算69.0万元", c.notes[0]["text"], c), [])
+        self.assertTrue(cl.cause_conflicts("其中二期总包结算的应付工程款69.0万元", c.notes[0]["text"], c))   # names only the other line
+
+    def test_a_negated_direction_word_is_no_direction(self):
+        self.assertEqual(cl.direction_words("2025年度实收资本无变动，无新增投入"), [])
+        self.assertEqual([w["word"] for w in cl.direction_words("实收资本未增加，借款减少")], ["减少"])
+
+    def test_bu_answers_a_negation(self):
+        note = "该余额的性质并非全部为租金，受限于信息，无法完整明确余额性质"
+        self.assertEqual(cl.cause_conflicts("建议关注该余额性质不明确的问题", note), [])
+
+    def test_the_amount_after_you_is_where_the_year_began(self):
+        rows = [("Total", "total", {self.P0: 250000000, P1: 480000000})]
+        c = build(rows=rows, notes=[], periods=(self.P0, P1), account="固定资产")
+        cites = [ref(c, self.P0), ref(c, P1)]
+        v = verdict("2024年固定资产由2.50亿元增至4.80亿元", c, cites, [self.P0, P1])
+        self.assertNotIn("WRONG_PERIOD", codes(v), v["findings"])
+        swapped = verdict("2024年固定资产由4.80亿元降至2.50亿元", c, cites, [self.P0, P1])
+        self.assertTrue(codes(swapped), swapped["findings"])                 # the later figure is not where the year began
+
+    def test_a_share_of_a_cited_line_in_a_cited_total(self):
+        rows = [("*甲公司", "detail", {P2: 600000}), ("乙公司", "detail", {P2: 150000}), ("Total", "total", {P2: 750000})]
+        c = build(rows=rows, notes=[], periods=(P2,), account="应付账款")
+        cites = [ref(c, P2, "*甲公司"), ref(c, P2)]
+        self.assertNotIn("PERCENT_UNMATCHED", codes(verdict("2025年12月31日应付甲公司60.0万元，占应付账款余额的80.0%", c, cites, [P2])))
+        self.assertIn("PERCENT_UNMATCHED", codes(verdict("2025年12月31日应付甲公司60.0万元，占应付账款余额的85.0%", c, cites, [P2])))
+
 class DeckDelivery20261109(unittest.TestCase):
     """What reaches the slide: the marks a person must see, and figures rounded once from the exact value."""
 

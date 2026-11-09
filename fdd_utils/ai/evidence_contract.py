@@ -395,6 +395,8 @@ def build_contract(
                 contract.facts.append({"id": _fact_id(account, p, basis, "", taken), "account": account, "period": p, "basis": basis,
                                        "role": ROLE_TOTAL, "line": "", "value": fin[p], "unit": "yuan", "sheet": fin_sheet,
                                        "visible": True, "parser_version": PARSER_VERSION, "from_financials": True})
+        for i, item in enumerate(sorted(contract.facts, key=lambda f: f["id"]), 1):
+            item["ref"] = f"F{i}"        # without refs the evidence view raised KeyError 'ref' and stopped a whole trial
         contract.issues.append({"code": "SOURCE_SHEET_HIDDEN", "severity": "info" if periods else "blocked",
                                 "message": f"the tab '{sheet}' is a hidden sheet; its figures are not offered as evidence"
                                            + ("; the account's Financials figures are, with no detail" if periods else "")})

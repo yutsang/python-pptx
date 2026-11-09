@@ -933,6 +933,11 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(text)
     print(f"numbers (local, git-ignored, no account names): {(OUT_DIR / f'trial_{stamp}.json').relative_to(ROOT)}; "
           f"per account as it finished: {progress_file.relative_to(ROOT)}")
+    # what the review file says in a screenful, so the run's output is what gets pasted back, not the file (several hundred KB)
+    quality = report.get("quality")
+    if quality and (ROOT / quality).exists():
+        from trial_digest import _read, digest
+        print("\n".join(digest(_read(ROOT / quality))))
     return 0
 
 

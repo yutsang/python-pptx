@@ -339,6 +339,16 @@ class WorkSession:
             except R.BudgetExhausted as exc:
                 rows.append({"account": key, "ok": False, "stop_reason": "budget_session", "error": str(exc)})
                 break
+            except Exception as exc:  # noqa: BLE001 -- one account's fault stops that account, not the entity
+                # a KeyError in one account's evidence stopped two whole trial arms (2026-11-09); the account is recorded as
+                # failed with the error and the rest are written
+                error = f"{type(exc).__name__}: {exc}"[:300]
+                turn = Turn(n=len(self.turns) + 1, mode="edit", request=text, ok=False, stop_reason="error", at=_now(),
+                            report={"error": error}, source_version=self.source.source_version)
+                rows.append({"account": key, "ok": False, "stop_reason": "error", "error": error})
+                if on_account is not None:
+                    on_account(key, turn)
+                continue
             if turn.ok:
                 self.accept(key)
             rows.append({"account": key, "ok": turn.ok, "stop_reason": turn.stop_reason, "turn": turn.n,

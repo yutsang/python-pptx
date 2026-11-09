@@ -825,6 +825,27 @@ deck marked. A paid `entity_trial.py run` now runs `migration_checks.py` first a
 sends nothing unless it is all green (`--skip-gate` to skip). On the three local
 databooks the verifier still accepts none of 667, 786 and 695 wrong claims.
 
+**Fifth trial, what changed (2026-11-10).** The hidden-tab change above returned
+before the contract's refs were assigned, so the first view of that account
+raised `KeyError: 'ref'` and stopped both arms of the paid run; refs are now
+assigned there too, and an account that raises outside the controller is
+recorded as failed with its error while the rest of the entity is written. A
+supporting table's count columns (折旧月数, 年限, 面积 and the like) are no longer
+read as amounts: a count of months had been scaled with the table's 千元
+into yuan. A line that repeats under several sections closed by their own subtotals
+(一期合计, 二期合计) takes the section's name, so phase one's 房屋建筑物 is no
+longer read as the account's. Right sentences the fourth and fifth trials
+refused: a starred counterparty in a note is the same line as its name in prose
+(the star was compared); a sentence citing several notes, one per line, is no
+"different line" against each; 不 answers a negation; a negated direction word
+(无新增, 未增加) is no direction; the amount after 由 in "由A增至B" is where the
+period began; and a share of a cited line in a cited total of the same period is
+arithmetic on the citations (five right shares were refused in one paragraph).
+`entity_trial.py` ends a run with `trial_digest.py`'s screenful: per arm,
+accounts accepted, cost, the accounts not accepted and every marked sentence with
+its reason, so the run's output is what is pasted back instead of the review
+file.
+
 **What a person is shown, and why (2026-11-09).** A sentence-level review of the
 client file's first trial (621 sentences across three arms, every figure and
 name read against the visible sheets) found 33 to 55 marks per arm on sentences

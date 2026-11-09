@@ -959,6 +959,26 @@ class PreparedWrite(unittest.TestCase):
         self.assertEqual((len(primary.users), len(pro.users)), (2, 1))
         self.assertIn("REJECTED", pro.users[0], "the stronger model gets the rejected claim, not the whole task again")
 
+    def test_an_account_that_raises_is_recorded_and_the_others_are_still_written(self):
+        # 2026-11-09: a KeyError in one account's evidence stopped two whole trial arms
+        def fn(system, user, n):
+            view = writer_view(user)
+            return {"draft": {"claims": [amount_claim(view, P2, "2025年12月31日其他应收款余额130.0万元")], "unresolved": []}}
+        work = self._work(Writer(fn), extra_account=True)
+        real = work._run
+
+        def run(text, mode, key, **kwargs):
+            if key == ACCOUNT:
+                raise KeyError("ref")                  # outside the controller, which catches a model's own failure
+            return real(text, mode, key, **kwargs)
+        seen = []
+        with mock.patch.object(work, "_run", side_effect=run):
+            done = work.draft_entity(on_account=lambda key, turn: seen.append((key, turn.stop_reason)))
+        self.assertIn((ACCOUNT, "error"), seen)
+        self.assertIn(OTHER, [k for k, _r in seen], "the next account is still written")
+        row = next(r for r in done["rows"] if r["account"] == ACCOUNT)
+        self.assertIn("KeyError", row["error"])
+
     def test_an_entity_is_drafted_account_by_account_with_a_fresh_memory_and_a_first_generation_deck_names_what_is_missing(self):
         def fn(system, user, n):
             view = writer_view(user)
