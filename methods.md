@@ -331,7 +331,14 @@ notes deferred rather than stated, figures from a note's text, causes marked
 as inference or only related to a note, detail and basis caveats, what is
 unresolved, detail lines the writer was not shown, and a repair by the stronger
 model. Export turns the first four kinds into a `HUMAN_CHECK` finding (review)
-for that account.
+for that account. In the deck a sentence is coloured with the pipeline's meaning:
+red (`hallucination`, which blocks delivery) only for a figure the databook
+contradicts (a verifier failure on amounts, arithmetic, binding or citations);
+orange (`reasoning`) for an inference, a cause nothing proves, and a verified
+sentence carrying a flag a person should read (`note_amount`,
+`cause_not_proven`, `note_wording_unchecked`, `detail_caveat`,
+`lead_left_to_person`). Only validated candidates are exported, so in practice
+red appears only where the lead mode kept a claim against the verifier.
 
 Two options of the prepared write are off until a paid comparison shows they
 help. `agent.seed_facts`: Python writes the latest balance (or, for an income

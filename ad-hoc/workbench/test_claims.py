@@ -617,6 +617,27 @@ class MaterialView(unittest.TestCase):
         self.assertEqual(v["material_not_shown"], 10)           # each is 2.5% of the total
 
 
+class DeckColours(unittest.TestCase):
+    """The pipeline's meaning of the colours: red for a figure the databook contradicts, orange for an inference, an unproven
+    cause, and a verified sentence a flag says a person should read."""
+
+    def test_red_only_for_contradicted_figures_and_orange_for_flags_and_causes(self):
+        c = build()
+        good = {"account": c.account, "kind": "amount", "text": "2025年12月31日余额130.0万元", "periods": [P2], "cites": [ref(c, P2)]}
+        wrong = dict(good, text="2025年12月31日余额150.0万元")
+        cause = {"account": c.account, "kind": "cause", "text": "增加主要系回款放缓所致", "periods": [P2], "cites": [], "cause_cites": []}
+        noted = dict(good, text="2025年12月31日余额130.0万元。")
+        claims = [good, wrong, cause, noted]
+        outcome = cl.verify_candidate(claims, {c.account: c}, default_account=c.account)
+        self.assertEqual([v["verdict"] for v in outcome["verdicts"]][:3], ["verified", "failed", "failed"])
+        flags = [{"kind": "note_amount", "claim": 3, "text": noted["text"]}, {"kind": "deferred_note", "ref": "N1"}]
+        reviews = cl.to_legacy_result(c.account, claims, outcome, flags=flags)["agent_4_validation"]["clause_reviews"]
+        self.assertEqual([r["category"] for r in reviews], ["data-backed", "hallucination", "reasoning", "reasoning"])
+        self.assertEqual(reviews[3]["code"], "NOTE_AMOUNT")
+        self.assertEqual([r["category"] for r in cl.to_legacy_result(c.account, claims, outcome)["agent_4_validation"]["clause_reviews"]][3],
+                         "data-backed")
+
+
 class PercentBinding(unittest.TestCase):
     """A percentage is bound to the period, the line and the kind of ratio the sentence says, as an amount is."""
 

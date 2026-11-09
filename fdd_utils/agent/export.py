@@ -45,7 +45,7 @@ def merged_results(session: SourceSession, accounts: List[str], first_generation
     results = {} if first_generation else copy.deepcopy(session.base_results or {})
     for account in accounts:
         candidate = session.candidates[account]
-        results[account] = cl.to_legacy_result(account, candidate.claims, candidate.outcome)
+        results[account] = cl.to_legacy_result(account, candidate.claims, candidate.outcome, flags=candidate.flags)
     if "__run_health__" not in results:
         results["__run_health__"] = {"zero_successful_calls": False, "accounts_on_fallback_bullet": [], "accounts_on_passthrough": [],
                                      "accounts_on_error_text": [], "accounts_without_prompt": [], "agent_path": True}

@@ -1380,22 +1380,39 @@ def render_claims(claims: List[Dict[str, Any]]) -> str:
     return "".join(parts)
 
 
-def to_legacy_result(account: str, claims: List[Dict[str, Any]], outcome: Dict[str, Any]) -> Dict[str, Any]:
-    """A pipeline-shaped result for one account, so the payload builder, the deck's
-    highlighting and delivery.decide_delivery read an agent-written paragraph the
-    way they read a pipeline one: failed claims are `hallucination` (they gate
-    delivery), marked inference is `reasoning` (rendered orange), the rest
-    `data-backed`."""
+#: verifier dimensions where a failure means a figure the databook contradicts (wrong amount, period, line, basis, sum, or a
+#: ref that does not exist): red in the deck. A failure elsewhere (a cause with nothing behind it, wording) is orange.
+_RED_DIMENSIONS = ("amounts", "arithmetic", "binding", "citations")
+#: flags on a verified sentence that a person should read: orange in the deck
+HIGHLIGHT_FLAGS = ("note_amount", "cause_not_proven", "note_wording_unchecked", "detail_caveat", "lead_left_to_person")
+
+
+def to_legacy_result(account: str, claims: List[Dict[str, Any]], outcome: Dict[str, Any],
+                     flags: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """A pipeline-shaped result for one account, so the payload builder, the deck's highlighting and delivery.decide_delivery
+    read an agent-written paragraph the way they read a pipeline one, with the pipeline's meaning of the colours: red
+    (`hallucination`, which gates delivery) for a figure the databook contradicts, orange (`reasoning`) for an inference, a
+    cause nothing proves, and a verified sentence a flag says a person should read; the rest `data-backed`. Until 2026-11-09
+    an unproven cause and an unchecked sentence were red too, and a flagged sentence was not marked at all."""
     text = render_claims(claims)
+    marked = {}
+    for f in flags or []:
+        if f.get("kind") in HIGHLIGHT_FLAGS and isinstance(f.get("claim"), int):
+            marked.setdefault(f["claim"], f)
     reviews = []
-    for claim, verdict in zip(claims, outcome["verdicts"]):
+    for n, (claim, verdict) in enumerate(zip(claims, outcome["verdicts"])):
         if verdict["verdict"] in ("failed", "unverified"):
-            first = next((f for f in verdict["findings"] if f["severity"] in ("failed", "review")), {})
-            category, supported = "hallucination", False
-            reason, code = first.get("message", ""), first.get("code")
+            failed = [f for f in verdict["findings"] if f["severity"] == "failed"]
+            red = next((f for f in failed if f.get("dimension") in _RED_DIMENSIONS), None)
+            first = red or next((f for f in verdict["findings"] if f["severity"] in ("failed", "review")), {})
+            category = "hallucination" if red else "reasoning"
+            supported, reason, code = False, first.get("message", ""), first.get("code")
         elif verdict["verdict"] == "verified_inference":
             marker = next((f for f in verdict["findings"] if f["code"] in ("CAUSE_INFERENCE", "CAUSE_NOTE_RELATED_UNCHECKED")), {})
             category, supported, reason, code = "reasoning", False, marker.get("message", "stated as an inference"), marker.get("code", "CAUSE_INFERENCE")
+        elif n in marked:
+            category, supported = "reasoning", False
+            reason, code = f"{marked[n]['kind']}: {str(marked[n].get('why') or marked[n].get('text') or '')[:160]}", marked[n]["kind"].upper()
         else:
             category, supported, reason, code = "data-backed", True, "", None
         reviews.append({"clause": str(claim.get("text") or ""), "supported": supported, "category": category,
