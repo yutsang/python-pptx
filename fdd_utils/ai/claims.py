@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .evidence_contract import (
-    BASIS_ADJUSTED, BASIS_FINANCIALS, BASIS_RAW, ROLE_COMPONENT, ROLE_SUPPORT, ROLE_TOTAL, EvidenceContract,
+    BASIS_ADJUSTED, BASIS_FINANCIALS, BASIS_RAW, ROLE_COMPONENT, ROLE_RELATED, ROLE_SUPPORT, ROLE_TOTAL, EvidenceContract,
 )
 from .validator import display_half_ulp, extract_amount_spans
 
@@ -1526,6 +1526,9 @@ def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines:
     rest_refs = set((rest or {}).get("refs") or [])
     omitted = len(left)
     tables = _supporting_view(contract, totals, shown_periods)
+    related = [{"account": f.get("from_account") or f["line"], "ref": f["ref"], "period": f["period"], "wan": round(f["value"] / 1e4, 2),
+                **({"flow": True} if str(f.get("statement") or "").upper().startswith("IS") else {})}
+               for f in contract.facts if f["role"] == ROLE_RELATED]
     material_left = sum(1 for k in left if weight(live[k]) >= material_share)    # lines the thirty-line cap kept out
     return {
         "account": contract.account, "source_version": contract.source_version, "periods": contract.periods,
@@ -1540,6 +1543,7 @@ def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines:
         "totals": [fact_view(f) for f in contract.facts if f["role"] == ROLE_TOTAL],
         "components": {"periods": shown_periods, "lines": rows_out, **({"rest": rest} if rest else {})},
         **({"supporting_tables": tables} if tables else {}),
+        **({"related": related} if related else {}),
         "components_not_shown": omitted,
         "material_not_shown": material_left,
     }

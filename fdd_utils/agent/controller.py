@@ -381,7 +381,8 @@ def writer_system_prompt(language: str) -> str:
         "   detail is permitted, and causes only from notes. components.lines: one row per line, a ref and a 万元 figure per\n"
         "   period; nested_in names the parent line (never add a sub-line to it); rest sums the smaller lines (its D ref, e.g.\n"
         "   其余N项合计). supporting_tables are the tab's other tables (by nature, ageing, phases, an adjusted breakdown): cite\n"
-        "   their refs; a period_assumed column is the latest period.\n"
+        "   their refs; a period_assumed column is the latest period. related lists accounts the report reads with this one, and a\n"
+        "   note marked [account] comes from that account's tab: cite them to say so, never as this account's own detail.\n"
         "4. Notes are evidence too. A figure, percentage or date written in a note may be stated when the claim cites that note in\n"
         "   'cites' (an amount in the note's own currency, e.g. 万美元; never convert it). MUST ADDRESS lists the notes Python found\n"
         "   material: state what each says in a claim that cites it, or name its ref in 'unresolved' with the reason. None may be\n"
@@ -716,7 +717,9 @@ class AgentController:
                 label_value[label] = max(label_value.get(label, 0.0), abs(float(m.group(1))))
         picked: List[Dict[str, str]] = []
         seen_labels: set = set()
-        ordered = sorted(notes, key=lambda n: {"adjustment": 0, "supporting_note": 1}.get(n.get("kind"), 2))
+        # another account's note is context for this paragraph, not something it must state
+        ordered = sorted((n for n in notes if n.get("kind") != "related_note"),
+                         key=lambda n: {"adjustment": 0, "supporting_note": 1}.get(n.get("kind"), 2))
         for n in ordered:
             text = str(n.get("text") or "")
             label = text.split("|")[0].strip(" *")

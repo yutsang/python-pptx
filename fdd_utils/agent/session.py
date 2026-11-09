@@ -425,6 +425,7 @@ class SourceSession:
             contracts[key] = ec.build_contract(key, df, statement_type=stype, financials=fin.get(key),
                                                binding=binding, digest=digest)
         attach_supporting_tables(workbook, dfs, contracts, digest)
+        ec.add_related_evidence(contracts)
         base_results, base_folder, base_summaries, base_check = None, None, {}, None
         if base_run:
             from ..run_identity import load_run, resolve_run_folder

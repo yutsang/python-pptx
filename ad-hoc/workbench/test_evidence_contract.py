@@ -336,5 +336,56 @@ class SupportingTables(unittest.TestCase):
                           {"label": "乙公司", "row": 3, "values": {1: 30.0}, "total": False}]}]
         self.assertEqual(ec.add_supporting_tables(c, copy), 0)
 
+
+class RelatedEvidence(unittest.TestCase):
+    """What other accounts say about this one, filed on it: the balances and notes of the accounts the report reads with it,
+    and any other account's note that names it."""
+
+    def contract(self, account, rows, notes=(), statement="BS"):
+        frame = account_frame(rows, sheet=account)
+        frame.attrs["supporting_notes"] = list(notes)
+        return ec.build_contract(account, frame, statement_type=statement,
+                                 financials={P1: rows[-1][2][P1], P2: rows[-1][2][P2]})
+
+    def contracts(self):
+        cur = self.contract("其他流动资产", [("待抵扣进项税", "detail", {P1: 600, P2: 640}), ("Total", "total", {P1: 600, P2: 640})])
+        non = self.contract("其他非流动资产", [("待认证进项税", "detail", {P1: 100, P2: 111}), ("Total", "total", {P1: 100, P2: 111})],
+                            notes=["待认证进项税 | 预计一年以上方可抵扣的增值税进项税额"])
+        oth = self.contract("其他应收款", [("借款", "detail", {P1: 50, P2: 50}), ("Total", "total", {P1: 50, P2: 50})],
+                            notes=["借款 | 向关联方提供借款，年利率6%，利息计入投资收益"])
+        inv = self.contract("投资收益", [("利息收入", "detail", {P1: 3, P2: 3}), ("Total", "total", {P1: 3, P2: 3})], statement="IS")
+        ar = self.contract("AR", [("Tenant", "detail", {P1: 9, P2: 9}), ("Total", "total", {P1: 9, P2: 9})])
+        yr = self.contract("Other payables", [("Rent for the YEAR", "detail", {P1: 5, P2: 5}), ("Total", "total", {P1: 5, P2: 5})],
+                           notes=["Rent for the YEAR | prepaid for the YEAR by the tenant"])
+        return {c.account: c for c in (cur, non, oth, inv, ar, yr)}
+
+    def test_a_group_shares_balances_and_notes_and_a_note_naming_an_account_reaches_it(self):
+        cs = self.contracts()
+        own_refs = {f["ref"] for f in cs["其他流动资产"].facts}
+        ec.add_related_evidence(cs)
+        cur = cs["其他流动资产"]
+        rel = [f for f in cur.facts if f["role"] == ec.ROLE_RELATED]
+        self.assertEqual([(f["line"], f["value"]) for f in rel], [("其他非流动资产", 111.0)])
+        self.assertTrue(own_refs <= {f["ref"] for f in cur.facts})
+        self.assertNotIn(rel[0]["ref"], own_refs)
+        self.assertTrue(any(n["kind"] == "related_note" and n["text"].startswith("[其他非流动资产]") for n in cur.notes))
+        inv = cs["投资收益"]
+        self.assertTrue(any("年利率6%" in n["text"] and n["from_account"] == "其他应收款" for n in inv.notes))
+        self.assertFalse([f for f in inv.facts if f["role"] == ec.ROLE_RELATED])      # named in a note, not in its group
+        self.assertFalse([n for n in cs["AR"].notes if n["kind"] == "related_note"])  # "AR" is in "YEAR": short keys match nothing
+
+    def test_a_related_note_is_citable_and_never_must_address(self):
+        from fdd_utils.ai import claims as cl
+        from fdd_utils.agent.controller import AgentController
+        cs = self.contracts()
+        ec.add_related_evidence(cs)
+        inv = cs["投资收益"]
+        note = next(n for n in inv.notes if n["kind"] == "related_note")
+        claim = {"account": "投资收益", "kind": "cause", "text": "该借款年利率为6%", "periods": [P2], "cites": [], "cause_cites": [note["ref"]]}
+        self.assertNotEqual(cl.verify_claim(claim, cs)["verdict"], "failed")
+        view = cl.evidence_view(inv)
+        bare = AgentController.__new__(AgentController)          # _must_address reads only class-level word lists
+        self.assertFalse([m for m in bare._must_address(view) if m["ref"] == note["ref"]])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -57,6 +57,10 @@ ROLE_COMPONENT = "component"
 #: split, the phases of a building. Citable like any fact; it is not the schedule's detail, so the detail check ignores it.
 ROLE_SUPPORT = "supporting"
 BASIS_SUPPORT = "supporting_table"
+#: another account's balance, filed with this one because the report reads them together (VAT across current and
+#: non-current, deposits across short and long, borrowings with their interest). Citable; never part of this account's detail.
+ROLE_RELATED = "related"
+BASIS_RELATED = "related_total"
 
 CHECK_TOTAL_VS_FINANCIALS = "total_vs_financials"
 CHECK_DETAIL_VS_TOTAL = "detail_vs_total"
@@ -619,6 +623,67 @@ def add_supporting_tables(contract: EvidenceContract, blocks: List[Dict[str, Any
                 "where": block.get("where") or "", "column": col.get("header") or "", "period_assumed": bool(col.get("assumed")),
                 "subtotal": bool(row.get("total")), "parser_version": PARSER_VERSION})
     return added
+
+
+#: Accounts the report reads together. An account belongs to a group when its key contains one of the names.
+RELATED_GROUPS: Tuple[Tuple[str, ...], ...] = (
+    ("其他流动资产", "其他非流动资产", "other current assets", "other non-current assets"),
+    ("其他应付款", "长期应付款", "other payables", "long-term payables"),
+    ("长期借款", "短期借款", "一年内到期", "应付利息", "财务费用", "long-term borrowings", "short-term borrowings",
+     "due within one year", "interest payable", "finance cost", "financial expense"),
+)
+
+
+def _group_of(account: str) -> Optional[int]:
+    low = str(account or "").lower()
+    for i, names in enumerate(RELATED_GROUPS):
+        if any(n in low for n in names):
+            return i
+    return None
+
+
+def add_related_evidence(contracts: Dict[str, EvidenceContract], *, notes_per_account: int = 6, note_chars: int = 300) -> int:
+    """File, on each account, what other accounts say about it: the latest balance and the notes of the accounts in its group
+    (RELATED_GROUPS), and any other account's note that names it. Imported as this account's own facts and notes (refs after
+    its own), marked with the account they came from, so one claim can cite them and the verifier needs no second contract.
+    Found 2026-11-09: the team quoted a VAT figure written on the non-current tab in the current-asset paragraph, and an
+    investment-income rate written in an other-receivables remark. Returns how many items were filed."""
+    filed = 0
+    originals = {k: (list(c.facts), list(c.notes)) for k, c in contracts.items()}
+    for key, contract in contracts.items():
+        group = _group_of(key)
+        last_f = max((int(f["ref"][1:]) for f in contract.facts if str(f.get("ref") or "")[1:].isdigit()), default=len(contract.facts))
+        taken = {f["id"] for f in contract.facts}
+        own_texts = {n["text"] for n in contract.notes}
+        # a name another tab could mention: Chinese of three characters or more, or a long English key ("AR" is in "YEAR")
+        named = (len(key) >= 3 and bool(re.search(r"[一-鿿]", key))) or len(key) >= 8
+        for other, (facts, notes) in originals.items():
+            if other == key:
+                continue
+            sibling = group is not None and _group_of(other) == group
+            if sibling:
+                latest = next((p for p in reversed(contracts[other].periods)
+                               if any(f["period"] == p and f["role"] == ROLE_TOTAL and f["basis"] == BASIS_ADJUSTED for f in facts)), None)
+                for f in facts:
+                    if latest and f["period"] == latest and f["role"] == ROLE_TOTAL and f["basis"] == BASIS_ADJUSTED:
+                        last_f += 1
+                        contract.facts.append({
+                            "id": _fact_id(key, latest, BASIS_RELATED, other, taken), "ref": f"F{last_f}", "account": key,
+                            "period": latest, "basis": BASIS_RELATED, "role": ROLE_RELATED, "line": other, "value": f["value"],
+                            "unit": "yuan", "sheet": f.get("sheet"), "visible": True, "from_account": other,
+                            "statement": contracts[other].statement_type, "parser_version": PARSER_VERSION})
+                        filed += 1
+            picked = [n for n in notes if sibling or (named and key in str(n.get("text") or ""))][:notes_per_account]
+            for n in picked:
+                text = f"[{other}] {str(n.get('text') or '')[:note_chars]}"
+                if text in own_texts:
+                    continue
+                own_texts.add(text)
+                contract.notes.append({"id": f"{key}|note|{len(contract.notes) + 1}", "kind": "related_note", "text": text,
+                                       "period": n.get("period"), "sheet": n.get("sheet"), "from_account": other,
+                                       "ref": f"N{len(contract.notes) + 1}"})
+                filed += 1
+    return filed
 
 
 def attach_contract(evidence: Any, contract: Optional[EvidenceContract]) -> None:

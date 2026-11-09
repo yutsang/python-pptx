@@ -805,6 +805,15 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
   of 1% or more of the latest total, and subtotals). Checked on four local
   databooks; the client file's tables were located by a separate read of the
   workbook and have not yet been run through this reader.
+- What other accounts say about an account is filed on it (`add_related_evidence`):
+  for accounts the report reads together (other current and non-current assets;
+  other and long-term payables; borrowings, interest payable and finance costs)
+  each other's latest balance (`role: related`, flows marked) and up to six notes;
+  and from any account, a note that names it (Chinese keys of three characters or
+  more, English keys of eight or more). Imported notes are marked `[account]`,
+  citable, and never MUST ADDRESS. An account with no visible tab of its own (a
+  hidden one, such as investment income on the client file) has no contract and
+  gets no paragraph from this; it is still a gap.
 - The writer and the reviewer see the same evidence view: the last three periods,
   one row per detail line chosen by materiality (every line at least 1% of its
   period's total in a period shown, every line a note names, the parent of any
