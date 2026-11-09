@@ -468,6 +468,10 @@ class AgentController:
         #: the prepared write's evidence and the notes it must address (set when it starts)
         self._view: Optional[Dict[str, Any]] = None
         self._must: List[Dict[str, str]] = []
+        #: why the prepared write handed this turn to the tool loop ("" when it did not). The loop's finish is then held to
+        #: the same notes and flagged the same way: until 2026-11-09 a handed-over paragraph left 6 of 8 material notes
+        #: unstated with no flag.
+        self._fallback_reason = ""
 
     # -- the run -----------------------------------------------------------------------
 
@@ -496,6 +500,10 @@ class AgentController:
             if self._prepared_write(run, goal, resolved_account, export, usage, started):
                 return self._finish(run, usage, started)
             run.report["prepared_fallback"] = run.report.get("prepared_fallback") or "the writer asked for the tool loop"
+            self._fallback_reason = run.report["prepared_fallback"]
+            if self._must:
+                self._note("CONTROLLER: MUST ADDRESS (material notes): " + "; ".join(f"{m['ref']} ({m['why']})" for m in self._must)
+                           + ". State each in a claim that cites it, or name its ref in done.unresolved with the reason.")
             no_progress, last_signature = 0, self._signature()
 
         for step in range(len(run.steps) + 1, self.budget.max_steps + 1):
@@ -1746,6 +1754,14 @@ class AgentController:
             self._gate_codes = ["NO_VALIDATED_CANDIDATE"]
             return False, (f"no validated candidate for '{key}' against the current sources: call validate_candidate until it is ok."
                            + R.next_step_hint(self._gate_codes)), None
+        if self._fallback_reason and self._view is not None and key == self._view.get("account"):
+            unresolved = [str(u) for u in (done.get("unresolved") or [])] if isinstance(done.get("unresolved"), list) else []
+            left = self._unaddressed(self._must, candidate.claims, candidate.outcome, unresolved)
+            if left:
+                self._gate_codes = ["NOTE_UNADDRESSED"]
+                return False, ("material notes not stated: " + "; ".join(f"{m['ref']} ({m['why']}): {m['text'][:80]}" for m in left)
+                               + ". State each in a claim that cites it and validate again, or name its ref in done.unresolved "
+                               "with the reason." + R.next_step_hint(self._gate_codes)), None
         if export:
             # a SUCCESSFUL export of THIS draft against THESE sources: a blocked or layout-failed export,
             # an export of an earlier draft of the account, or one made against older sources does not count
@@ -1759,7 +1775,8 @@ class AgentController:
                                + ": call export_candidate and resolve what it reports." + R.next_step_hint(self._gate_codes)), None
         return True, "", {"account": key, "text": cl.render_claims(candidate.claims), "claims": candidate.claims,
                           "verdicts": candidate.outcome["verdicts"], "exports": list(self.session.exports),
-                          "summary": str(done.get("summary") or ""), "source_version": self.session.source_version}
+                          "summary": str(done.get("summary") or ""), "source_version": self.session.source_version,
+                          **({"unresolved": [str(u) for u in done["unresolved"]]} if isinstance(done.get("unresolved"), list) else {})}
 
     def _may_ask(self) -> Tuple[bool, str]:
         stale = self.session.stale_reason()
@@ -1791,6 +1808,14 @@ class AgentController:
 
     def _finish(self, run: AgentRun, usage: Dict[str, Any], started: float) -> AgentRun:
         usage["seconds"] = round(time.perf_counter() - started, 2)
+        if self._fallback_reason and self._view is not None:
+            candidate = self.session.candidates.get(self._view.get("account") or "")
+            if candidate is not None:
+                unresolved = list((run.answer or {}).get("unresolved") or [])
+                candidate.flags = self._flags(self._view["account"], self._view, self._must, candidate.claims, candidate.outcome,
+                                              unresolved, escalated=bool(self.escalations)) + [
+                    {"kind": "tool_loop", "text": f"written in the tool loop: {self._fallback_reason}"[:200]}]
+                run.report["flags"] = list(candidate.flags)
         run.usage = usage
         run.issues = [i.to_dict() for i in self.issues.values()]
         if not run.ok:

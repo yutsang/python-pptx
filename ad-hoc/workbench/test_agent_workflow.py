@@ -685,6 +685,29 @@ class PreparedWrite(unittest.TestCase):
         self.assertEqual(len(writer.users), 1)
         self.assertNotIn("deferred_note", [f["kind"] for f in work.source.candidates[ACCOUNT].flags])
 
+    def test_a_paragraph_handed_to_the_tool_loop_is_held_to_the_same_notes_and_flagged(self):
+        # 2026-11-08: a handed-over paragraph stated 2 of 8 material notes and carried no flag
+        def fn(system, user, n):
+            if n == 1:
+                return {"need_evidence": "需要查附注"}
+            view = evidence_of(returned(user))
+            if "validate_candidate(" not in user:
+                return tool("validate_candidate", account=ACCOUNT, claims=[amount_claim(view, P2, GOOD)])
+            if "material notes not stated" not in user:
+                return {"done": {"account": ACCOUNT, "export": False, "summary": "ok"}}
+            return {"done": {"account": ACCOUNT, "export": False, "summary": "ok",
+                             "unresolved": ["N1：直线法租金的金额未单独列示，需人工确认"]}}
+        writer = Writer(fn)
+        work = self._noted(writer, [self.NOTE])
+        turn = work.edit("撰写应收账款的段落", ACCOUNT, accept=True)
+        self.assertIn("MUST ADDRESS", writer.users[1])
+        self.assertTrue(any("NOTE_UNADDRESSED" in u or "material notes not stated" in u for u in writer.users[2:]),
+                        "dropping it silently is sent back in the loop too")
+        self.assertTrue(turn.ok, turn.report)
+        kinds = [(f["kind"], f.get("ref")) for f in work.source.candidates[ACCOUNT].flags]
+        self.assertIn(("deferred_note", "N1"), kinds)
+        self.assertIn("tool_loop", [k for k, _r in kinds])
+
     def test_periods_are_labelled_as_a_balance_or_a_flow(self):
         work = self._work(Writer(lambda *a: {}))
         ctl = C.AgentController(work.source, lambda *a: {}, language="Chi")

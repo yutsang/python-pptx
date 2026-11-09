@@ -304,7 +304,10 @@ to the stronger model, which receives the rejected claims and the evidence, not
 the whole task again. The writer can answer that the evidence is not enough, or
 call a tool; the turn then continues in the tool loop with the evidence already
 read, and a tool call it made is run there, not paid for twice. The same draft
-failing the same way twice also hands the turn to the loop. When the session's
+failing the same way twice also hands the turn to the loop. A handed-over
+paragraph is held to the same MUST ADDRESS notes (the loop's `done` is sent back
+until each is stated or named in `done.unresolved`) and gets the same flags, plus
+`tool_loop` with the reason it was handed over. When the session's
 last answer was about the same account, the writer sees that answer too ("make
 it shorter" refers to it). `agent.prepared_write: false` in config.yml restores
 the loop from the first step. Tool results in the loop's prompt are compact JSON
