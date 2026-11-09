@@ -859,6 +859,7 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
 
 ```
 python ad-hoc/workbench/migration_checks.py [--json out.json]   all offline suites, provider blocked
+python inspect_evidence.py --databook <xlsx> [--reference <report text>]   what the writer is shown; a reference's figures in it
 python ad-hoc/workbench/test_agent_flows.py <databook.xlsx>       five flows on a real workbook (needs the file)
 FDD_FLOW_WORKBOOK=<databook.xlsx> FDD_FLOW_BASE_RUN=<run id> python ad-hoc/workbench/test_workspace_flows.py
 python ad-hoc/workbench/entity_trial.py run --databook <databook.xlsx> --scripted [--arms pro,flash,mixed,loop]   free, the whole flow
