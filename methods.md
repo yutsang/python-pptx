@@ -837,13 +837,29 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
   of 1% or more of the latest total, and subtotals). Checked on four local
   databooks; the client file's tables were located by a separate read of the
   workbook and have not yet been run through this reader.
+  The schedule's own area ends at the last row it took a figure from, not at the
+  extractor's block end, which runs on to the last row with any number in the
+  schedule's columns (on the client file that put the fixed-asset phase table,
+  the payables table and a receivables block inside the schedule, so the first
+  company-side run read none of them). A tie-out row ('Check' and its
+  differences) is not part of any table and never its title; a figure in a
+  header row names no column. A table that names no unit is read in the
+  schedule's unit unless that makes it more than ten times the account's largest
+  balance: then in yuan, or left out if that is still too large (a yuan working
+  block under a 千元 schedule read as 4,037亿 on the DEMO databook). A header or
+  title that names only a year takes that year's period, and a year the account
+  does not report drops the column (a 2020 pivot was filed as 2022 on a local databook).
 - What other accounts say about an account is filed on it (`add_related_evidence`):
   for accounts the report reads together (other current and non-current assets;
   other and long-term payables; borrowings, interest payable and finance costs)
   each other's latest balance (`role: related`, flows marked) and up to six notes;
   and from any account, a note that names it (Chinese keys of three characters or
   more, English keys of eight or more). Imported notes are marked `[account]`,
-  citable, and never MUST ADDRESS. An account with no visible tab of its own (a
+  citable, and never MUST ADDRESS. A long note that names the account is cut
+  around the name (300 characters), not to its opening. The view also gives
+  `related_total`: the account's adjusted balance plus its related accounts' of
+  the same statement and period, one citable D ref (the report writes the VAT on
+  both asset tabs as one amount); a balance is never added to an expense. An account with no visible tab of its own (a
   hidden one, such as investment income on the client file) has no contract and
   gets no paragraph from this; it is still a gap.
 - The writer and the reviewer see the same evidence view: the last three periods,
@@ -860,6 +876,7 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
 ```
 python ad-hoc/workbench/migration_checks.py [--json out.json]   all offline suites, provider blocked
 python inspect_evidence.py --databook <xlsx> [--reference <report text>]   what the writer is shown; a reference's figures in it
+    (in view counts a note's amount in its own currency and a sum of two or three shown lines the verifier would accept)
 python ad-hoc/workbench/test_agent_flows.py <databook.xlsx>       five flows on a real workbook (needs the file)
 FDD_FLOW_WORKBOOK=<databook.xlsx> FDD_FLOW_BASE_RUN=<run id> python ad-hoc/workbench/test_workspace_flows.py
 python ad-hoc/workbench/entity_trial.py run --databook <databook.xlsx> --scripted [--arms pro,flash,mixed,loop]   free, the whole flow

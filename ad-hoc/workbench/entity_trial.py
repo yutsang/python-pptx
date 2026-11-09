@@ -141,6 +141,7 @@ def code_fingerprint() -> Dict[str, Any]:
     import hashlib
     files = sorted(list((ROOT / "fdd_utils" / "agent").glob("*.py"))
                    + [ROOT / "fdd_utils" / "ai" / n for n in ("claims.py", "validator.py", "evidence_contract.py")]
+                   + [ROOT / "fdd_utils" / "workbook" / "supporting.py"]          # the tab's other tables are evidence too
                    + [HERE / n for n in ("entity_trial.py", "agent_acceptance.py")])
     total = hashlib.sha256()
     for f in files:

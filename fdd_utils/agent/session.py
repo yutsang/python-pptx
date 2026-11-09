@@ -322,13 +322,19 @@ def attach_supporting_tables(workbook: str, dfs: Dict[str, Any], contracts: Dict
             sheets.setdefault(sheet, []).append(key)
     for sheet, keys in sheets.items():
         raw = frames[sheet]
-        regions = [r for r in (sp.main_region(dfs[k].attrs, raw.shape[1]) for k in keys) if r]
+
+        def last_row(key: str) -> Optional[int]:
+            rows = [int(f["row"]) for f in contracts[key].facts
+                    if f.get("row") is not None and f.get("role") in (ec.ROLE_TOTAL, ec.ROLE_COMPONENT)]
+            return max(rows) if rows else None
+        regions = [r for r in (sp.main_region(dfs[k].attrs, raw.shape[1], last_row(k)) for k in keys if k in contracts) if r]
         for key in keys:
             attrs = dfs[key].attrs
             try:
+                scale = max((abs(float(f["value"])) for f in contracts[key].facts if f.get("role") == ec.ROLE_TOTAL), default=0.0)
                 blocks = sp.find_supporting_blocks(raw, regions, periods=contracts[key].periods,
                                                    multiplier=float(attrs.get("source_multiplier") or 1),
-                                                   entity=str(attrs.get("entity_name") or ""))
+                                                   entity=str(attrs.get("entity_name") or ""), scale=scale)
             except Exception:
                 continue        # a tab this reader cannot make sense of keeps the evidence it had
             ec.add_supporting_tables(contracts[key], blocks)

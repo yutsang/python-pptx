@@ -675,7 +675,14 @@ def add_related_evidence(contracts: Dict[str, EvidenceContract], *, notes_per_ac
                         filed += 1
             picked = [n for n in notes if sibling or (named and key in str(n.get("text") or ""))][:notes_per_account]
             for n in picked:
-                text = f"[{other}] {str(n.get('text') or '')[:note_chars]}"
+                body = str(n.get("text") or "")
+                at = body.find(key) if not sibling else -1
+                if at >= 0 and len(body) > note_chars:
+                    # the part that names this account: an investment-income rate sat past the first 300 characters of a
+                    # long other-receivables remark, and the account it was quoted for was left with the remark's opening
+                    start = max(0, min(at - note_chars // 3, len(body) - note_chars))
+                    body = ("…" if start else "") + body[start:start + note_chars]
+                text = f"[{other}] {body[:note_chars + 1]}"
                 if text in own_texts:
                     continue
                 own_texts.add(text)

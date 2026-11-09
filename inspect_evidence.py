@@ -7,10 +7,13 @@ was filed from related accounts, the notes and how many are MUST ADDRESS, the si
 model the fixed dispatch rule would give it (the paid run asks the stronger model instead; this is only the fallback).
 
 With --reference (a text dump of a finished report, e.g. `inspect_pptx.py <deck> --dump-text` saved to a file), every amount
-and percentage in each account's paragraph is looked up: IN VIEW (the writer is shown it), CUT (in the evidence, but not in
-what the writer is shown), or NOT READ (nowhere in this account's evidence). The paragraph of an account is the text from its
+and percentage in each account's paragraph is looked up: IN VIEW (the writer is shown it; a note's amount counts in its own
+currency, so 500万美元 matches a note's 500万美元), IN VIEW (SUM) (two or three shown lines of one period, or of one table, add
+up to it: the verifier accepts that sum when the sentence cites exactly those lines), CUT (in the evidence, but not in what
+the writer is shown), or NOT READ (nowhere in this account's evidence). The paragraph of an account is the text from its
 name followed by a dash ("应收账款 –") to the next such header; text before the first header is checked against every account.
-This tells, before any paid run, how much of a reference the writer could possibly state.
+This tells, before any paid run, how much of a reference the writer could possibly state. Without sums and foreign-currency
+notes the first client-file run (2026-11-09) counted 22 figures NOT READ that the 2026-11-09 locator had found in view.
 """
 from __future__ import annotations
 
@@ -33,27 +36,44 @@ def _bar(items, desc):
         return items
 
 
-def _values(contract: Any, view: Dict[str, Any]) -> Tuple[List[Tuple[float, str]], List[Tuple[float, str]], List[float]]:
-    """(amounts shown, amounts in the evidence but not shown, percentages shown), amounts in yuan with their ref."""
+def _values(contract: Any, view: Dict[str, Any]) -> Dict[str, Any]:
+    """What a sentence citing this account's view could state: amounts shown (yuan, or a note's amount in its own currency),
+    amounts in the evidence but not shown, sums the verifier accepts (two or three shown lines of one period, or of one table
+    and period, cited together), and percentages shown."""
+    from itertools import combinations
     from fdd_utils.agent.tools import _refs_in
     from fdd_utils.ai import claims as cl
+    from fdd_utils.ai import evidence_contract as ec
     shown_refs = _refs_in(view)
-    shown, cut = [], []
+    shown, cut = [], []                                   # (value, ref, currency)
+    groups: Dict[str, List[float]] = {}
     for f in contract.facts:
-        (shown if f["ref"] in shown_refs else cut).append((float(f["value"]), f["ref"]))
+        (shown if f["ref"] in shown_refs else cut).append((float(f["value"]), f["ref"], "CNY"))
+        if f["ref"] not in shown_refs:
+            continue
+        if f["role"] == ec.ROLE_COMPONENT:
+            groups.setdefault(f["period"], []).append(float(f["value"]))
+        elif f["role"] == ec.ROLE_SUPPORT and not f.get("subtotal"):
+            groups.setdefault(f"{f['period']}|{f.get('table')}", []).append(float(f["value"]))
+    sums = sorted({round(abs(sum(c)), 2) for vals in groups.values() for k in (2, 3) for c in combinations(vals[:40], k)})
     pcts: List[float] = []
     for d in contract.derived:
         if d.get("value") is not None:
-            (shown if d.get("ref") in shown_refs else cut).append((float(d["value"]), d["ref"]))
+            (shown if d.get("ref") in shown_refs else cut).append((float(d["value"]), d["ref"], "CNY"))
         if d.get("pct") is not None and d.get("ref") in shown_refs:
             pcts.append(abs(float(d["pct"])))
     for n in contract.notes:
         fig = cl.note_figures(n, contract.periods)
         for a in fig["amounts"]:
-            if a.get("currency") in (None, "CNY"):
-                shown.append((float(a["value"]), n["ref"]))
+            shown.append((float(a["value"]), n["ref"], a.get("currency") or "CNY"))
         pcts.extend(fig["percents"])
-    return shown, cut, pcts
+    return {"shown": shown, "cut": cut, "sums": sums, "pcts": pcts}
+
+
+def _near(sorted_values: List[float], target: float, tol: float) -> bool:
+    from bisect import bisect_left
+    i = bisect_left(sorted_values, target - tol)
+    return i < len(sorted_values) and sorted_values[i] <= target + tol
 
 
 def _paragraphs(text: str, accounts: List[str]) -> Dict[str, str]:
@@ -118,37 +138,48 @@ def main() -> int:
     paras = _paragraphs(text, accounts)
     vals = {k: _values(s.contracts[k], views[k]) for k in accounts}
     counts = {"in view": 0, "cut": 0, "not read": 0}
-    print("\nREFERENCE figures per account: in view / cut / not read" + ("" if args.verbose else " (not-in-view listed)"))
+    as_sum = 0
+    print("\nREFERENCE figures per account: in view / cut / not read" + ("" if args.verbose else " (not-in-view and sums listed)"))
     for name, para in paras.items():
         targets = [k for k in accounts if k == name] or accounts
         found: List[Tuple[str, str]] = []
         for sp in cl.text_amounts(para):
             if not sp["value"]:
                 continue
+            target, tol = abs(sp["value"]), sp["tolerance"]
+            currency = cl._currency_at(para, sp["start"], sp["end"])
             status = "not read"
             for k in targets:
-                shown, cut, _p = vals[k]
-                if any(abs(abs(sp["value"]) - abs(x)) <= sp["tolerance"] for x, _r in shown):
+                v = vals[k]
+                if any(cur == currency and abs(target - abs(x)) <= tol for x, _r, cur in v["shown"]):
                     status = "in view"
                     break
-                if any(abs(abs(sp["value"]) - abs(x)) <= sp["tolerance"] for x, _r in cut):
+                if currency == "CNY" and _near(v["sums"], target, tol):
+                    status = "in view (sum)"
+                    break
+                if any(cur == currency and abs(target - abs(x)) <= tol for x, _r, cur in v["cut"]):
                     status = "cut"
             found.append((sp["written"], status))
         for sp in cl.text_percents(para):
             if sp.get("points"):
                 continue
-            ok = any(any(abs(abs(sp["value"]) - p) <= 0.05 for p in vals[k][2]) for k in targets)
+            ok = any(any(abs(abs(sp["value"]) - p) <= 0.05 for p in vals[k]["pcts"]) for k in targets)
             found.append((sp["written"], "in view" if ok else "not read"))
         if not found:
             continue
-        n = {st: sum(1 for _w, x in found if x == st) for st in counts}
+        n = {st: sum(1 for _w, x in found if x.startswith(st)) for st in counts}
         for st in counts:
             counts[st] += n[st]
+        as_sum += sum(1 for _w, x in found if x == "in view (sum)")
         listed = [f"{w} ({st})" for w, st in found if args.verbose or st != "in view"]
         print(f"  {name[:20]:20s} {n['in view']:3d} / {n['cut']:3d} / {n['not read']:3d}" + (f"   {', '.join(listed)}" if listed else ""))
     total = sum(counts.values()) or 1
-    print(f"TOTAL: {counts['in view']} in view, {counts['cut']} cut, {counts['not read']} not read, of {total} "
-          f"({counts['in view'] / total:.0%} of the reference's figures are in what the writer is shown)")
+    print(f"TOTAL: {counts['in view']} in view ({as_sum} of them as a sum of 2-3 shown lines), {counts['cut']} cut, "
+          f"{counts['not read']} not read, of {total} ({counts['in view'] / total:.0%} of the reference's figures are in what the "
+          f"writer is shown)")
+    if as_sum:
+        print("  a sum is what the verifier accepts when the sentence cites exactly those lines; a small figure can match a sum by "
+              "coincidence, so read the listed ones")
     return 0
 
 

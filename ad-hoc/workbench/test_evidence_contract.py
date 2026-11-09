@@ -329,6 +329,68 @@ class SupportingTables(unittest.TestCase):
         wrong = dict(claim, text="2025年12月31日应付工程款9.9万元")
         self.assertEqual(cl.verify_claim(wrong, {"AR": c})["verdict"], "failed")
 
+    def test_the_schedule_region_ends_at_its_last_row_read(self):
+        # the client file, 2026-11-09: the extractor's block ran to row 61 for a schedule ending at row 34, and the phase table under
+        # it was excluded with the schedule
+        from fdd_utils.workbook import supporting as sp
+        attrs = {"integrity": {"block_start_row": 8, "block_end_row": 61}, "normalized_columns": [{"col_idx": 21}]}
+        self.assertEqual(sp.main_region(attrs, 30), (2, 62, 0, 21))
+        self.assertEqual(sp.main_region(attrs, 30, last_row=33), (2, 34, 0, 21))
+        self.assertEqual(sp.main_region(attrs, 30, last_row=70), (2, 62, 0, 21))     # never wider than the extractor's block
+
+    def test_a_check_row_neither_joins_nor_titles_the_table_under_it(self):
+        from fdd_utils.workbook import supporting as sp
+        grid = [[None] * 8 for _ in range(10)]
+        grid[0][1:5] = ["Check", 0, 0, 0]
+        grid[1][1:4] = ["固定资产 - 截至2025年12月31日", None, None]
+        grid[2][1:4] = ["项目", "原值", "净值"]
+        grid[3][1:4] = ["一期", 300.0, 250.0]
+        grid[4][1:4] = ["二期", 200.0, 150.0]
+        found = sp.find_supporting_blocks(pd.DataFrame(grid), [], periods=[P1, P2], multiplier=1000.0)
+        self.assertEqual(len(found), 1)
+        self.assertNotIn("Check", found[0]["title"])
+        self.assertTrue(found[0]["where"].startswith("B2:"), found[0]["where"])
+        self.assertTrue(all(c["period"] == P2 and not c["assumed"] for c in found[0]["columns"]))     # the title's date
+
+    def test_a_figure_in_the_header_row_is_no_column_name(self):
+        from fdd_utils.workbook import supporting as sp
+        grid = [[None] * 6 for _ in range(6)]
+        grid[0][0:3] = ["申报表核对", "131393.06", "说明"]
+        grid[1][0:3] = ["销项税", 120.0, 1.0]
+        grid[2][0:3] = ["进项税", 80.0, 1.0]
+        grid[3][0:3] = ["差额", 40.0, 1.0]
+        self.assertEqual(sp.find_supporting_blocks(pd.DataFrame(grid), [], periods=[P1, P2]), [])
+
+    def test_a_table_naming_no_unit_and_far_larger_than_the_account_is_read_in_yuan(self):
+        # DEMO databook: a working block in yuan under a 千元 schedule read as 4,037亿 for a 4亿 transfer
+        from fdd_utils.workbook import supporting as sp
+        grid = [[None] * 5 for _ in range(6)]
+        grid[0][0:3] = ["在建工程转固", "房屋建筑物", "合计"]
+        grid[1][0:3] = ["一期", 403_772_489.57, 403_772_489.57]
+        grid[2][0:3] = ["二期", 10_611_725.53, 10_611_725.53]
+        frame = pd.DataFrame(grid)
+        found = sp.find_supporting_blocks(frame, [], periods=[P1, P2], multiplier=1000.0, scale=450_000_000.0)
+        self.assertEqual(len(found), 1)
+        self.assertTrue(found[0].get("unit_inferred"))
+        self.assertAlmostEqual(max(v for r in found[0]["rows"] for v in r["values"].values()), 403_772_489.57)
+        self.assertEqual(sp.find_supporting_blocks(frame, [], periods=[P1, P2], multiplier=1000.0, scale=1_000.0), [])   # not even in yuan
+
+    def test_a_header_or_title_naming_only_a_year_takes_that_years_period(self):
+        # a local databook: a pivot of 2020 by tenant was filed as the latest period's figures
+        from fdd_utils.workbook import supporting as sp
+        grid = [[None] * 5 for _ in range(10)]
+        grid[0][0:4] = ["Row Labels", "2024 Total", "2025 Total", "2023 Total"]
+        grid[1][0:4] = ["租金收入", 10.0, 12.0, 9.0]
+        grid[2][0:4] = ["管理费收入", 5.0, 6.0, 4.0]
+        found = sp.find_supporting_blocks(pd.DataFrame(grid), [], periods=[P1, P2])
+        self.assertEqual([c["period"] for c in found[0]["columns"]], [P1, P2])      # 2023 is not reported: left out
+        grid = [[None] * 5 for _ in range(10)]
+        grid[0][0:3] = ["2024", "Sum of 租金", "Sum of 管理费"]
+        grid[1][0:3] = ["甲租户", 10.0, 5.0]
+        grid[2][0:3] = ["乙租户", 12.0, 6.0]
+        found = sp.find_supporting_blocks(pd.DataFrame(grid), [], periods=[P1, P2])
+        self.assertTrue(all(c["period"] == P1 and not c["assumed"] for c in found[0]["columns"]))
+
     def test_a_table_that_repeats_the_schedules_own_lines_is_skipped(self):
         c = ec.build_contract("AR", account_frame(clean_rows()), statement_type="BS", financials={P1: 100.0, P2: 100.0})
         copy = [{"title": "复本", "where": "F1:H4", "columns": [{"col": 1, "header": "2025年", "period": P2, "assumed": False}],
@@ -386,6 +448,32 @@ class RelatedEvidence(unittest.TestCase):
         view = cl.evidence_view(inv)
         bare = AgentController.__new__(AgentController)          # _must_address reads only class-level word lists
         self.assertFalse([m for m in bare._must_address(view) if m["ref"] == note["ref"]])
+
+    def test_related_total_sums_the_same_statement_only_and_is_citable(self):
+        from fdd_utils.ai import claims as cl
+        cs = self.contracts()
+        cs["长期借款"] = self.contract("长期借款", [("银行借款", "detail", {P1: 900, P2: 800}), ("Total", "total", {P1: 900, P2: 800})])
+        cs["财务费用"] = self.contract("财务费用", [("利息支出", "detail", {P1: 40, P2: 45}), ("Total", "total", {P1: 40, P2: 45})],
+                                   statement="IS")
+        ec.add_related_evidence(cs)
+        view = cl.evidence_view(cs["其他流动资产"])
+        self.assertEqual([(g["period"], g["accounts"]) for g in view["related_total"]], [(P2, ["其他流动资产", "其他非流动资产"])])
+        ref = view["related_total"][0]["ref"]
+        self.assertNotIn(ref, {d["ref"] for d in view["derived"]})                # shown once, under related
+        claim = {"account": "其他流动资产", "kind": "amount", "text": "连同其他非流动资产合计751元", "periods": [P2], "cites": [ref]}
+        self.assertEqual(cl.verify_claim(claim, cs)["verdict"], "verified")
+        self.assertNotIn("related_total", cl.evidence_view(cs["长期借款"]))         # a balance and an expense are never added
+
+    def test_a_long_note_naming_an_account_is_cut_around_the_name(self):
+        cs = self.contracts()
+        long = "借款 | " + "该款项为股东借款，期限三年，按季付息。" * 20 + "本金500万美元，年利率6%，利息计入投资收益。"
+        cs["其他应收款"] = self.contract("其他应收款", [("借款", "detail", {P1: 50, P2: 50}), ("Total", "total", {P1: 50, P2: 50})],
+                                     notes=[long])
+        ec.add_related_evidence(cs)
+        note = next(n for n in cs["投资收益"].notes if n["kind"] == "related_note")
+        self.assertIn("年利率6%", note["text"])
+        self.assertLessEqual(len(note["text"]), 300 + 20)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

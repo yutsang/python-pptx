@@ -1546,6 +1546,21 @@ def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines:
     related = [{"account": f.get("from_account") or f["line"], "ref": f["ref"], "period": f["period"], "wan": round(f["value"] / 1e4, 2),
                 **({"flow": True} if str(f.get("statement") or "").upper().startswith("IS") else {})}
                for f in contract.facts if f["role"] == ROLE_RELATED]
+    # this account with its related accounts of the same statement, one citable figure: the team writes the VAT on both asset
+    # tabs, or a loan with its current portion, as one amount (the client file: 其他流动资产 with 其他非流动资产)
+    group_totals = []
+    own_statement = str(contract.statement_type or "").upper()[:2]
+    for f in contract.facts:
+        if f["role"] != ROLE_TOTAL or f["basis"] != BASIS_ADJUSTED:
+            continue
+        mates = [g for g in contract.facts if g["role"] == ROLE_RELATED and g["period"] == f["period"]
+                 and str(g.get("statement") or "").upper()[:2] == own_statement]
+        if mates:
+            d = derive_sum(contract, [f["ref"]] + [g["ref"] for g in mates])
+            if d.get("valid", True) and d.get("value") is not None:
+                group_totals.append({"ref": d["ref"], "period": f["period"], "wan": round(d["value"] / 1e4, 2),
+                                     "accounts": [contract.account] + [g.get("from_account") or g["line"] for g in mates]})
+    rest_refs |= {g["ref"] for g in group_totals}
     material_left = sum(1 for k in left if weight(live[k]) >= material_share)    # lines the thirty-line cap kept out
     return {
         "account": contract.account, "source_version": contract.source_version, "periods": contract.periods,
@@ -1561,6 +1576,7 @@ def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines:
         "components": {"periods": shown_periods, "lines": rows_out, **({"rest": rest} if rest else {})},
         **({"supporting_tables": tables} if tables else {}),
         **({"related": related} if related else {}),
+        **({"related_total": group_totals} if group_totals else {}),
         "components_not_shown": omitted,
         "material_not_shown": material_left,
     }

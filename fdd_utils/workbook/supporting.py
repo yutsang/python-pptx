@@ -45,8 +45,29 @@ def where(region: Region) -> str:
     return f"{column_letter(c0)}{r0 + 1}:{column_letter(c1)}{r1 + 1}"
 
 
-def _filled(raw: pd.DataFrame) -> List[List[bool]]:
-    return [[bool(cell_text(v)) for v in raw.iloc[r].tolist()] for r in range(len(raw))]
+def _is_working(text: str) -> bool:
+    low = str(text or "").strip().lower()
+    return bool(low) and any(w in low for w in _WORKING)
+
+
+def _filled(raw: pd.DataFrame, col_gap: int = 2) -> List[List[bool]]:
+    """Which cells hold something. A tie-out row ('Check' and its differences, up to the next gap wider than `col_gap`) is
+    left out: it sits right under a schedule or a table, and counted as filled it joins the table below to the row above
+    and gives the table a check figure for a title."""
+    grid = [[bool(cell_text(v)) for v in raw.iloc[r].tolist()] for r in range(len(raw))]
+    for r in range(len(raw)):
+        row = raw.iloc[r].tolist()
+        c = 0
+        while c < len(row):
+            if grid[r][c] and coerce_numeric(row[c]) is None and _is_working(cell_text(row[c])):
+                blank = 0
+                while c < len(row) and blank <= col_gap:
+                    blank = 0 if grid[r][c] else blank + 1
+                    grid[r][c] = False
+                    c += 1
+                continue
+            c += 1
+    return grid
 
 
 def _inside(r: int, c: int, regions: Iterable[Region]) -> bool:
@@ -101,12 +122,40 @@ def _period(text: str, periods: Sequence[str]) -> Optional[str]:
     from .statements import parse_date
     t = str(text or "").strip()
     if not t or not re.search(r"\d{4}\s*[-/.年]|\d{1,2}M\d{2}|FY\s*\d{2,4}", t, re.I):
-        return None
+        return _year_period(t, periods)
     parsed = parse_date(t, allow_bare_number=False)
     if parsed is None or not hasattr(parsed, "strftime"):
-        return None
+        return _year_period(t, periods)
     iso = parsed.strftime("%Y-%m-%d")
     return iso if iso in periods else ""
+
+
+def _year_period(text: str, periods: Sequence[str]) -> Optional[str]:
+    """A header or title that names only a year ('2020 Total', '2022'): that year's period, '' when the account reports no
+    such year, None when no year is named. Read as the latest period instead, a pivot of 2020 by tenant was filed as the
+    2022 figures on a local databook."""
+    years = set(re.findall(r"(?<!\d)(20\d{2})(?!\d)", str(text or "")))
+    if len(years) != 1:
+        return None
+    year = years.pop()
+    matches = [p for p in periods if p.startswith(year)]
+    return matches[-1] if matches else ""
+
+
+def _title_period(texts: Sequence[str], periods: Sequence[str]) -> Optional[str]:
+    """The period a table's title gives ('固定资产 - 截至2026年3月31日', '2022'), '' when it names one the account does not
+    report, None when it names none."""
+    for t in texts:
+        m = re.search(r"\d{4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|\d{4}[-/.]\d{1,2}[-/.]\d{1,2}", str(t or ""))
+        if m:
+            q = _period(m.group(0), periods)
+            if q is not None:
+                return q
+    for t in texts:
+        q = _year_period(t, periods)
+        if q is not None:
+            return q
+    return None
 
 
 def read_block(raw: pd.DataFrame, region: Region, *, periods: Sequence[str], multiplier: float, max_rows: int = 25,
@@ -140,11 +189,14 @@ def read_block(raw: pd.DataFrame, region: Region, *, periods: Sequence[str], mul
     if header is None:
         return None
     title_bits = [text[(r, c)] for r in range(r0, header) for c in range(c0, c1 + 1)
-                  if text[(r, c)] and (r, c) not in is_num and not unit_only(text[(r, c)])]
+                  if text[(r, c)] and (r, c) not in is_num and not unit_only(text[(r, c)]) and not _is_working(text[(r, c)])]
     unit_bits = [text[(r, c)] for r in range(r0, header + 1) for c in range(c0, c1 + 1) if unit_only(text[(r, c)])]
-    above = [cell_text(raw.iat[r, c]) for r in range(max(0, r0 - 2), r0) for c in range(c0, min(c1 + 1, raw.shape[1]))]
-    title = " ".join([t for t in above if t][-1:] + title_bits)[:80].strip() or text[(header, label_col)]
-    unit = _unit([t for t in above if t] + title_bits + unit_bits + [text[(header, c)] for c in range(c0, c1 + 1)], multiplier)
+    above = [t for t in (cell_text(raw.iat[r, c]) for r in range(max(0, r0 - 2), r0) for c in range(c0, min(c1 + 1, raw.shape[1])))
+             if t and coerce_numeric(t) is None and not _is_working(t)]       # a check row's difference is not a title
+    title = " ".join(above[-1:] + title_bits)[:80].strip() or text[(header, label_col)]
+    unit_texts = above + title_bits + unit_bits + [text[(header, c)] for c in range(c0, c1 + 1)]
+    unit = _unit(unit_texts, multiplier)
+    unit_marked = _unit(unit_texts, 0.0) != 0.0
     from .inspector import canonical_stage_label
     # A second header row (the dates under a stage row) when the row under the header carries no number to the right.
     head_rows = [header]
@@ -159,14 +211,17 @@ def read_block(raw: pd.DataFrame, region: Region, *, periods: Sequence[str], mul
             last = text[(h, c)] or last
             carried[c] = last
     columns: List[Dict[str, Any]] = []
+    titled = _title_period(above[-1:] + title_bits + [text[(header, label_col)]], periods)   # a column naming no period takes the title's, else the latest
     for c in range(label_col + 1, c1 + 1):
         parts = [carried.get(c, "")] if len(head_rows) > 1 else []
         parts += [text[(head_rows[-1], c)] or (text[(header - 1, c)] if len(head_rows) == 1 and header - 1 >= r0 else "")]
         head = " ".join(t for t in parts if t).strip()
         if not text[(head_rows[-1], c)] and not (len(head_rows) == 1 and head):
             continue                                   # a column nobody named is a working calculation, not a measure
-        if not head or any(h in head.lower() for h in _RATE_HEADER + _CODE_HEADER):
+        if not head or any(h in head.lower() for h in _RATE_HEADER + _CODE_HEADER + _WORKING):
             continue
+        if coerce_numeric(text[(head_rows[-1], c)]) is not None and not re.search(r"[A-Za-z一-鿿]", text[(head_rows[-1], c)]):
+            continue                                   # a figure in the header row (a check's difference) names nothing
         values = [num[(r, c)] for r in range(first_data, r1 + 1) if (r, c) in is_num]
         nonzero = [v for v in values if v]
         if not values or (nonzero and all(abs(v) <= 1.0 for v in nonzero)):
@@ -177,6 +232,8 @@ def read_block(raw: pd.DataFrame, region: Region, *, periods: Sequence[str], mul
             if q is not None:
                 p = q
                 break
+        if p is None and titled is not None:
+            p = titled
         if p == "":
             continue                                   # a date this account does not report (a month, an older year)
         columns.append({"col": c, "header": head, "period": p or (periods[-1] if periods else ""), "assumed": p is None,
@@ -213,7 +270,7 @@ def read_block(raw: pd.DataFrame, region: Region, *, periods: Sequence[str], mul
         keep = {id(x) for x in sorted(rows, key=lambda x: -max(abs(v) for v in x["values"].values()))[:max_rows]}
         keep |= {id(x) for x in rows if x["total"]}
         rows = [x for x in rows if id(x) in keep]
-    return {"title": title, "where": where(region), "unit": unit, "label_col": label_col, "header_row": header,
+    return {"title": title, "where": where(region), "unit": unit, "unit_marked": unit_marked, "label_col": label_col, "header_row": header,
             "columns": [{k: v for k, v in col.items()} for col in columns], "rows": rows}
 
 
@@ -231,9 +288,14 @@ def _names_another_entity(title: str, entity: str) -> bool:
 
 
 def find_supporting_blocks(raw: pd.DataFrame, exclude: Sequence[Region], *, periods: Sequence[str], multiplier: float = 1.0,
-                           entity: str = "", max_blocks: int = 4) -> List[Dict[str, Any]]:
+                           entity: str = "", max_blocks: int = 4, scale: float = 0.0) -> List[Dict[str, Any]]:
     """The tables on a tab outside `exclude` (the main schedules), largest first, at most `max_blocks`. A table titled for
-    another company (' - <name>') is left out."""
+    another company (' - <name>') is left out.
+
+    `scale` is the account's largest balance in yuan. A table that names no unit is read in the schedule's unit; when that
+    makes its largest figure more than ten times the account, the table was kept in yuan (a working block under a 千元
+    schedule on the DEMO databook read as 4,037亿 for a 4亿 transfer), so it is read in yuan, and left out if even that is
+    too large."""
     if raw is None or raw.empty:
         return []
     grid = _filled(raw)
@@ -243,20 +305,35 @@ def find_supporting_blocks(raw: pd.DataFrame, exclude: Sequence[Region], *, peri
         if r1 - r0 < 2 or c1 - c0 < 1:
             continue
         block = read_block(raw, region, periods=periods, multiplier=multiplier)
-        if block is not None and not _names_another_entity(block["title"], entity):
-            block["size"] = max((abs(v) for x in block["rows"] for v in x["values"].values()), default=0.0)
-            out.append(block)
+        if block is None or _names_another_entity(block["title"], entity):
+            continue
+        block["size"] = max((abs(v) for x in block["rows"] for v in x["values"].values()), default=0.0)
+        if scale > 0 and block["size"] > 10 * scale:
+            if block.get("unit_marked") or multiplier == 1 or block["size"] / multiplier > 10 * scale:
+                continue
+            for x in block["rows"]:
+                x["values"] = {c: round(v / multiplier, 2) for c, v in x["values"].items()}
+            block.update(unit=1.0, size=block["size"] / multiplier, unit_inferred=True)
+        out.append(block)
     out.sort(key=lambda b: -b["size"])
     return out[:max_blocks]
 
 
-def main_region(attrs: Dict[str, Any], width: int) -> Optional[Region]:
+def main_region(attrs: Dict[str, Any], width: int, last_row: Optional[int] = None) -> Optional[Region]:
     """Where an account's main schedule sits on its tab: its rows (with the title and header rows above the data) and every
-    column up to its rightmost value column, plus the remark columns beside it."""
+    column up to its rightmost value column, plus the remark columns beside it.
+
+    `last_row` is the last sheet row the schedule took a figure from. The extractor's block end runs on to the last row with
+    any number in the schedule's columns, so a table laid out under the schedule falls inside it: on the client file's
+    2026-11-09 locator the fixed-asset block ended at row 61 for a schedule that ends at row 34, and the phase table under it
+    (B40:F50) was excluded as part of the schedule; so were the payables table at W41:Y57 and the receivables block at
+    B84:D87."""
     integrity = attrs.get("integrity") or {}
     start, end = integrity.get("block_start_row"), integrity.get("block_end_row")
     if start is None or end is None:
         return None
+    if last_row is not None and int(start) <= int(last_row) < int(end):
+        end = int(last_row)
     cols = [c.get("col_idx") for c in attrs.get("normalized_columns") or [] if c.get("col_idx") is not None]
     cols += [c.get("col_idx") for c in attrs.get("adjacent_detail_columns") or [] if c.get("col_idx") is not None]
     right = max(cols) if cols else width - 1
