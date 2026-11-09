@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .evidence_contract import (
-    BASIS_ADJUSTED, BASIS_FINANCIALS, BASIS_RAW, ROLE_COMPONENT, ROLE_TOTAL, EvidenceContract,
+    BASIS_ADJUSTED, BASIS_FINANCIALS, BASIS_RAW, ROLE_COMPONENT, ROLE_SUPPORT, ROLE_TOTAL, EvidenceContract,
 )
 from .validator import display_half_ulp, extract_amount_spans
 
@@ -401,6 +401,9 @@ _REMARK_VALUE = re.compile(r"(\d{4}-\d{2}-\d{2})( annualised)?:\s*(-?\d+(?:\.\d+
 
 _INTERNAL_TERMS = re.compile(r"[（(]\s*[FDN]\d{1,4}(?:\s*[,，、]\s*[FDN]\d{1,4})*\s*[)）]|(?<![A-Za-z])[FDN]\d{1,4}(?![\d])|authority_adjusted|"
                              r"raw_schedule|detail_basis|explain_with_detail|describe_total|(?<![A-Za-z])financials口径")
+
+
+_LINE_ROLES = (ROLE_COMPONENT, ROLE_SUPPORT)
 
 
 def _bare(label: Any) -> str:
@@ -851,7 +854,10 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     for f in cited_facts:
         if f["role"] == ROLE_COMPONENT:
             by_period.setdefault(f["period"], []).append(f)
-    for period, parts in by_period.items():
+        elif f["role"] == ROLE_SUPPORT and not f.get("subtotal"):
+            by_period.setdefault(f"{f['period']}|{f.get('table')}", []).append(f)     # one table's lines, never mixed with another's
+    for group, parts in by_period.items():
+        period = group.split("|")[0]
         if len(parts) >= 2:
             allowed.append((abs(sum(p["value"] for p in parts)), {"id": "sum(" + ",".join(p["ref"] for p in parts) + ")",
                                                                  "period": period, "account": account, "line": "", "basis": BASIS_RAW,
@@ -908,7 +914,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             if span.get("sign") and value is not None and abs(value) > span["tolerance"] and (span["sign"] == "-") != (value < 0):
                 say = (f"'{span['written']}' is written as {'negative' if span['sign'] == '-' else 'positive'}, but the cited "
                        f"{hit[1].get('ref')} is {_fmt(value)} yuan")
-                if hit[1].get("role") == ROLE_COMPONENT:     # a deduction line can be shown either way round
+                if hit[1].get("role") in _LINE_ROLES:     # a deduction line can be shown either way round
                     review("SIGN_UNCLEAR", "amounts", say + "; if the line is a deduction, say so")
                 else:
                     fail("SIGN_ERROR", "amounts", say)
@@ -951,7 +957,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             signed = (b_fact["value"] - a_fact["value"]) / abs(a_fact["value"]) * 100
             pct_candidates.append({"pct": abs(signed), "signed": signed, "kind": "change",
                                    "periods": [a_fact["period"], b_fact["period"]],
-                                   "line": a_fact["line"] if a_fact["role"] == ROLE_COMPONENT else "",
+                                   "line": a_fact["line"] if a_fact["role"] in _LINE_ROLES else "",
                                    "ref": f"movement({a_fact['ref']},{b_fact['ref']})", "item": None,
                                    "base": a_fact["value"], "end": b_fact["value"]})
     share_truths = share_movements(cited_derived)
@@ -1069,7 +1075,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             continue
         mention = attached_period(text, span["start"], span["end"], mentions)
         if mention is None:
-            if len(claim_periods) > 1 and source.get("role") in (ROLE_TOTAL, ROLE_COMPONENT, "sum"):
+            if len(claim_periods) > 1 and source.get("role") in (ROLE_TOTAL, ROLE_COMPONENT, ROLE_SUPPORT, "sum"):
                 review("PERIOD_UNBOUND", "binding",
                        f"'{span['written']}' is not written under any period and the claim declares {len(claim_periods)}; "
                        "put the period next to each amount, or write one claim per period")
@@ -1153,7 +1159,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                  f"the sentence attaches '{span['written']}' to '{named}' but cites the '{source['line']}' figure")
     # A line the sentence names must have a figure behind it. Two lines that
     # happen to add up to the cited total are not thereby cited.
-    masked, cited_lines = text, {_bare(f["line"]) for f in cited_facts if f["role"] == ROLE_COMPONENT} | {
+    masked, cited_lines = text, {_bare(f["line"]) for f in cited_facts if f["role"] in _LINE_ROLES} | {
         _bare(d.get("line")) for d in cited_derived if d.get("line")}
     figure_starts = [x["start"] for x in amounts + percents]
     # The sentence makes a line-level statement when it cites a line's figure or share, or says so ("其中", "占比").
@@ -1186,7 +1192,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         checked.add("arithmetic")
     amount_truths = [{"line": "", "value": d["value"], "ref": d["ref"]}
                      for d in cited_derived if d.get("kind") == KIND_MOVEMENT and d.get("value") is not None]
-    amount_truths += [{"line": a["line"] if a["role"] == ROLE_COMPONENT else "", "value": b["value"] - a["value"],
+    amount_truths += [{"line": a["line"] if a["role"] in _LINE_ROLES else "", "value": b["value"] - a["value"],
                        "ref": f"movement({a['ref']},{b['ref']})"} for a, b in pairs]
     if True:
         # the sentence decides how a deduction line's share is read: a minus sign on any percentage means signed,
@@ -1398,6 +1404,45 @@ def to_legacy_result(account: str, claims: List[Dict[str, Any]], outcome: Dict[s
             "agent_4_validation": {"final_content": text, "clause_reviews": reviews}}
 
 
+def _supporting_view(contract: EvidenceContract, totals: Dict[str, float], shown_periods: List[str], *, max_tables: int = 3,
+                     max_rows: int = 15) -> List[Dict[str, Any]]:
+    """The other tables of the account's tab, as the preparer laid them out: one row per line, one ref and one 万元 figure per
+    column. Rows of 1% or more of the account's latest total, and every subtotal; at most fifteen a table, three tables."""
+    tables: Dict[str, Dict[str, Any]] = {}
+    for f in contract.facts:
+        if f["role"] != ROLE_SUPPORT:
+            continue
+        if not f.get("period_assumed") and f["period"] not in shown_periods:
+            continue
+        t = tables.setdefault(f["table"], {"title": f.get("table_title"), "where": f.get("where"), "columns": [], "rows": {}})
+        col = (f.get("column") or "", f["period"], bool(f.get("period_assumed")))
+        if col not in t["columns"]:
+            t["columns"].append(col)
+        t["rows"].setdefault((f.get("row"), f["line"]), {"subtotal": bool(f.get("subtotal"))})[col] = f
+    latest = next((totals[p] for p in reversed(shown_periods) if totals.get(p)), 0.0)
+    out = []
+    for tid in sorted(tables, key=lambda x: int(x[1:]) if x[1:].isdigit() else 0)[:max_tables]:
+        t = tables[tid]
+        cols = t["columns"]
+        ranked = sorted(t["rows"].items(), key=lambda kv: -max((abs(f["value"]) for c, f in kv[1].items() if c != "subtotal"), default=0))
+        keep = [kv for kv in ranked if kv[1]["subtotal"] or not latest or
+                max((abs(f["value"]) for c, f in kv[1].items() if c != "subtotal"), default=0) >= 0.01 * latest][:max_rows]
+        keep_keys = {k for k, _ in keep}
+        rows = []
+        for key, cells in sorted(t["rows"].items(), key=lambda kv: (kv[0][0] if kv[0][0] is not None else 10 ** 9)):
+            if key not in keep_keys:
+                continue
+            rows.append({"line": key[1], "refs": [cells[c]["ref"] if c in cells else None for c in cols],
+                         "wan": [round(cells[c]["value"] / 1e4, 2) if c in cells else None for c in cols],
+                         **({"subtotal": True} if cells["subtotal"] else {})})
+        entry = {"title": t["title"], "where": t["where"],
+                 "columns": [{"head": h, "period": p, **({"period_assumed": True} if a else {})} for h, p, a in cols], "rows": rows}
+        if len(t["rows"]) > len(rows):
+            entry["rows_not_shown"] = len(t["rows"]) - len(rows)
+        out.append(entry)
+    return out
+
+
 def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines: int = 8, material_share: float = 0.01,
                   component_periods: int = 3) -> Dict[str, Any]:
     """The compact evidence an author is given. What decides whether a claim may be made
@@ -1480,6 +1525,7 @@ def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines:
                 rest["wan"].append(round(by_ref[refs[0]]["value"] / 1e4, 2))
     rest_refs = set((rest or {}).get("refs") or [])
     omitted = len(left)
+    tables = _supporting_view(contract, totals, shown_periods)
     material_left = sum(1 for k in left if weight(live[k]) >= material_share)    # lines the thirty-line cap kept out
     return {
         "account": contract.account, "source_version": contract.source_version, "periods": contract.periods,
@@ -1493,6 +1539,7 @@ def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines:
         "notes": [{"ref": n["ref"], "kind": n["kind"], "period": n.get("period"), "text": n["text"]} for n in contract.notes],
         "totals": [fact_view(f) for f in contract.facts if f["role"] == ROLE_TOTAL],
         "components": {"periods": shown_periods, "lines": rows_out, **({"rest": rest} if rest else {})},
+        **({"supporting_tables": tables} if tables else {}),
         "components_not_shown": omitted,
         "material_not_shown": material_left,
     }

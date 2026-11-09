@@ -306,6 +306,34 @@ def check_base_run(loaded: Dict[str, Any], dfs: Dict[str, pd.DataFrame], identit
             "identity_file": bool(saved), "workbook_edited_since": bool(edits)}
 
 
+def attach_supporting_tables(workbook: str, dfs: Dict[str, Any], contracts: Dict[str, Any], digest: Optional[Dict[str, Any]]) -> None:
+    """The other tables on each account's own tab (beside or below its schedule) filed as citable facts. Visible tabs only:
+    a hidden sheet is never read. Every schedule on the tab is excluded, not only the account's own."""
+    from ..workbook import supporting as sp
+    from ..workbook.inspector import load_workbook_frames
+    try:
+        frames = load_workbook_frames(workbook)
+    except Exception:
+        return
+    sheets: Dict[str, List[str]] = {}
+    for key, df in dfs.items():
+        sheet, hidden = ec._sheet_hidden(df, digest)
+        if sheet and not hidden and sheet in frames:
+            sheets.setdefault(sheet, []).append(key)
+    for sheet, keys in sheets.items():
+        raw = frames[sheet]
+        regions = [r for r in (sp.main_region(dfs[k].attrs, raw.shape[1]) for k in keys) if r]
+        for key in keys:
+            attrs = dfs[key].attrs
+            try:
+                blocks = sp.find_supporting_blocks(raw, regions, periods=contracts[key].periods,
+                                                   multiplier=float(attrs.get("source_multiplier") or 1),
+                                                   entity=str(attrs.get("entity_name") or ""))
+            except Exception:
+                continue        # a tab this reader cannot make sense of keeps the evidence it had
+            ec.add_supporting_tables(contracts[key], blocks)
+
+
 class SourceSession:
     def __init__(
         self, *, binding: ec.SourceBinding, dfs: Dict[str, pd.DataFrame], contracts: Dict[str, ec.EvidenceContract],
@@ -396,6 +424,7 @@ class SourceSession:
             stype = str((df.attrs.get("integrity") or {}).get("statement_type") or "")
             contracts[key] = ec.build_contract(key, df, statement_type=stype, financials=fin.get(key),
                                                binding=binding, digest=digest)
+        attach_supporting_tables(workbook, dfs, contracts, digest)
         base_results, base_folder, base_summaries, base_check = None, None, {}, None
         if base_run:
             from ..run_identity import load_run, resolve_run_folder

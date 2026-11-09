@@ -257,5 +257,84 @@ class Persistence(unittest.TestCase):
         self.assertTrue(evidence.facts is not None)     # no exception, pool built either way
 
 
+
+class SupportingTables(unittest.TestCase):
+    """The other tables on the account's own tab. The 2026-11-09 evidence locator found the team's report quoting figures from
+    tables beside the schedule (by nature, ageing, phases) that the writer never saw."""
+
+    def sheet(self, side_title="应付账款按性质 - 甲公司"):
+        grid = [[None] * 12 for _ in range(20)]
+        def put(r, c, *vals):
+            for i, v in enumerate(vals):
+                grid[r][c + i] = v
+        # the main schedule, A1:D6
+        put(0, 0, "应付账款 - 甲公司", "人民币千元")
+        put(1, 0, "科目", "2024-12-31", "2025-12-31")
+        put(2, 0, "甲供应商", 60, 70)
+        put(3, 0, "乙供应商", 40, 30)
+        put(4, 0, "合计", 100, 100)
+        # beside it: the balance by nature, in thousands
+        put(0, 5, side_title, "人民币千元")
+        put(1, 5, "项目", "2024年12月31日", "2025年12月31日", "2023年12月31日")
+        put(2, 5, "应付工程款", 70.5, 73.09, 0)
+        put(3, 5, "应付物业费", 29.5, 26.91, 0)
+        put(4, 5, "合计", 100, 100, 0)
+        # below: an ageing split with no period in the headers
+        put(8, 5, "账龄分析", None)
+        put(9, 5, "项目", "1年以内", "1-2年")
+        put(10, 5, "应付工程款", 50.0, 23.09)
+        put(11, 5, "应付物业费", 26.91, 0)
+        # below the schedule: a voucher listing (dates and codes), not a breakdown
+        put(12, 0, "日期", "凭证号", "科目编码", "金额")
+        put(13, 0, "2025-03-22", 3000, 220201, 120)
+        put(14, 0, "2025-06-22", 3001, 220201, 80)
+        put(15, 0, "2025-06-30", 3002, 220202, 15)
+        return pd.DataFrame(grid)
+
+    def blocks(self, **kw):
+        from fdd_utils.workbook import supporting as sp
+        return sp.find_supporting_blocks(self.sheet(**kw), [(0, 4, 0, 3)], periods=["2023-12-31", P1, P2], multiplier=1000.0,
+                                         entity="甲公司")
+
+    def test_tables_beside_and_below_are_read_and_a_voucher_listing_is_not(self):
+        found = self.blocks()
+        titles = sorted(b["title"] for b in found)
+        self.assertEqual(len(found), 2, titles)
+        nature = next(b for b in found if "按性质" in b["title"])
+        self.assertEqual([c["period"] for c in nature["columns"]], [P1, P2, "2023-12-31"])     # a nil year is kept
+        row = next(r for r in nature["rows"] if r["label"] == "应付工程款")
+        col = next(c["col"] for c in nature["columns"] if c["period"] == P2)
+        self.assertAlmostEqual(row["values"][col], 73090.0)        # thousands -> yuan
+        ageing = next(b for b in found if "账龄" in b["title"])
+        self.assertTrue(all(c["assumed"] and c["period"] == P2 for c in ageing["columns"]))
+
+    def test_a_table_titled_for_another_company_is_left_out(self):
+        titles = [b["title"] for b in self.blocks(side_title="应付账款按性质 - 乙集团")]
+        self.assertFalse(any("乙集团" in t for t in titles), titles)
+
+    def test_filed_as_facts_after_the_contracts_own_refs_and_citable(self):
+        from fdd_utils.ai import claims as cl
+        c = ec.build_contract("AR", account_frame(clean_rows()), statement_type="BS", financials={P1: 100.0, P2: 100.0})
+        before = {f["ref"] for f in c.facts}
+        self.assertEqual(ec.add_supporting_tables(c, self.blocks()), 2)
+        self.assertEqual({f["ref"] for f in c.facts if f["role"] != ec.ROLE_SUPPORT}, before)
+        fact = next(f for f in c.facts if f["role"] == ec.ROLE_SUPPORT and f["line"] == "应付工程款" and f["period"] == P2
+                    and not f["period_assumed"])
+        claim = {"account": "AR", "kind": "composition", "text": "2025年12月31日应付工程款7.3万元", "periods": [P2], "cites": [fact["ref"]]}
+        v = cl.verify_claim(claim, {"AR": c})
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+        view = cl.evidence_view(c)
+        self.assertEqual(len(view["supporting_tables"]), 2)
+        self.assertIn(fact["ref"], {r for t in view["supporting_tables"] for row in t["rows"] for r in row["refs"]})
+        wrong = dict(claim, text="2025年12月31日应付工程款9.9万元")
+        self.assertEqual(cl.verify_claim(wrong, {"AR": c})["verdict"], "failed")
+
+    def test_a_table_that_repeats_the_schedules_own_lines_is_skipped(self):
+        c = ec.build_contract("AR", account_frame(clean_rows()), statement_type="BS", financials={P1: 100.0, P2: 100.0})
+        copy = [{"title": "复本", "where": "F1:H4", "columns": [{"col": 1, "header": "2025年", "period": P2, "assumed": False}],
+                 "rows": [{"label": "甲公司", "row": 2, "values": {1: 70.0}, "total": False},
+                          {"label": "乙公司", "row": 3, "values": {1: 30.0}, "total": False}]}]
+        self.assertEqual(ec.add_supporting_tables(c, copy), 0)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

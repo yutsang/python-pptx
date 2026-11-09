@@ -53,6 +53,10 @@ BASIS_DERIVED = "derived"
 
 ROLE_TOTAL = "total"
 ROLE_COMPONENT = "component"
+#: a figure from another table on the account's own tab (beside or below the main schedule): grouped by nature, an ageing
+#: split, the phases of a building. Citable like any fact; it is not the schedule's detail, so the detail check ignores it.
+ROLE_SUPPORT = "supporting"
+BASIS_SUPPORT = "supporting_table"
 
 CHECK_TOTAL_VS_FINANCIALS = "total_vs_financials"
 CHECK_DETAIL_VS_TOTAL = "detail_vs_total"
@@ -583,6 +587,38 @@ def build_contract(
     for i, item in enumerate(contract.notes, 1):
         item["ref"] = f"N{i}"
     return contract
+
+
+def add_supporting_tables(contract: EvidenceContract, blocks: List[Dict[str, Any]], *, max_tables: int = 4) -> int:
+    """File the other tables of the account's tab (workbook.supporting.find_supporting_blocks) as facts, numbered after the
+    contract's own refs so those do not move. A table that only repeats the schedule's own lines is skipped. A column that is
+    not a period (an ageing bucket, a phase) is read at the latest period and marked period_assumed. Returns tables added."""
+    taken = {f["id"] for f in contract.facts}
+    last = max((int(f["ref"][1:]) for f in contract.facts if str(f.get("ref") or "")[1:].isdigit()), default=len(contract.facts))
+    own = {(str(f["line"]).strip("*＊ "), f["period"], round(f["value"])) for f in contract.facts if f["role"] == ROLE_COMPONENT}
+    sheet = next((f.get("sheet") for f in contract.facts if f["basis"] == BASIS_RAW and f.get("sheet")), None)
+    added = 0
+    for block in blocks:
+        if added >= max_tables:
+            break
+        cells = [(row, col) for row in block.get("rows") or [] for col in block.get("columns") or [] if col["col"] in row["values"]]
+        if not cells:
+            continue
+        repeats = sum(1 for row, col in cells if (row["label"].strip("*＊ "), col["period"], round(row["values"][col["col"]])) in own)
+        if repeats >= 0.8 * len(cells):
+            continue
+        added += 1
+        tid = f"T{added}"
+        for row, col in cells:
+            last += 1
+            fid = _fact_id(contract.account, col["period"], BASIS_SUPPORT, f"{tid}|{row['label']}|{col['header']}", taken)
+            contract.facts.append({
+                "id": fid, "ref": f"F{last}", "account": contract.account, "period": col["period"], "basis": BASIS_SUPPORT,
+                "role": ROLE_SUPPORT, "line": row["label"], "value": float(row["values"][col["col"]]), "unit": "yuan",
+                "sheet": sheet, "visible": True, "row": row.get("row"), "table": tid, "table_title": block.get("title") or "",
+                "where": block.get("where") or "", "column": col.get("header") or "", "period_assumed": bool(col.get("assumed")),
+                "subtotal": bool(row.get("total")), "parser_version": PARSER_VERSION})
+    return added
 
 
 def attach_contract(evidence: Any, contract: Optional[EvidenceContract]) -> None:

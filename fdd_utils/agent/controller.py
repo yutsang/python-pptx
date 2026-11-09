@@ -377,10 +377,11 @@ def writer_system_prompt(language: str) -> str:
         "2. totals list each period under several bases; the deck uses basis authority_adjusted. A period whose permissions say\n"
         "   describe_total=false is in conflict: state the difference (its D ref), not either figure. Detail lines may explain a total\n"
         "   only where permissions say explain_with_detail=true. Read the notes (N refs) for causes and adjustments.\n"
-        "3. The paragraph states the latest balance the deck uses (REQUIRED), the movement where a D ref exists, the main detail\n"
-        "   lines where detail is permitted, and causes only from notes. components.lines has one row per line, one ref and one\n"
-        "   万元 figure per period in components.periods. A line marked nested_in is a sub-line of that line: never add it to its\n"
-        "   parent. components.rest is the sum of the smaller lines not listed (cite its D ref, e.g. 其余N项合计).\n"
+        "3. State the latest balance the deck uses (REQUIRED), the movement where a D ref exists, the main detail lines where\n"
+        "   detail is permitted, and causes only from notes. components.lines: one row per line, a ref and a 万元 figure per\n"
+        "   period; nested_in names the parent line (never add a sub-line to it); rest sums the smaller lines (its D ref, e.g.\n"
+        "   其余N项合计). supporting_tables are the tab's other tables (by nature, ageing, phases, an adjusted breakdown): cite\n"
+        "   their refs; a period_assumed column is the latest period.\n"
         "4. Notes are evidence too. A figure, percentage or date written in a note may be stated when the claim cites that note in\n"
         "   'cites' (an amount in the note's own currency, e.g. 万美元; never convert it). MUST ADDRESS lists the notes Python found\n"
         "   material: state what each says in a claim that cites it, or name its ref in 'unresolved' with the reason. None may be\n"
@@ -390,7 +391,10 @@ def writer_system_prompt(language: str) -> str:
         "   period_labels gives them (an income-statement line is a flow: 2024年度, 2026年1-3月, never '2024年12月31日营业成本');\n"
         "   no refs (F12, N3) and no internal names (authority_adjusted, raw_schedule) in the text. No percentage change over a\n"
         "   negative base or across a change of sign. The tab's lines are not the make-up of an adjusted balance unless they add\n"
-        "   up to it.\n\n"
+        "   up to it.\n"
+        "7. Write as the team does: the balance by nature with each group's amount, then the main counterparties; name small\n"
+        "   special items (retentions, deposits, aged, disputed or unexplained balances); where a note gives the reason, end with\n"
+        "   what the buyer should check or do (建议...). No working-paper terms (工作底稿, ADJ#, check).\n\n"
         + CLAIM_SCHEMA
     )
 

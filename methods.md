@@ -792,6 +792,19 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
 - The prepared write's required statement is the latest balance only. Coverage
   of the movement, the main detail lines and the notes is asked for in the
   instructions and not enforced; the whole-databook trial records it per case.
+- The other tables on an account's own tab (beside or below its schedule: the
+  balance by nature, an ageing split, phases, an adjusted breakdown) are read by
+  `workbook/supporting.py` and filed as citable facts (`role: supporting`), after
+  the contract's own refs so those do not move. Visible tabs only. A rectangle
+  qualifies with a label column, a header row and three numbers; a listing
+  labelled by dates or codes, a rate column, an unnamed column, a table titled
+  for another company and a table that only repeats the schedule's own lines are
+  left out. Where a table has stage columns only the adjusted one is kept. A
+  column that is not a period is read at the latest period and marked
+  `period_assumed`. The view shows at most three tables, fifteen rows each (rows
+  of 1% or more of the latest total, and subtotals). Checked on four local
+  databooks; the client file's tables were located by a separate read of the
+  workbook and have not yet been run through this reader.
 - The writer and the reviewer see the same evidence view: the last three periods,
   one row per detail line chosen by materiality (every line at least 1% of its
   period's total in a period shown, every line a note names, the parent of any
