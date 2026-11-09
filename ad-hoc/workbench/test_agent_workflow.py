@@ -517,6 +517,9 @@ class DispatchAndOverview(unittest.TestCase):
         self.assertTrue(turn.ok, turn.report)
         self.assertEqual((len(cheap.users), len(strong.users)), (0, 2), "written by the stronger model from the first call")
         self.assertEqual(work.shared.records[0].purpose, "dispatch")
+        # dispatched there, never the cheaper model's draft: no 'escalated' flag saying it was rejected (2026-11-09 review form)
+        self.assertNotIn("escalated", [f["kind"] for f in work.source.candidates[ACCOUNT].flags or []])
+        self.assertIn("LENGTH: at most about 120 Chinese characters", strong.users[1])
 
     def test_an_unreadable_dispatch_reply_falls_back_to_the_rule_and_says_so(self):
         work = self._work(Writer(lambda *a: {}), Writer(lambda system, user, n: {"nonsense": 1}))
@@ -543,6 +546,20 @@ class DispatchAndOverview(unittest.TestCase):
         self.assertEqual([r.purpose for r in work.shared.records][-2:], ["overview", "overview"])
 
 
+    def test_the_overview_keeps_a_sentence_once_and_stops_at_the_bands_size(self):
+        cheap = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
+
+        def strong(system, user, n):
+            ref = json.loads(user.split("ACCOUNTS:\n", 1)[1].split("\n", 1)[0])["balance"]["ref"]
+            one = {"account": ACCOUNT, "kind": "amount", "text": "应收账款余额130.0万元。", "periods": [P2], "cites": [ref]}
+            long = dict(one, text="应收账款于报告期末的余额为130.0万元，" + "主要为租金及物业管理费应收款项，" * 6 + "。")
+            return {"claims": [one, one, long]}
+        work = self._work(cheap, Writer(strong))
+        self.assertTrue(work.edit("撰写应收账款的段落", ACCOUNT, accept=True).ok)
+        bs = work.write_overview("escalation", [ACCOUNT], chars=60)["BS"]
+        self.assertEqual((bs["text"], bs["dropped"]), ("应收账款余额130.0万元。", 2))
+
+
 class PreparedWrite(unittest.TestCase):
     def _work(self, model, escalation=None, mode="single", extra_account=False, config=None):
         tmp = tempfile.mkdtemp(prefix="prep_")
@@ -562,6 +579,29 @@ class PreparedWrite(unittest.TestCase):
     REVIEWED = {"agent": {"seed_facts": True, "review_meaning": True}}
     BALANCE, MOVE = "截至2025年12月31日，余额为130.0万元。", "较2024年12月31日增加30.0万元。"
     CAUSE = {"kind": "cause", "periods": [P2], "cites": [], "inference": True, "text": "增加主要系回款节奏变化所致"}
+
+    def test_a_draft_the_gate_refuses_goes_into_the_first_generation_with_its_rejected_sentence_red(self):
+        # the client file, 2026-11-09: 5 to 11 accounts per arm were left out of the deck for one to three rejected sentences
+        from fdd_utils.agent import tools as T
+        from fdd_utils.agent.export import merged_results, session_delivery
+
+        def fn(system, user, n):
+            view = writer_view(user)
+            bad = amount_claim(view, P2, "2025年12月31日应收账款余额999.0万元")
+            if "REJECTED" in user:
+                return {"fix": [{"index": 1, "claim": bad}]}
+            return {"draft": {"claims": [amount_claim(view, P2, GOOD), bad], "unresolved": []}}
+        work = self._work(Writer(fn))
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertFalse(turn.ok)
+        self.assertEqual(T.drafts_to_mark(work.source), [ACCOUNT])
+        results = merged_results(work.source, [ACCOUNT], first_generation=True)
+        reviews = results[ACCOUNT]["agent_4_validation"]["clause_reviews"]
+        self.assertEqual([r["category"] for r in reviews], ["data-backed", "hallucination"])
+        delivery = session_delivery(work.source, results, edited=[ACCOUNT], first_generation=True)
+        self.assertIn(("ACCOUNT_NOT_ACCEPTED", "blocked", ACCOUNT), [(f.code, f.severity, f.account) for f in delivery.findings])
+        self.assertNotIn(ACCOUNT, [f.account for f in delivery.findings if f.code == "ACCOUNT_NOT_DRAFTED"])
+        self.assertEqual(T.call_tool(work.source, "export_candidate", {"accounts": [ACCOUNT]}).error["code"], "NOT_VALIDATED")
 
     def test_python_writes_the_balance_and_movement_and_the_model_only_adds(self):
         writer = Writer(lambda system, user, n: {"add": [], "unresolved": []})

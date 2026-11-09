@@ -43,8 +43,8 @@ def _account_line(session: Any, key: str, labels: Dict[str, str]) -> Optional[Di
     cl.standard_derived(c)
     latest = c.periods[-1]
     total = next((f for f in c.facts if f["period"] == latest and f["role"] == ec.ROLE_TOTAL and f["basis"] == ec.BASIS_ADJUSTED), None)
-    if total is None:
-        return None
+    if total is None or abs(float(total["value"])) < 0.5:
+        return None                     # a nil balance is not a summary point ("营业外支出为0.0万元" on the client file)
     move = next((d for d in c.derived if d.get("kind") == cl.KIND_MOVEMENT and (d.get("periods") or [])[-1:] == [latest]
                  and d.get("valid", True)), None)
     verified = [cl_text for cl_text, v in zip((x.get("text") for x in cand.claims), cand.outcome.get("verdicts") or [])
@@ -120,7 +120,17 @@ def write_overview(session: Any, router: Any, *, role: str, language: str, accou
                     + "\n".join(f"  [{n}] {claims[n].get('text')} -- " + "; ".join(f.get("message", "")[:160] for f in v.get("findings") or []
                                                                                  if f.get("severity") in ("failed", "review"))
                                 for n, v in failed))
-        kept = [(c, v) for c, v in zip(claims, verdicts) if v.get("verdict") in ("verified", "verified_inference")]
+        kept, seen, used = [], set(), 0
+        budget = chars if language in ("Chi", "Chn") else chars * 4      # the band holds about this much (English: ~4 chars a word)
+        for c, v in zip(claims, verdicts):
+            text_ = str(c.get("text") or "").strip()
+            if v.get("verdict") not in ("verified", "verified_inference") or text_ in seen:
+                continue                # a sentence written twice was kept twice on the client file
+            if kept and used + len(text_) > budget * 1.15:
+                break                   # the band's size, not the prompt's request: one model wrote 271 characters for 140
+            kept.append((c, v))
+            seen.add(text_)
+            used += len(text_)
         joiner = "" if language in ("Chi", "Chn") else " "
         entry.update(text=joiner.join(str(c["text"]).strip() for c, _v in kept), claims=[c for c, _v in kept],
                      dropped=len(claims) - len(kept))

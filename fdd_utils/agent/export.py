@@ -114,6 +114,12 @@ def session_delivery(session: SourceSession, results: Dict[str, Any], edited: It
         if not session.overview:
             extra.append(Finding("SUMMARY_SPLICED", "review", "the executive summary band is the exporter's splice of each account's first "
                                  "sentence; no summary was written for this first generation"))
+        for account in results:
+            candidate = session.candidates.get(account)
+            if candidate is not None and not candidate.validated:
+                failed = sum(1 for v in (candidate.outcome or {}).get("verdicts") or [] if v.get("verdict") in ("failed", "unverified"))
+                extra.append(Finding("ACCOUNT_NOT_ACCEPTED", "blocked", f"in the draft with {failed} sentence(s) the verifier rejected, "
+                                     "marked (red: a figure the databook contradicts); a person corrects them before delivery", account))
         for account in session.contracts:
             if not str(account).startswith("__") and session.in_scope(account) and account not in results:
                 status = ((session.candidates.get(account).review if session.candidates.get(account) else {}) or {}).get("status")

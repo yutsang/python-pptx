@@ -407,7 +407,9 @@ _LINE_ROLES = (ROLE_COMPONENT, ROLE_SUPPORT)
 
 
 def _bare(label: Any) -> str:
-    return str(label or "").lstrip("*＊ ").strip()
+    # an Excel text prefix ("'*甲公司…") is not part of the name: kept, a sentence naming that tenant was refused as citing
+    # none of its figures (client file, 2026-11-09)
+    return str(label or "").lstrip("'‘’`*＊ ").strip()
 
 
 def _has(text: str, words: Iterable[str]) -> bool:
@@ -714,6 +716,30 @@ def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict
     def verdict_of(signs):
         return "an increase" if signs == {1} else ("a decrease" if signs == {-1} else "no change")
 
+    spans = text_amounts(text)
+
+    def by_written_amount(w: Dict[str, Any], truths: List[Dict[str, Any]]) -> Optional[set]:
+        """The sign a direction word is bound to by the amounts written beside it, when several cited movements disagree:
+        the movement written right after it ("2024年度减少13.8万元，2025年度增加6.7万元"), the one written just before a
+        percentage word ("减少26.7万元，降幅50.0%"), or from-to figures ("由4.53亿元增加至4.88亿元"). Refused before as
+        unbound: a sentence listing a total's movements over several periods (client file, 2026-11-09)."""
+        gap = re.match(r"[\s了约为额度幅至到]{0,3}", text[w["end"]:])
+        after = next((sp for sp in spans if w["end"] <= sp["start"] <= w["end"] + (gap.end() if gap else 0)), None)
+        if after is not None:
+            hit = {_sign(t["value"]) for t in truths if abs(abs(t["value"]) - after["value"]) <= after["tolerance"]}
+            if hit:
+                return hit
+            before = [sp for sp in spans if sp["end"] <= w["start"] and w["start"] - sp["end"] <= 16]
+            if text[w["end"]:w["end"] + 2].lstrip()[:1] in ("至", "到") and before:
+                return {_sign(after["value"] - before[-1]["value"])}
+        if text[w["end"]:w["end"] + 4].lstrip()[:1].isdigit() or re.match(r"\s*[为约]?\s*-?\d[\d.,]*\s*%", text[w["end"]:]):
+            before = [sp for sp in spans if sp["end"] <= w["start"] and w["start"] - sp["end"] <= 6]
+            if before:
+                hit = {_sign(t["value"]) for t in truths if abs(abs(t["value"]) - before[-1]["value"]) <= before[-1]["tolerance"]}
+                if hit:
+                    return hit
+        return None
+
     seen_unsupported = set()
     for i in infos:
         w, subject, line = i["w"], i["subject"], i["line"]
@@ -721,6 +747,8 @@ def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict
             continue
         truths = _pick(share_truths if subject == "share" else amount_truths, line)
         signs = {_sign(t["value"]) for t in truths}
+        if len(signs) > 1 and subject != "share":
+            signs = by_written_amount(w, truths) or signs
         if i["cause"]:
             if line and len(signs) == 1 and signs != {w["sign"]}:
                 out.append(("failed", "SIGN_ERROR", "arithmetic",
@@ -752,6 +780,10 @@ def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict
         truths = _pick(amount_truths, line) + [t for t in share_truths if not line or t["line"] == line]
         signs = {_sign(t["value"]) for t in truths}
         others = [o for o in result_words if o is not i and o["w"]["sign"] != w["sign"]]
+        if len(signs) > 1:
+            bound = by_written_amount(w, _pick(amount_truths, line))
+            if bound:                                # the written amount says which movement: a mismatch is a sign error
+                signs, others = bound, []
         if not truths and note_signs and w["sign"] in note_signs:
             continue
         if not truths:

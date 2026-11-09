@@ -74,6 +74,39 @@ def codes(v):
     return {f["code"] for f in v["findings"] if f["severity"] == "failed"}
 
 
+class MovementsOverPeriods(unittest.TestCase):
+    """A sentence giving a total's movement over several periods: each direction word is bound by the amount written beside
+    it. Refused before as unbound (client file, 2026-11-09), so a correct sentence came out marked for a person."""
+    P0 = "2023-12-31"
+
+    def setUp(self):
+        rows = [("甲公司", "detail", {self.P0: 1000000, P1: 862000, P2: 929000}),
+                ("Total", "total", {self.P0: 1000000, P1: 862000, P2: 929000})]
+        self.c = build(rows=rows, periods=(self.P0, P1, P2), notes=[])
+        cl.standard_derived(self.c)
+        self.moves = [d["ref"] for d in self.c.derived if d.get("kind") == cl.KIND_MOVEMENT]
+
+    def test_each_word_takes_the_movement_written_after_it(self):
+        v = verdict("应收账款2024年度减少13.8万元，2025年度增加6.7万元。", self.c, self.moves, [self.P0, P1, P2], kind="movement")
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+        v = verdict("应收账款2024年度减少13.8万元，降幅13.8%；2025年度增加6.7万元。", self.c, self.moves, [self.P0, P1, P2], kind="movement")
+        self.assertNotIn("DIRECTION_UNBOUND", {f["code"] for f in v["findings"]}, v["findings"])
+
+    def test_a_word_bound_to_a_movement_of_the_other_sign_is_a_sign_error(self):
+        v = verdict("应收账款2024年度增加13.8万元，2025年度增加6.7万元。", self.c, self.moves, [self.P0, P1, P2], kind="movement")
+        self.assertIn("SIGN_ERROR", codes(v))
+
+    def test_from_to_figures_give_the_direction(self):
+        cites = [ref(self.c, P1), ref(self.c, P2)] + self.moves[1:]
+        v = verdict("应收账款由2024年12月31日的86.2万元增加至2025年12月31日的92.9万元，增加6.7万元。", self.c, cites, [P1, P2],
+                    kind="movement")
+        self.assertNotIn("DIRECTION_UNBOUND", {f["code"] for f in v["findings"]}, v["findings"])
+        self.assertNotIn("SIGN_ERROR", codes(v))
+
+    def test_an_excel_text_prefix_is_not_part_of_a_line_name(self):
+        self.assertEqual(cl._bare("'*甲物流科技(中国)有限公司"), "甲物流科技(中国)有限公司")
+
+
 class Correct(unittest.TestCase):
     def test_a_cited_amount_in_the_right_period_is_verified(self):
         c = build()

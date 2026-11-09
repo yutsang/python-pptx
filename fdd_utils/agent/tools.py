@@ -220,14 +220,28 @@ def numerical_summary(session: SourceSession, accounts: Optional[List[str]] = No
     return summary
 
 
+def drafts_to_mark(session: SourceSession) -> List[str]:
+    """Drafts the gate did not accept that a first-generation deck still carries, rejected sentences marked: written against the
+    current sources (not invalidated by a change to them) and with at least one verified sentence."""
+    out = []
+    for account, c in session.candidates.items():
+        verdicts = (c.outcome or {}).get("verdicts") or []
+        if (not c.validated and c.claims and c.source_version == session.source_version and not getattr(c, "invalid_reason", "")
+                and any(v.get("verdict") in ("verified", "verified_inference") for v in verdicts)):
+            out.append(account)
+    return out
+
+
 def export_candidate(session: SourceSession, out_path: str = "", accounts: Optional[List[str]] = None, first_generation: bool = False) -> Dict[str, Any]:
-    """`first_generation` is passed only by export_first_generation (not a model-facing argument)."""
+    """`first_generation` is passed only by export_first_generation (not a model-facing argument). A first generation may carry a
+    draft the gate did not accept (drafts_to_mark): its rejected sentences are marked and the delivery decision blocks."""
     from .export import export_session_deck
     chosen = [_account(session, a) for a in accounts] if accounts else list(session.candidates)
     if not chosen:
         raise ToolError("NO_CANDIDATE", "nothing to export: validate a candidate first")
-    unvalidated = [a for a in chosen if a not in session.candidates or not session.candidates[a].validated
-                   or session.candidates[a].source_version != session.source_version]
+    markable = set(drafts_to_mark(session)) if first_generation else set()
+    unvalidated = [a for a in chosen if a not in markable and (a not in session.candidates or not session.candidates[a].validated
+                   or session.candidates[a].source_version != session.source_version)]
     if unvalidated:
         raise ToolError("NOT_VALIDATED", "these candidates are not validated against the current sources: " + ", ".join(unvalidated),
                         {"accounts": unvalidated})

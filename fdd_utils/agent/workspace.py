@@ -596,6 +596,12 @@ class WorkSession:
         if first_generation:
             chosen = accounts or [a for a, c in self.source.candidates.items() if c.accepted and c.validated
                                   and c.source_version == self.source.source_version]
+            if not accounts:
+                # A draft the gate did not accept goes in too, its rejected sentences marked (red where the databook contradicts a
+                # figure, orange otherwise) and the account named in the delivery decision, which blocks. Left out, its slot was
+                # empty: on the client file (2026-11-09) 5 to 11 accounts per arm, most with one to three rejected sentences among
+                # five to ten verified ones, and the person had nothing to correct.
+                chosen += [a for a in T.drafts_to_mark(self.source) if a not in chosen]
             if not chosen:
                 return {"ok": False, "error": {"code": "NO_ACCEPTED_CANDIDATE", "message": "no accepted draft to export"}}
             result = T.call_tool(self.source, "export_first_generation", {"accounts": chosen, "out_path": out_path})

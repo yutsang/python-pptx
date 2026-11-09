@@ -210,6 +210,7 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
     """One arm on its own copy and session. Every account's row is checkpointed as it finishes; an exception ends the arm with
     what it spent so far recorded (it is never lost, and never counted as a success)."""
     from fdd_utils.agent import routing as R
+    from fdd_utils.agent import tools as T
     from fdd_utils.agent.flag import agent_budget
     from fdd_utils.agent.workspace import WorkSession
     from fdd_utils.ai import claims as cl
@@ -310,6 +311,15 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                 findings[f.get("code")] = findings.get(f.get("code"), 0) + 1
             result.update(deck=_rel(data.get("path") or ""), export_ok=bool(exported.get("ok")), export_error=(exported.get("error") or {}).get("code"),
                           delivery=(data.get("delivery") or {}).get("status"), findings=findings)
+        # drafts the gate did not accept, carried in the deck with their rejected sentences marked (export.py, ACCOUNT_NOT_ACCEPTED)
+        marked = {"accounts": 0, "red": 0, "orange": 0}
+        for key in T.drafts_to_mark(work.source):
+            marked["accounts"] += 1
+            for v in work.source.candidates[key].outcome.get("verdicts") or []:
+                if v.get("verdict") in ("failed", "unverified"):
+                    red = any(f.get("severity") == "failed" and f.get("dimension") in cl._RED_DIMENSIONS for f in v.get("findings") or [])
+                    marked["red" if red else "orange"] += 1
+        result["marked"] = marked
     except Exception as exc:                                            # noqa: BLE001
         import traceback
         result["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
@@ -580,6 +590,10 @@ def summary_text(report: Dict[str, Any]) -> str:
         flagged = sum(1 for p in res.get("per_account") or [] if any(k in (p.get("flags") or {}) for k in
                                                                        ("deferred_note", "note_amount", "cause_not_proven", "note_wording_unchecked", "detail_caveat")))
         lines.append(f"           material notes: {stated} stated, {deferred} deferred (flagged), of {must}; accounts with a human check: {flagged}")
+        mk = res.get("marked") or {}
+        if mk.get("accounts"):
+            lines.append(f"           not accepted but in the draft, rejected sentences marked: {mk['accounts']} account(s), "
+                         f"{mk['red']} red, {mk['orange']} orange sentence(s)")
         purposes = {k: v for k, v in (b.get("by_purpose") or {}).items() if k in ("understand", "write", "check", "fix")}
         if purposes:
             lines.append("           by step: " + "; ".join(f"{k} {v['calls']} calls, in {v['prompt_provider']:,} out {v['completion_provider']:,}, "

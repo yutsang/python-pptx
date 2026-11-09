@@ -219,7 +219,14 @@ What "checked" means here has four parts.
   differently, when the sentence says the opposite elsewhere, or when the word
   cannot be placed on either side of a cause (after 导致, or in a clause that
   follows one giving a reason, "主要系A，B"). A correct sentence of that last kind,
-  such as "余额减少，导致坏账风险上升", therefore waits for a person.
+  such as "余额减少，导致坏账风险上升", therefore waits for a person. When the
+  cited movements disagree in sign, the amounts written beside the word decide
+  first: the movement written right after it ("2024年度减少13.8万元，2025年度增加
+  6.7万元"), the one just before a percentage word ("减少26.7万元，降幅50.0%"), or
+  from-to figures ("由4.53亿元增加至4.88亿元"); a word bound that way to a
+  movement of the other sign fails (`SIGN_ERROR`). Until 2026-11-09 every such
+  sentence was `DIRECTION_UNBOUND`. A line name is read without an Excel text
+  prefix ("'*甲公司…"), which refused a sentence naming that tenant.
 - **Lines.** A line the sentence names must have a figure behind it when the
   sentence makes a line-level statement: it cites a line's figure or share, says
   "其中" or "占比", or puts a figure right after the name. A name on the cause side
@@ -691,7 +698,33 @@ and cites only that account's refs, and is verified against that account's
 evidence; a failing sentence gets one repair and is otherwise left out (the
 result counts them). A first-generation export puts it in the summary band and
 no longer reports `SUMMARY_SPLICED`. Net assets and other statement totals have
-no contract yet, so the overview cannot state them.
+no contract yet, so the overview cannot state them. An account with a nil latest
+balance is not offered, a sentence written twice is kept once, and sentences
+stop at the band's size (the request alone was not kept: 271 characters for 140).
+
+**What goes into a first-generation deck.** Every accepted paragraph, and every
+draft the gate did not accept that has at least one verified sentence and was
+written against the current sources: its rejected sentences are marked (red
+where the databook contradicts a figure, orange otherwise) and the delivery
+decision lists it as `ACCOUNT_NOT_ACCEPTED`, which blocks delivery. Until
+2026-11-09 such an account was left out and its slot was empty; on the client
+file that was five to eleven accounts per arm, most with one to three rejected
+sentences among five to ten verified ones, so the person had nothing to correct.
+A dispatched turn that started on the stronger model is not flagged `escalated`
+(that flag means the cheaper model's draft was rejected).
+
+**Length and house style.** The writer is given a length from its evidence (at
+most about 120 Chinese characters with up to three detail lines and no other
+table, 250 with up to seven or one table, 400 above that; two thirds as many
+English words), told to put the most important first, to state a movement only
+where it matters (never every period pair), and to write 1亿元 or more as 亿元
+with two decimals and the rest as 万元 with one. Before this the writer had no
+length and listed each period's movement: on the client file the paragraphs ran
+1.5 to 2.8 times the team's in total, the cheaper model's longest, which also
+inflates how many of the team's figures an arm appears to state.
+`ad-hoc/workbench/score_reference.py` reads a trial's review file and the team's
+report text and prints, per arm, the team's figures stated (accepted only, in the
+deck including marked drafts, all text) and the length against the team's.
 Each arm gets a fresh copy and session, drafts every in-scope account, and
 exports a first-generation deck. `plan` sends nothing; `run --scripted` runs the
 whole flow with a scripted writer, free; `run --i-accept-paid-calls` is the paid
@@ -875,6 +908,7 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
 
 ```
 python ad-hoc/workbench/migration_checks.py [--json out.json]   all offline suites, provider blocked
+python ad-hoc/workbench/score_reference.py --trial <trial_quality_*.md> --reference <report text>   the team's figures each arm states
 python inspect_evidence.py --databook <xlsx> [--reference <report text>]   what the writer is shown; a reference's figures in it
     (in view counts a note's amount in its own currency and a sum of two or three shown lines the verifier would accept)
 python ad-hoc/workbench/test_agent_flows.py <databook.xlsx>       five flows on a real workbook (needs the file)

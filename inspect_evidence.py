@@ -154,7 +154,9 @@ def main() -> int:
                 if any(cur == currency and abs(target - abs(x)) <= tol for x, _r, cur in v["shown"]):
                     status = "in view"
                     break
-                if currency == "CNY" and _near(v["sums"], target, tol):
+                # a coarse figure (1.2亿元 is anything within 500万元) matches some sum of three lines by chance: on the client
+                # file 1.2亿元 and 4.18亿元 did, so a sum counts only when the written figure is precise to 0.5%
+                if currency == "CNY" and tol <= 0.005 * target and _near(v["sums"], target, tol):
                     status = "in view (sum)"
                     break
                 if any(cur == currency and abs(target - abs(x)) <= tol for x, _r, cur in v["cut"]):

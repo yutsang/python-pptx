@@ -366,6 +366,27 @@ CLAIM_SCHEMA = (
 )
 
 
+def length_target(view: Dict[str, Any]) -> int:
+    """The most Chinese characters a paragraph should take, from how much its evidence holds. The writer had no length at all:
+    on the client file (2026-11-09) the agent's paragraphs ran two to four times the team's, the cheaper model's longest, and the
+    deck's slots are sized for the team's (legacy keeps a cap per account type, prompts.yml). By content, not by account name,
+    so an account no list names gets a size too."""
+    lines = len((view.get("components") or {}).get("lines") or [])
+    tables = len(view.get("supporting_tables") or [])
+    if lines >= 8 or tables >= 2:
+        return 400
+    if lines >= 4 or tables:
+        return 250
+    return 120
+
+
+def length_line(view: Dict[str, Any], language: str) -> str:
+    most = length_target(view)
+    if language in ("Chi", "Chn"):
+        return f"LENGTH: at most about {most} Chinese characters; fewer when there is less to say."
+    return f"LENGTH: at most about {most * 2 // 3} words; fewer when there is less to say."
+
+
 def writer_system_prompt(language: str) -> str:
     """The prepared write's instructions: the same rules as the tool loop's, without the tool menu (nothing here calls a tool)."""
     answer_lang = "简体中文" if language in ("Chi", "Chn") else "English"
@@ -377,20 +398,22 @@ def writer_system_prompt(language: str) -> str:
         "2. totals list each period under several bases; the deck uses basis authority_adjusted. A period whose permissions say\n"
         "   describe_total=false is in conflict: state the difference (its D ref), not either figure. Detail lines may explain a total\n"
         "   only where permissions say explain_with_detail=true. Read the notes (N refs) for causes and adjustments.\n"
-        "3. State the latest balance the deck uses (REQUIRED), the movement where a D ref exists, the main detail lines where\n"
-        "   detail is permitted, and causes only from notes. components.lines: one row per line, a ref and a 万元 figure per\n"
-        "   period; nested_in names the parent line (never add a sub-line to it); rest sums the smaller lines (its D ref, e.g.\n"
-        "   其余N项合计). supporting_tables are the tab's other tables (by nature, ageing, phases, an adjusted breakdown): cite\n"
-        "   their refs; a period_assumed column is the latest period. related lists accounts the report reads with this one\n"
-        "   (related_total: their sum with this account, one D ref), and a note marked [account] comes from that account's tab:\n"
-        "   cite them to say so, never as this account's own detail.\n"
+        "3. State the latest balance the deck uses (REQUIRED), the main detail lines where detail is permitted, and causes only\n"
+        "   from notes. A movement only where it matters (large, or a note explains it), one D ref: never list every period pair.\n"
+        "   components.lines: one row per line, a ref and a 万元 figure per period; nested_in names the parent line (never add\n"
+        "   a sub-line to it); rest sums the smaller lines (its D ref, e.g. 其余N项合计). supporting_tables are the tab's other\n"
+        "   tables (by nature, ageing, phases, an adjusted breakdown): cite their refs; a period_assumed column is the latest\n"
+        "   period. related lists accounts the report reads with this one (related_total: their sum with this account, one D ref),\n"
+        "   and a note marked [account] comes from that account's tab: cite them to say so, never as this account's own detail.\n"
         "4. Notes are evidence too. A figure, percentage or date written in a note may be stated when the claim cites that note in\n"
         "   'cites' (an amount in the note's own currency, e.g. 万美元; never convert it). MUST ADDRESS lists the notes Python found\n"
         "   material: state what each says in a claim that cites it, or name its ref in 'unresolved' with the reason. None may be\n"
         "   left out silently.\n"
         "5. What the evidence cannot settle goes in 'unresolved'; do not fill the gap.\n"
-        f"6. Write for the report, in {answer_lang}: amounts as 万元 or 亿元 with one decimal unless the figure is small; periods as\n"
-        "   period_labels gives them (an income-statement line is a flow: 2024年度, 2026年1-3月, never '2024年12月31日营业成本');\n"
+        f"6. Write for the report, in {answer_lang}, within LENGTH: the most important first, nothing the reader does not need.\n"
+        "   Amounts: 1亿元 or more as 亿元 with two decimals (6.65亿元), otherwise 万元 with one decimal (598.1万元), under 1万元\n"
+        "   in 元. Periods as period_labels gives them (an income-statement line is a flow: 2024年度, 2026年1-3月, never\n"
+        "   '2024年12月31日营业成本');\n"
         "   no refs (F12, N3) and no internal names (authority_adjusted, raw_schedule) in the text. No percentage change over a\n"
         "   negative base or across a change of sign. The tab's lines are not the make-up of an adjusted balance unless they add\n"
         "   up to it.\n"
@@ -800,6 +823,11 @@ class AgentController:
             flags.append({"kind": "escalated", "text": "the cheaper model's draft was rejected; the stronger model repaired it"})
         return flags
 
+    def _repaired_by_stronger(self) -> bool:
+        """The stronger model took the turn over after the cheaper one failed. A turn the dispatcher started there
+        ("configured_task") was never the cheaper model's, and saying its draft was rejected misled the review form."""
+        return any(e.get("reason") != "configured_task" for e in self.escalations)
+
     def _required_refs(self, view: Dict[str, Any]) -> List[str]:
         """What a paragraph must state: the latest balance the deck uses, or, where tab and Financials disagree and nothing chose,
         the difference Python computed. Without it a draft of one harmless sentence would pass the verifier."""
@@ -832,6 +860,7 @@ class AgentController:
                          + "\n".join(f"  {m['ref']} ({m['why']}): {m['text']}" for m in must))
         if required:
             parts.append("REQUIRED: a claim must cite " + ", ".join(required) + " (the latest balance the deck uses, or the difference that replaces it).")
+        parts.append(length_line(view, self.language))
         parts.append(f"REQUEST: {goal}")
         if not claims:
             parts.append(WRITER_PROTOCOL + "Your JSON object:")
@@ -1277,7 +1306,7 @@ class AgentController:
             candidate.review = {k: v for k, v in review.items()}
         if candidate is not None and getattr(self, "_view", None) is not None:
             candidate.flags = self._flags(account, self._view, self._must, candidate.claims, candidate.outcome, unresolved,
-                                          escalated=bool(self.escalations))
+                                          escalated=self._repaired_by_stronger())
             run.report["flags"] = list(candidate.flags)
         if review is not None:
             run.report["review"] = dict(review, outcome=review.get("status"))
@@ -1816,7 +1845,7 @@ class AgentController:
             if candidate is not None:
                 unresolved = list((run.answer or {}).get("unresolved") or [])
                 candidate.flags = self._flags(self._view["account"], self._view, self._must, candidate.claims, candidate.outcome,
-                                              unresolved, escalated=bool(self.escalations)) + [
+                                              unresolved, escalated=self._repaired_by_stronger()) + [
                     {"kind": "tool_loop", "text": f"written in the tool loop: {self._fallback_reason}"[:200]}]
                 run.report["flags"] = list(candidate.flags)
         run.usage = usage
