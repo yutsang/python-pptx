@@ -366,6 +366,8 @@ class SourceSession:
         self.base_results = base_results
         self.base_run_folder = base_run_folder
         self.base_summaries = base_summaries or {}
+        #: the executive summary of each statement written from the finished paragraphs (overview.py), {"BS": text, "IS": text}
+        self.overview: Dict[str, str] = {}
         #: whether the base run is shown to describe THIS workbook (check_base_run); None when there is no base run
         self.base_run_check = base_run_check
         self.reconciliation = reconciliation
@@ -476,6 +478,7 @@ class SourceSession:
             for name in ("base_results", "base_run_folder", "base_summaries"):
                 setattr(self, name, getattr(fresh, name))
         self.text_cache = {}
+        self.overview = {}                                  # written from the old reading; the next export splices until it is rewritten
         self.baseline = before
         return before
 

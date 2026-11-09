@@ -492,6 +492,57 @@ def amount_claim(view, period, text):
 GOOD = "2025年12月31日应收账款余额130.0万元"
 
 
+class DispatchAndOverview(unittest.TestCase):
+    """The stronger model names the accounts it should write (one call); the summary band is written from the finished
+    paragraphs and each sentence is verified against its own account."""
+
+    def _work(self, primary, escalation):
+        tmp = tempfile.mkdtemp(prefix="disp_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        source = session_on(book)
+        source.load_params = {"workbook": book}
+        return W.WorkSession(source, model=primary, escalation=escalation, model_name="m", policy=R.Policy(mode="escalate"),
+                             budget=C.Budget(max_steps=8), prepare=True, config={"agent": {}})
+
+    def test_an_account_given_to_the_stronger_model_starts_there_and_the_rest_on_the_cheaper(self):
+        cheap = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
+        strong = Writer(lambda system, user, n: ({"pro": [ACCOUNT], "why": {ACCOUNT: "conflict"}} if "assign each account" in system
+                                                 else {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}}))
+        work = self._work(cheap, strong)
+        plan = work.dispatch([ACCOUNT])
+        self.assertEqual((plan["by"], plan["pro"]), ("model", [ACCOUNT]))
+        self.assertIn('"must_address"', strong.users[0])
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual((len(cheap.users), len(strong.users)), (0, 2), "written by the stronger model from the first call")
+        self.assertEqual(work.shared.records[0].purpose, "dispatch")
+
+    def test_an_unreadable_dispatch_reply_falls_back_to_the_rule_and_says_so(self):
+        work = self._work(Writer(lambda *a: {}), Writer(lambda system, user, n: {"nonsense": 1}))
+        plan = work.dispatch([ACCOUNT])
+        self.assertEqual(plan["by"], "rule")
+        self.assertTrue(plan["error"])
+        self.assertIn(plan["plan"][ACCOUNT], ("pro", "flash"))
+
+    def test_the_overview_keeps_verified_sentences_and_drops_one_that_fails_after_its_repair(self):
+        cheap = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
+
+        def strong(system, user, n):
+            line = json.loads(user.split("ACCOUNTS:\n", 1)[1].split("\n", 1)[0])
+            ref = line["balance"]["ref"]
+            good = {"account": ACCOUNT, "kind": "amount", "text": "应收账款余额130.0万元", "periods": [P2], "cites": [ref]}
+            bad = {"account": ACCOUNT, "kind": "amount", "text": "应收账款余额999.0万元", "periods": [P2], "cites": [ref]}
+            return {"claims": [good, bad]} if "REJECTED" not in user else {"claims": [bad]}
+        work = self._work(cheap, Writer(strong))
+        self.assertTrue(work.edit("撰写应收账款的段落", ACCOUNT, accept=True).ok)
+        out = work.write_overview("escalation", [ACCOUNT])
+        bs = out["BS"]
+        self.assertEqual((bs["text"], bs["dropped"], bs["calls"]), ("应收账款余额130.0万元", 1, 2))
+        self.assertEqual(work.source.overview, {"BS": "应收账款余额130.0万元"})
+        self.assertEqual([r.purpose for r in work.shared.records][-2:], ["overview", "overview"])
+
+
 class PreparedWrite(unittest.TestCase):
     def _work(self, model, escalation=None, mode="single", extra_account=False, config=None):
         tmp = tempfile.mkdtemp(prefix="prep_")

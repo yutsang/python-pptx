@@ -135,6 +135,8 @@ class WorkSession:
         self.events: List[Dict[str, Any]] = []
         #: routing: which model answers (a callable for a scripted model, a {"provider","model","thinking"} dict for a configured one)
         self.policy = policy or R.Policy()
+        #: which model writes each account (dispatch.py): "pro" starts the account's turn on the escalation model
+        self.plan: Dict[str, str] = {}
         self.escalation = escalation
         self.thinking = thinking
         self.config = config
@@ -273,7 +275,8 @@ class WorkSession:
                                      language=self.source.language, memory=memory or self.memory, prepare=prepare,
                                      seed=F.seed_facts(self.config), review=F.review_meaning(self.config), lead=F.lead_write(self.config))
         before = {a: c.claims_digest for a, c in self.source.candidates.items()}
-        run = controller.run(request, mode=mode, account=account, export=False, turn_number=len(self.turns) + 1)
+        run = controller.run(request, mode=mode, account=account, export=False, turn_number=len(self.turns) + 1,
+                             start_strong=bool(account) and self.plan.get(self.source.resolve_account(account) or account) == "pro")
         turn = self._record(run, mode, request, before)
         if notice:
             turn.notes.append(f"the workbook had changed: {self._effects_line(notice.get('candidate_effects'))}")
@@ -287,6 +290,37 @@ class WorkSession:
         """The accounts a report on this entity comments on: those the selection admitted (the legacy pipeline's own rule), in the
         workbook's order. Decided by Python, not by a model."""
         return [k for k in self.source.contracts if not str(k).startswith("__") and self.source.in_scope(k)]
+
+    def dispatch(self, accounts: Optional[List[str]] = None) -> Dict[str, Any]:
+        """The stronger model names the accounts it should write (dispatch.py); the rest start on the primary. Needs routing
+        'escalate'. One call; the plan is kept on the session and used by every later turn on those accounts."""
+        from .dispatch import dispatch as _dispatch
+        if self.policy.mode != "escalate":
+            raise ValueError("dispatch needs routing 'escalate' (a primary and an escalation model)")
+        keys = [k for k in (accounts or self.entity_accounts()) if k in self.source.contracts]
+        record = _dispatch(self.source, self._router(), keys)
+        self.plan = dict(record["plan"])
+        if "dispatched" not in (self.policy.escalate_tasks or []):
+            self.policy.escalate_tasks = list(self.policy.escalate_tasks or []) + ["dispatched"]
+        self.events.append({"at": _now(), "type": "dispatch", "by": record["by"], "pro": record["pro"], "error": record["error"]})
+        return record
+
+    def write_overview(self, role: str = "escalation", accounts: Optional[List[str]] = None, chars: int = 140) -> Dict[str, Any]:
+        """The executive summary of each statement from the finished paragraphs, each sentence verified against its account
+        (overview.py). Kept on the source session, where a first-generation export puts it in the summary band."""
+        from .overview import write_overview as _write
+        router = self._router()
+        if role not in router.roles:
+            role = R.ROLE_PRIMARY
+        keys = [k for k in (accounts or self.entity_accounts()) if k in self.source.contracts]
+        ctl = AgentController(self.source, router, language=self.source.language)
+        labels = {k: ctl._period_labels(k, {"periods": self.source.contracts[k].periods,
+                                            "annualization": self.source.contracts[k].annualization}) for k in keys}
+        result = _write(self.source, router, role=role, language=self.source.language, accounts=keys, period_labels=labels, chars=chars)
+        self.source.overview = {s: e["text"] for s, e in result.items() if e.get("text")}
+        self.events.append({"at": _now(), "type": "overview", "role": role,
+                            "sections": {s: {"dropped": e["dropped"], "calls": e["calls"], "error": e["error"]} for s, e in result.items()}})
+        return result
 
     def draft_entity(self, accounts: Optional[List[str]] = None, instruction: str = "", on_account: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
         """Every in-scope account written from its own evidence, one edit turn each, accepted when the verifier passes it.
@@ -824,6 +858,7 @@ class WorkSession:
                         for e in self.source.exports],
             "events": self.events[-200:], "usage": self.usage_total, "model_calls": self.model_calls, "max_model_calls": self.max_model_calls,
             "budget": self.shared.to_dict(), "routing": self.policy.mode, "deck": self.deck,
+            "plan": self.plan, "overview": self.source.overview,
         }
 
     @staticmethod
@@ -858,6 +893,11 @@ class WorkSession:
         if self.max_model_calls is None:
             self.max_model_calls = data.get("max_model_calls")
         same = (data.get("source") or {}).get("source_version") == self.source.source_version
+        self.plan = dict(data.get("plan") or {})
+        if self.plan and "dispatched" not in (self.policy.escalate_tasks or []):
+            self.policy.escalate_tasks = list(self.policy.escalate_tasks or []) + ["dispatched"]
+        if same:
+            self.source.overview = dict(data.get("overview") or {})
         mem = data.get("memory") or {}
         self.memory.history = list(mem.get("history") or [])
         for a, recipes in (data.get("derived") or {}).items():

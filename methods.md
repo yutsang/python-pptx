@@ -668,8 +668,30 @@ default, and, measured on ten accounts on 2026-11-08 and then dropped from the
 default (no cheaper than `pro`, a review that caught one problem in nine),
 `seeded` (mixed, with
 Python writing the balance and movement sentences), `reviewed` (seeded, with the
-stronger model's meaning review) and, opt-in, `loop` (the tool loop with no
-prepared write, the path the first paid acceptance measured).
+stronger model's meaning review), `routed` (the stronger model assigns each
+account, below) and, opt-in, `loop` (the tool loop with no prepared write, the
+path the first paid acceptance measured). `--overview both` (the default) has
+every arm write the executive summary after its paragraphs; on an arm with two
+models each writes one and the deck carries the stronger model's.
+
+**Dispatch** (`agent/dispatch.py`, `WorkSession.dispatch`). Python measures, per
+account, what makes a paragraph hard: share of its statement, material notes,
+adjustments, a conflict with Financials, how the detail ties, nesting, detail
+lines, the tab's other tables, part-year figures. One call to the stronger
+model reads those profiles and names the accounts it should write; their turns
+start on it (`start_strong`, through `policy.escalate_tasks`), and every other
+account starts on the cheaper model, which still hands a paragraph it cannot
+repair to the stronger one after `escalate_after` rejections. An unreadable
+reply falls back to a fixed rule over the same signals, and the plan says so.
+
+**Overview** (`agent/overview.py`, `WorkSession.write_overview`). One call per
+statement, given each finished account's latest balance and movement with their
+refs and the opening of its verified paragraph. Every sentence names its account
+and cites only that account's refs, and is verified against that account's
+evidence; a failing sentence gets one repair and is otherwise left out (the
+result counts them). A first-generation export puts it in the summary band and
+no longer reports `SUMMARY_SPLICED`. Net assets and other statement totals have
+no contract yet, so the overview cannot state them.
 Each arm gets a fresh copy and session, drafts every in-scope account, and
 exports a first-generation deck. `plan` sends nothing; `run --scripted` runs the
 whole flow with a scripted writer, free; `run --i-accept-paid-calls` is the paid

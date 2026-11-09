@@ -62,7 +62,7 @@ sys.path.insert(0, str(ROOT))
 import agent_acceptance as A  # noqa: E402
 
 OUT_DIR = ROOT / "fdd_utils" / "output" / "agent_trial"
-ARMS = ("pro_lead", "flash_lead", "mixed_lead", "pro", "flash", "mixed", "seeded", "reviewed", "loop")
+ARMS = ("pro_lead", "flash_lead", "mixed_lead", "pro", "flash", "mixed", "routed", "seeded", "reviewed", "loop")
 # the model leads (understands, decides, checks); Python reads, computes and verifies as a tool. pro / flash / mixed are the
 # Python-gated prepared write, kept to compare against; seeded / reviewed were measured 2026-11-08 and dropped
 DEFAULT_ARMS = "pro_lead,flash_lead,mixed_lead"
@@ -92,6 +92,9 @@ def arm_setup(cfg: Dict[str, Any], name: str, args: argparse.Namespace) -> Dict[
     if name in ("mixed", "seeded", "reviewed"):
         return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "escalate_after": int(args.escalate_after),
                 "seed": name in ("seeded", "reviewed"), "review": name == "reviewed"}
+    if name == "routed":                         # the stronger model assigns each account (dispatch.py); the cheaper writes the rest
+        return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "escalate_after": int(args.escalate_after),
+                "dispatch": True}
     if name == "loop":
         return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": False}
     raise ValueError(f"unknown arm {name!r} (arms: {', '.join(ARMS)})")
@@ -202,7 +205,7 @@ def sources_for_review(source: Any, key: str, candidate: Any) -> Dict[str, Any]:
 
 def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str, workdir: Path, limits: Any, *,
             select: Callable[[Any], List[str]], scripted: Optional[Dict[str, Any]] = None, stamp: str = "", deck: bool = True,
-            checkpoint: Optional[Callable[[Dict[str, Any]], None]] = None) -> Dict[str, Any]:
+            checkpoint: Optional[Callable[[Dict[str, Any]], None]] = None, overview: str = "both") -> Dict[str, Any]:
     """One arm on its own copy and session. Every account's row is checkpointed as it finishes; an exception ends the arm with
     what it spent so far recorded (it is never lost, and never counted as a success)."""
     from fdd_utils.agent import routing as R
@@ -233,6 +236,11 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
         ranked = sorted(work.source.contracts)
         result.update(accounts=len(accounts), order=list(accounts), sorted_index={k: ranked.index(k) for k in accounts},
                       in_scope={k: work.source.in_scope(k) for k in accounts})
+        if setup.get("dispatch"):
+            plan = work.dispatch(accounts)
+            result["dispatch"] = {"by": plan["by"], "error": plan["error"], "pro": len(plan["pro"]), "of": len(accounts),
+                                  "pro_index": sorted(ranked.index(k) for k in plan["pro"])}
+            result["_dispatch"] = {"pro": plan["pro"], "why": plan["why"]}
         marks, clock = [books.calls], [time.perf_counter()]
         per: List[Dict[str, Any]] = result["per_account"]
         bar = _Bar(len(accounts), f"{name}")
@@ -275,6 +283,23 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
             result["stopped"] = next((r.get("error") or "" for r in done["rows"] if r.get("stop_reason") == "budget_session"), "")
         finally:
             bar.close()
+        if overview != "none" and not result.get("stopped"):
+            # the summary band from the finished paragraphs; with two models, the cheaper one's is written too, for comparison,
+            # and the stronger one's (written last) is what the deck carries
+            roles = list(work._router().roles)
+            order = (["primary", "escalation"] if overview == "both" and "escalation" in roles else
+                     ["escalation" if overview == "pro" and "escalation" in roles else "primary"])
+            result["_overview"], result["overview"] = {}, {}
+            for role in order:
+                before = A._books_delta(work.shared, 0)
+                written = work.write_overview(role, accounts)
+                after = A._books_delta(work.shared, 0)
+                label = "pro" if role == "escalation" else ("pro" if name in ("pro", "pro_lead") else "flash")
+                result["_overview"][label] = {s_: e["text"] for s_, e in written.items()}
+                result["overview"][label] = {"cost": round((after.get("cost") or 0) - (before.get("cost") or 0), 4),
+                                             "calls": after["calls"] - before["calls"],
+                                             "sections": {s_: {"chars": len(e["text"]), "kept": len(e["claims"]), "dropped": e["dropped"],
+                                                               "error": e["error"]} for s_, e in written.items()}}
         if deck:
             OUT_DIR.mkdir(parents=True, exist_ok=True)
             exported = work.export(out_path=str(OUT_DIR / f"trial_{name}_{stamp}.pptx"), first_generation=True)
@@ -366,8 +391,14 @@ class ScriptedWriter:
     def __call__(self, system: str, user: str, max_tokens: int) -> Dict[str, Any]:
         self.calls += 1
         view = _writer_view(user)
-        if "You lead the writing" in system:
-            reply: Dict[str, Any] = {"points": [], "cautions": [], "difficulty": "simple", "writer": "cheap"}
+        if "assign each account" in system:
+            reply: Dict[str, Any] = {"pro": [], "why": {}}
+        elif "executive summary" in system:
+            lines = [json.loads(x) for x in user.split("ACCOUNTS:\n", 1)[-1].split("\n\n", 1)[0].splitlines() if x.startswith("{")]
+            reply = {"claims": [{"account": x["account"], "kind": "amount", "periods": [x["balance"]["period"]], "cites": [x["balance"]["ref"]],
+                                 "text": f"{x['account']}余额{x['balance']['wan']:,.1f}万元。"} for x in lines[:3]]}
+        elif "You lead the writing" in system:
+            reply = {"points": [], "cautions": [], "difficulty": "simple", "writer": "cheap"}
         elif "You check ONE paragraph" in system:
             n = len([line for line in user.splitlines() if line.startswith("  [")])
             reply = {"claims": [{"index": i, "verdict": "ok", "why": "scripted"} for i in range(n)], "missing": []}
@@ -403,7 +434,7 @@ def scripted_for(name: str) -> Dict[str, Any]:
         holder: Dict[str, Any] = {}
         primary, good = A.scripted_models(lambda: holder["source"], wrong_first=True)
         return {"primary": A.Scripted(primary, "scripted-cheap"), "escalation": A.Scripted(good, "scripted-strong"), "holder": holder}
-    if name in ("mixed", "seeded", "reviewed", "mixed_lead"):
+    if name in ("mixed", "seeded", "reviewed", "mixed_lead", "routed"):
         return {"primary": ScriptedWriter("cheap", wrong_first=(name == "mixed")), "escalation": ScriptedWriter("strong")}
     return {"primary": ScriptedWriter(name)}
 
@@ -561,6 +592,14 @@ def summary_text(report: Dict[str, Any]) -> str:
                                                             f"{_num(rev.get('cost'))} yuan (inside the totals above)" if rev else "; no review call"))
         if res.get("seed"):
             lines.append(f"           Python wrote {sum(int(p.get('seeded') or 0) for p in res.get('per_account') or [])} sentence(s) itself")
+        if res.get("dispatch"):
+            d = res["dispatch"]
+            lines.append(f"           dispatch ({d['by']}{': ' + d['error'] if d.get('error') else ''}): {d['pro']} of {d['of']} accounts to the "
+                         f"stronger model (sorted indices {d['pro_index']})")
+        for label, o in (res.get("overview") or {}).items():
+            lines.append(f"           overview by {label}: {o['calls']} calls, {_num(o.get('cost'))} yuan; "
+                         + "; ".join(f"{s_} {x['chars']} chars, {x['kept']} kept, {x['dropped']} dropped{(' ERROR ' + x['error']) if x.get('error') else ''}"
+                                     for s_, x in o["sections"].items()))
         if res.get("findings"):
             lines.append(f"           deck findings {res['findings']}")
         if b.get("calls_without_provider_usage"):
@@ -619,6 +658,15 @@ def quality_markdown(report: Dict[str, Any], legacy: Dict[str, str], order: List
            f"Arms: {', '.join(arms)}. Code {fp.get('short')}. Workbook {str(report.get('databook_sha256') or '')[:12]}. "
            f"Legacy run: {report.get('legacy_run') or 'none given'}. Cases: {report.get('cases') or 'all in scope'}.", "",
            "A failed or blocked case is kept: its text, its objections and what it cost are below like any other.", ""]
+    for name, res in arms.items():
+        if res.get("_dispatch"):
+            out.append(f"## {name}: accounts the stronger model took ({len(res['_dispatch']['pro'])})")
+            out.extend(f"- {k}: {res['_dispatch']['why'].get(k, '')}" for k in res["_dispatch"]["pro"])
+            out.append("")
+        for label, texts in (res.get("_overview") or {}).items():
+            out.append(f"## {name}: executive summary written by {label}")
+            out.extend(f"**{s_}**: {t or '(empty)'}" for s_, t in texts.items())
+            out.append("")
     keys: List[str] = list(order)
     for res in arms.values():
         for k in res.get("_texts") or {}:
@@ -804,7 +852,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 continue
             setup = arm_setup(cfg, name, args)
             res = run_arm(name, setup, cfg, args.databook, workdir, Limits(**share), select=selector(args),
-                          scripted=scripted_for(name) if args.scripted else None, stamp=stamp, deck=deck, checkpoint=checkpoint)
+                          scripted=scripted_for(name) if args.scripted else None, stamp=stamp, deck=deck, checkpoint=checkpoint,
+                          overview="none" if args.cases else args.overview)
             allowance.charge(res.get("books"))
             report["arms"][name] = res
             report["accounts_in_scope"] = report.get("accounts_in_scope") or res.get("accounts")
@@ -830,7 +879,7 @@ def _write_reports(report: Dict[str, Any], legacy: Dict[str, str], stamp: str) -
     quality.write_text(quality_markdown(report, legacy, order), encoding="utf-8")
     report["quality"] = str(quality.relative_to(ROOT))
     numbers = {k: v for k, v in report.items()}
-    numbers["arms"] = {n: {k: v for k, v in r.items() if k not in ("_texts", "order", "sorted_index", "in_scope")}
+    numbers["arms"] = {n: {k: v for k, v in r.items() if k not in ("_texts", "_overview", "_dispatch", "order", "sorted_index", "in_scope")}
                        | {"in_scope_count": sum(1 for v in (r.get("in_scope") or {}).values() if v)} for n, r in report["arms"].items()}
     (OUT_DIR / f"trial_{stamp}.json").write_text(json.dumps(numbers, ensure_ascii=False, separators=(",", ":"), default=str), encoding="utf-8")
     text = summary_text(report)
@@ -858,6 +907,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.add_argument("--cases", default="", help="comma list of indices into the sorted contract list (the ten-case study); no deck")
         p.add_argument("--expect-sha", default="", help="refuse to start unless the workbook's sha256 starts with this")
         p.add_argument("--no-deck", action="store_true", help="do not export a deck (always off with --cases)")
+        p.add_argument("--overview", default="both", choices=("both", "pro", "flash", "none"),
+                       help="the executive summary from the finished paragraphs: both = the cheaper and the stronger model each write one "
+                            "(the deck carries the stronger's), on arms with two models (default both; off with --cases)")
         p.add_argument("--limit", type=int, default=0, help="only the first N accounts in scope (a cheap pilot); 0 = all")
         # 2 since 2026-11-08: with 1, nearly every cheap draft went to the stronger model (23 of 26), many of them for refusals the
         # verifier has since stopped making; the cheaper model now gets one repair of its own first

@@ -475,14 +475,16 @@ class AgentController:
 
     # -- the run -----------------------------------------------------------------------
 
-    def run(self, request: str, *, mode: str = "ask", account: str = "", export: bool = False, turn_number: int = 0) -> AgentRun:
+    def run(self, request: str, *, mode: str = "ask", account: str = "", export: bool = False, turn_number: int = 0,
+            start_strong: bool = False) -> AgentRun:
         run = AgentRun(request=request, mode=mode, source_version=self.session.source_version)
         started = time.perf_counter()
         usage: Dict[str, Any] = {"model_calls": 0, "prompt_tokens_est": 0, "completion_tokens_est": 0, "provider_prompt_tokens": 0,
                                  "provider_completion_tokens": 0, "provider_reported": False, "by_role": {}}
         router = self.router
         if router is not None:
-            started_on = router.begin_turn(turn_number, R.task_kinds(request))
+            # start_strong: the dispatcher gave this account to the stronger model (dispatch.py; policy.escalate_tasks lists it)
+            started_on = router.begin_turn(turn_number, R.task_kinds(request) + (["dispatched"] if start_strong else []))
             if started_on is not None:
                 self.escalations.append({**started_on, "handoff": ""})
         system = system_prompt(mode, self.session, self.language, remembered=bool(self.memory and self.memory.history))

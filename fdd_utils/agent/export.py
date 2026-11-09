@@ -109,9 +109,11 @@ def session_delivery(session: SourceSession, results: Dict[str, Any], edited: It
     edited = set(edited)
     extra += review_findings(session, [a for a in edited if a in results])
     if first_generation:
-        # nothing from a base run is in this deck, so nothing about one applies; the summary band is the exporter's splice
-        extra.append(Finding("SUMMARY_SPLICED", "review", "the executive summary band is the exporter's splice of each account's first "
-                             "sentence; no summary was written for this first generation"))
+        # nothing from a base run is in this deck, so nothing about one applies; the summary band is the written overview
+        # (each sentence verified against its account), or else the exporter's splice
+        if not session.overview:
+            extra.append(Finding("SUMMARY_SPLICED", "review", "the executive summary band is the exporter's splice of each account's first "
+                                 "sentence; no summary was written for this first generation"))
         for account in session.contracts:
             if not str(account).startswith("__") and session.in_scope(account) and account not in results:
                 status = ((session.candidates.get(account).review if session.candidates.get(account) else {}) or {}).get("status")
@@ -178,7 +180,8 @@ def export_session_deck(session: SourceSession, accounts: List[str], out_path: s
         language="chinese" if is_chinese else "english",
         temp_path=session.financials_from or session.workbook_path, selected_sheet=session.financials_sheet,
         is_chinese_databook=is_chinese, bs_is_results=session.bs_is_results, model_type=None,
-        skip_summary_ai=True, pre_generated_summaries=(None if first_generation else session.base_summaries or None), mappings=session.mappings,
+        skip_summary_ai=True, pre_generated_summaries=((session.overview or None) if first_generation else session.base_summaries or None),
+        mappings=session.mappings,
         financials_from=session.financials_from, delivery=delivery)
 
     touched: Dict[str, List[int]] = {}
