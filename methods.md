@@ -713,10 +713,21 @@ sentences among five to ten verified ones, so the person had nothing to correct.
 A dispatched turn that started on the stronger model is not flagged `escalated`
 (that flag means the cheaper model's draft was rejected).
 
-**Length and house style.** The writer is given a length from its evidence (at
+**Length and house style.** The writer is given the length finished team
+reports wrote for the account: `fdd_utils/report_lengths.yml` holds one number
+per report and account (characters, whitespace removed), built from text dumps
+of finished decks by `ad-hoc/workbench/report_lengths.py`, and the writer is
+asked for about the median, never under 60 (`fdd_utils/agent/lengths.py`). The
+owner's call (2026-11-09) was that length follows the team's record and what
+matters, not how much evidence there is, and the first report measured bears it
+out: the largest liability got 144 characters, a small deferred-cost account with
+a proposed adjustment 265, and P&L accounts whose slide carries a detail table a
+lead-in of 31 to 64. One report is in the table so far, the client file's own, so
+on that file the length matches by construction; other databooks are the test.
+An account no report wrote keeps the earlier rule, a length from its evidence (at
 most about 120 Chinese characters with up to three detail lines and no other
 table, 250 with up to seven or one table, 400 above that; two thirds as many
-English words), told to put the most important first, to state a movement only
+English words). The writer is told to put the most important first, to state a movement only
 where it matters (never every period pair), and to write 1亿元 or more as 亿元
 with two decimals and the rest as 万元 with one. Before this the writer had no
 length and listed each period's movement: on the client file the paragraphs ran
@@ -751,6 +762,17 @@ covers each figure; and 调增/调减 answer to the cited adjustment note's
 direction, not to a movement. On the DEMO self-test the verifier still accepts
 none of 667 wrong claims.
 
+Still refused after that, read from the third trial's review file, and fixed:
+"无异常" against a note's "未发现异常" was a contradiction because only 未 counted as
+a negation (无 and 不存在 now answer a negation but do not start a conflict, so a
+note's "无重大异常" next to a phrase the sentence quotes without it is still no
+contradiction); a date the cited note writes with dots ("2026.3.21-3.31") was
+not recognised as the note's own; a whole number of five or more digits written
+straight after the words of a note with no unit ("审计费183600") is read as yuan,
+a decimal cell value is not; and a period inside a bracket that is followed by
+an amount of its own ("22.36万元（含2025年审计费18.36万元…）") belongs to that
+amount, while a bracket holding only a period still labels the amount before it.
+
 **Planned (`agent.plan_first`, trial arm `planned`).** The stronger model reads
 an account's evidence once and returns at most eight points and six traps (a
 phase that is not the whole, a sub-line inside its parent, current against
@@ -760,7 +782,13 @@ cheaper model writes from that plan, the verifier decides every sentence, and a
 paragraph the cheaper model cannot repair goes to the stronger as in `mixed`.
 This is the lead without its checking loop: the lead arms, which had the
 stronger model check every claim, cost 6 to 8 yuan for 8 to 11 accepted of 26
-(2026-11-08).
+(2026-11-08). Fourth paid trial (2026-11-09, client file, 26 accounts): flash 0.27
+yuan, 21 accepted; mixed 0.96, 20; planned 1.98, 20; routed 3.21, 20 (19 accounts
+dispatched to the stronger model). Of the team's 83 figures the deck carried 54%,
+54%, 52% and 51% (legacy 57% at 10.87 yuan), and planned wrote 1.8 times the
+team's length against 1.3 for the others. On coverage and cost the stronger
+model's share bought nothing on this file; whether it lowers the share of wrong
+sentences waits on the sentence-level review.
 
 **What a person is shown, and why (2026-11-09).** A sentence-level review of the
 client file's first trial (621 sentences across three arms, every figure and

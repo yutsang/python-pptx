@@ -44,6 +44,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from ..ai import claims as cl
 from . import routing as R
 from . import tools as T
+from .lengths import written_length
 from .session import SourceSession
 
 STOP_ANSWERED = "answered"
@@ -381,11 +382,19 @@ CLAIM_SCHEMA = (
 )
 
 
+#: the shortest length asked for: the latest balance and one point about it
+LENGTH_FLOOR = 60
+
+
 def length_target(view: Dict[str, Any]) -> int:
-    """The most Chinese characters a paragraph should take, from how much its evidence holds. The writer had no length at all:
-    on the client file (2026-11-09) the agent's paragraphs ran two to four times the team's, the cheaper model's longest, and the
-    deck's slots are sized for the team's (legacy keeps a cap per account type, prompts.yml). By content, not by account name,
-    so an account no list names gets a size too."""
+    """The Chinese characters a paragraph should take. First what finished team reports wrote for this account (lengths.py):
+    the owner's call (2026-11-09) was that length follows the team's record and what matters, not how much evidence there is,
+    and the team's lengths do not follow the evidence (a P&L account with a table gets a lead-in, a small account with an
+    adjustment gets a long paragraph). An account no finished report wrote falls back to the evidence rule below, which was the
+    only rule before: on the client file the agent's paragraphs ran two to four times the team's without any length at all."""
+    seen = written_length(str(view.get("account") or ""))
+    if seen:
+        return max(LENGTH_FLOOR, seen)
     lines = len((view.get("components") or {}).get("lines") or [])
     tables = len(view.get("supporting_tables") or [])
     if lines >= 8 or tables >= 2:
@@ -397,9 +406,12 @@ def length_target(view: Dict[str, Any]) -> int:
 
 def length_line(view: Dict[str, Any], language: str) -> str:
     most = length_target(view)
-    if language in ("Chi", "Chn"):
-        return f"LENGTH: at most about {most} Chinese characters; fewer when there is less to say."
-    return f"LENGTH: at most about {most * 2 // 3} words; fewer when there is less to say."
+    record = written_length(str(view.get("account") or "")) is not None
+    chinese = language in ("Chi", "Chn")
+    size = f"{most} Chinese characters" if chinese else f"{most * 2 // 3} words"
+    if record:
+        return f"LENGTH: about {size}, as finished reports write this account; fewer when there is less to say, never padded."
+    return f"LENGTH: at most about {size}; fewer when there is less to say."
 
 
 def writer_system_prompt(language: str) -> str:

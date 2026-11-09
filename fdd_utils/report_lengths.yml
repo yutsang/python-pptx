@@ -1,0 +1,30 @@
+# Characters (whitespace removed) of each account's paragraph in finished team reports, one number per report.
+# The writer is asked for about the median (fdd_utils/agent/lengths.py); an account not listed keeps the evidence rule.
+# Built by: python ad-hoc/workbench/report_lengths.py <report text> [...] --write   (each report named once)
+reports: 1
+accounts:
+  货币资金: [91]
+  应收账款: [279]
+  预付款项: [40]
+  其他应收款: [133]
+  其他流动资产: [204]
+  固定资产: [284]
+  在建工程: [84]
+  长期待摊费用: [265]
+  其他非流动资产: [46]
+  应付账款: [342]
+  预收款项: [64]
+  应交税费: [66]
+  其他应付款: [113]
+  一年内到期的非流动负债: [61]
+  其他流动负债: [60]
+  长期借款: [144]
+  长期应付款: [126]
+  实收资本: [92]
+  营业收入: [666]
+  营业成本: [418]
+  税金及附加: [31]
+  管理费用: [125]
+  财务费用: [42]
+  投资收益: [55]
+  营业外支出: [39]

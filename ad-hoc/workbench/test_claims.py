@@ -759,6 +759,47 @@ class FalseRejects20261109(unittest.TestCase):
         self.assertIn("SIGN_ERROR", codes(wrong))
 
 
+
+class FalseRejectsTrial3(unittest.TestCase):
+    """Right sentences still refused after the first round of fixes, read from the third trial's review file (2026-11-09)."""
+    P3 = "2026-03-31"
+
+    def test_two_negations_are_no_contradiction_and_a_note_left_out_is_none_either(self):
+        note = "注册资本为5000万美元，已全额实缴，我们已检查至出资入账凭证，未发现异常"
+        self.assertEqual(cl.cause_conflicts("经检查出资入账凭证无异常", note), [])
+        self.assertIn("one of them negates what the other affirms", cl.cause_conflicts("经检查出资入账凭证发现异常", note))
+        # 无 does not start a conflict: a note's "无重大异常" next to a shared phrase the sentence quotes without it
+        self.assertEqual(cl.cause_conflicts("已核对至增值税申报表", "已核对至增值税申报表，无重大异常发现"), [])
+        self.assertEqual(cl.cause_conflicts("已核对至增值税申报表，未发现异常", "已核对至增值税申报表，无重大异常发现"), [])
+
+    def test_a_date_the_cited_note_writes_with_dots_is_not_a_reporting_period(self):
+        rows = [("应付利息", "detail", {P2: 250000, self.P3: 240000}), ("Total", "total", {P2: 250000, self.P3: 240000})]
+        c = build(rows=rows, notes=["2026年3月31日的应付利息余额的期间是2026.3.21-3.31"], periods=(P2, self.P3), account="其他流动负债")
+        n = c.notes[0]["ref"]
+        right = verdict("2026年3月31日应付利息余额对应2026年3月21日至31日期间", c, [n], [self.P3], kind="note")
+        self.assertNotIn("WRONG_PERIOD", codes(right), right["findings"])
+        wrong = verdict("2026年3月31日应付利息余额对应2026年2月21日至28日期间", c, [n], [self.P3], kind="note")
+        self.assertIn("WRONG_PERIOD", codes(wrong))
+
+    def test_a_whole_number_with_no_unit_in_a_note_is_yuan_and_a_decimal_is_not_read(self):
+        values = [a["value"] for a in cl.note_figures({"text": "2025审计费183600和2026Q1审计费40000", "period": None}, [P2])["amounts"]]
+        self.assertEqual(sorted(values), [40000.0, 183600.0])
+        self.assertEqual(cl.note_figures({"text": "合计 | Detail 23: 1234.56789012345", "period": None}, [P2])["amounts"], [])
+        self.assertEqual(cl.note_figures({"text": "新增租赁面积仅41250平方米", "period": None}, [P2])["amounts"], [])
+
+    def test_a_period_inside_a_bracket_belongs_to_the_amount_written_after_it(self):
+        rows = [("甲所", "detail", {P2: 183600, self.P3: 223600}), ("其他", "detail", {P2: 100000, self.P3: 100000}),
+                ("Total", "total", {P2: 283600, self.P3: 323600})]
+        c = build(rows=rows, notes=["2025审计费183600和2026Q1审计费40000"], periods=(P2, self.P3), account="其他应付款")
+        v = verdict("其中甲所22.36万元（含2025年审计费18.36万元和2026年一季度审计费4.00万元）", c,
+                    [ref(c, self.P3, "甲所"), c.notes[0]["ref"]], [self.P3])
+        self.assertEqual(codes(v), set(), v["findings"])
+        # a bracket holding only a period still labels the amount before it
+        labelled = verdict("甲所余额18.36万元（2025年12月31日）", c, [ref(c, P2, "甲所"), ref(c, self.P3, "甲所")], [P2, self.P3])
+        self.assertNotIn("WRONG_PERIOD", codes(labelled), labelled["findings"])
+        swapped = verdict("甲所余额22.36万元（2025年12月31日）", c, [ref(c, P2, "甲所"), ref(c, self.P3, "甲所")], [P2, self.P3])
+        self.assertIn("WRONG_PERIOD", codes(swapped))
+
 class DeckDelivery20261109(unittest.TestCase):
     """What reaches the slide: the marks a person must see, and figures rounded once from the exact value."""
 

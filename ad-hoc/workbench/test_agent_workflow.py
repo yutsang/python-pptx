@@ -519,7 +519,7 @@ class DispatchAndOverview(unittest.TestCase):
         self.assertEqual(work.shared.records[0].purpose, "dispatch")
         # dispatched there, never the cheaper model's draft: no 'escalated' flag saying it was rejected (2026-11-09 review form)
         self.assertNotIn("escalated", [f["kind"] for f in work.source.candidates[ACCOUNT].flags or []])
-        self.assertIn("LENGTH: at most about 120 Chinese characters", strong.users[1])
+        self.assertRegex(strong.users[1], r"LENGTH: about \d+ Chinese characters, as finished reports write this account")
 
     def test_an_unreadable_dispatch_reply_falls_back_to_the_rule_and_says_so(self):
         work = self._work(Writer(lambda *a: {}), Writer(lambda system, user, n: {"nonsense": 1}))
@@ -1234,6 +1234,38 @@ class AcceptanceAllowance(unittest.TestCase):
             self.assertEqual(len(seen), runs, entity_configs)
             self.assertLessEqual(sum(l.max_calls for _n, l in seen), 90, entity_configs)
             self.assertLessEqual(sum(l.max_tokens for _n, l in seen), 900_000, entity_configs)
+
+
+class LengthFromFinishedReports(unittest.TestCase):
+    """The writer's LENGTH follows what finished team reports wrote for the account (owner, 2026-11-09), not how much evidence
+    there is; an account no report wrote keeps the evidence rule."""
+
+    def test_a_listed_account_gets_the_reports_length_and_an_unlisted_one_the_evidence_rule(self):
+        from fdd_utils.agent import lengths as L
+        listed = next(iter(L.table()))
+        self.assertEqual(C.length_target({"account": listed}), max(C.LENGTH_FLOOR, L.written_length(listed)))
+        self.assertIn("as finished reports write this account", C.length_line({"account": listed}, "Chi"))
+        unlisted = {"account": "没有报告写过的科目", "components": {"lines": []}}
+        self.assertEqual(C.length_target(unlisted), 120)
+        self.assertIn("LENGTH: at most about 120 Chinese characters", C.length_line(unlisted, "Chi"))
+
+    def test_the_median_of_the_reports_and_a_floor_for_a_one_line_record(self):
+        from fdd_utils.agent import lengths as L
+        with mock.patch.object(L, "table", return_value={"甲": [100, 300, 200], "乙": [31]}):
+            self.assertEqual(L.written_length("甲"), 200)
+            self.assertEqual(C.length_target({"account": "乙"}), C.LENGTH_FLOOR)     # room for the latest balance and one point
+
+    def test_the_table_is_built_from_a_finished_decks_text(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import report_lengths
+        dump = ("--- Slide 2 ---\n  [Text Placeholder 9]\n货币资金 – 截至2026年3月31日，货币资金余额为银行存款1.23亿元\n"
+                "预付款项 – 截至2026年3月31日，预付款项无余额\n  [Text Placeholder 12]\n  资料来源：管理层报表\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "report-text.md"
+            path.write_text(dump, encoding="utf-8")
+            table = report_lengths.lengths([str(path), str(path)], [])
+        self.assertEqual(table["预付款项"], [len("预付款项–截至2026年3月31日，预付款项无余额")] * 2)
+        self.assertNotIn("应收账款", table)
 
 
 if __name__ == "__main__":

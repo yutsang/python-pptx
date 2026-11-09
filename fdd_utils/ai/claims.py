@@ -258,7 +258,15 @@ def attached_period(text: str, start: int, end: int, mentions: List[Dict[str, An
     if before:
         return max(before, key=lambda m: m["end"])
     after = [m for m in mentions if m["start"] >= end and "。" not in text[end:m["start"]]]
-    return min(after, key=lambda m: m["start"]) if after else None
+    if not after:
+        return None
+    first = min(after, key=lambda m: m["start"])
+    # "甲所22.36万元（含2025年审计费18.36万元…）": a period followed by an amount of its own, before the bracket or clause closes, is
+    # that amount's period; it labels the earlier amount only when nothing else follows it ("余额130万元（2025年12月31日）")
+    tail = re.split(r"[）)。；;]", text[first["end"]:], maxsplit=1)[0]
+    if any(sp["start"] >= first["end"] and sp["start"] < first["end"] + len(tail) for sp in text_amounts(text)):
+        return None
+    return first
 
 
 def mention_matches(mention: Dict[str, Any], period: str) -> bool:
@@ -433,8 +441,8 @@ def note_period(note: Dict[str, Any], periods: List[str]) -> Optional[str]:
 
 
 def note_figures(note: Dict[str, Any], periods: List[str]) -> Dict[str, Any]:
-    """What a note's text states with a unit: amounts (value, currency), percentages, dates. Bare numbers are not read (a
-    remark's cell values have no unit here)."""
+    """What a note's text states: amounts (value, currency), percentages, dates. A number with no unit is read only where it is
+    plainly yuan (below); a remark's cell values are read with the period they carry."""
     text = str(note.get("text") or "")
     own = note_period(note, periods)
     # a written sign is kept: "ADJ#4：-133.2万元" is a reduction (dropping it failed every adjustment written with its sign)
@@ -451,9 +459,22 @@ def note_figures(note: Dict[str, Any], periods: List[str]) -> Dict[str, Any]:
         if m.group(1) in periods:
             amounts.append({"value": float(m.group(3)), "currency": "CNY", "written": m.group(0), "period": m.group(1),
                             "annualised": bool(m.group(2))})
+    # "2025审计费183600和2026Q1审计费40000": a whole number of five or more digits written straight after the words, with no
+    # unit, is yuan like the facts (a fee was refused as uncited, 2026-11-09). A decimal ("1234.567...") is a cell value in some
+    # other unit and is not read; nor is a figure followed by a unit or a count word.
+    for m in re.finditer(r"(?:(?<=[\u4e00-\u9fff])|^)(\d{5,10})(?=$|[和及与、，,。；;）)\s])", text):
+        if not re.fullmatch(r"(?:19|20)\d{2}", m.group(1)):
+            amounts.append({"value": float(m.group(1)), "currency": "CNY", "written": m.group(1), "period": own})
+    dates = [m for m in period_mentions(text) if m["kind"] in ("date", "month")]
+    # "2026.3.21-3.31": a date written with dots (and the end of a range after it, in the same year)
+    for m in re.finditer(r"(20\d{2})[.．/](\d{1,2})[.．/](\d{1,2})(?:\s*[-~～至到]\s*(\d{1,2})[.．/](\d{1,2}))?", text):
+        year = int(m.group(1))
+        dates.append({"kind": "date", "year": year, "month": int(m.group(2)), "day": int(m.group(3)), "text": m.group(0)})
+        if m.group(4):
+            dates.append({"kind": "date", "year": year, "month": int(m.group(4)), "day": int(m.group(5)), "text": m.group(0)})
     signs = {w["sign"] for w in direction_words(text)} | {1 if sp.get("sign") == "+" else -1 for sp in text_amounts(text) if sp.get("sign")}
     return {"amounts": amounts, "percents": [abs(sp["value"]) for sp in text_percents(text) if not sp["points"]],
-            "dates": [m for m in period_mentions(text) if m["kind"] in ("date", "month")], "period": own,
+            "dates": dates, "period": own,
             "years": {int(y) for y in re.findall(r"(?<!\d)(20\d{2})(?!\d)", text)}, "signs": signs}
 
 
@@ -1417,6 +1438,17 @@ def _cue_classes(text: str) -> set:
     return {name for name, words in _CUES.items() if any(w in work for w in words)}
 
 
+_SOFT_NEGATION = ("无", "不存在")
+_NOT_NEGATION = ("无形", "无锡", "无论", "无息")
+
+
+def _soft_negation(text: str) -> bool:
+    work = text
+    for word in _NOT_NEGATION:
+        work = work.replace(word, "")
+    return any(w in work for w in _SOFT_NEGATION)
+
+
 def cause_conflicts(claim_text: str, note_text: str, contract: Optional[EvidenceContract] = None) -> List[str]:
     """Ways a sentence reverses or changes what a related note says, found WITHIN the stretches around
     the words they share (so a negation elsewhere in a long note is not charged to the claim):
@@ -1425,7 +1457,10 @@ def cause_conflicts(claim_text: str, note_text: str, contract: Optional[Evidence
     shared = _bigrams(claim_text) & _bigrams(note_text)
     c, n = _cue_classes(_window_text(claim_text, shared)), _cue_classes(_window_text(note_text, shared))
     found: List[str] = []
-    if ("neg" in c) != ("neg" in n):
+    # "经检查入账凭证无异常" against "未发现异常": both negate. 无/不存在 do not start a conflict on their own (a note's "无重大异常"
+    # just past a shared phrase is no contradiction of a sentence that leaves it out) but answer one (client file, 2026-11-09)
+    c_soft, n_soft = _soft_negation(_window_text(claim_text, shared)), _soft_negation(_window_text(note_text, shared))
+    if ("neg" in c and "neg" not in n and not n_soft) or ("neg" in n and "neg" not in c and not c_soft):
         found.append("one of them negates what the other affirms")
     if ("done" in c and "expect" in n and "done" not in n) or ("expect" in c and "done" in n and "expect" not in n):
         found.append("completed in one, only expected in the other")
