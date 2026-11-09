@@ -392,6 +392,10 @@ the sum of the run of lines right under it (or right above it, a subtotal),
 with two lines at least. When the top level then ties to the total, detail is
 `tied` and may explain it, and each sub-line carries `nested_in` so it is never
 added to its parent. Without an exact subtotal the layout stays `ambiguous`.
+Several levels are found the same way (category, counterparty, contract): a line
+already found to be a parent counts as one unit, its sub-lines skipped, when the
+run for the level above is summed, and the passes repeat until nothing new turns
+up. `nested_in` names the immediate parent.
 
 - **Verified offline**: `test_agent_tools.py`, `test_agent_controller.py`
   (scripted policies; one policy takes three different tool paths in three
@@ -788,8 +792,13 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
 - The prepared write's required statement is the latest balance only. Coverage
   of the movement, the main detail lines and the notes is asked for in the
   instructions and not enforced; the whole-databook trial records it per case.
-- The writer and the reviewer see the same evidence view: the last three periods
-  and eight detail lines per period, with a count of what was left out. A
+- The writer and the reviewer see the same evidence view: the last three periods,
+  one row per detail line chosen by materiality (every line at least 1% of its
+  period's total in a period shown, every line a note names, the parent of any
+  line shown, never fewer than eight, at most thirty), and the rest summed per
+  period as a citable D ref. `evidence_cut` is flagged only when the thirty-line
+  cap kept out a line of 1% or more. The contract itself keeps up to 400 detail
+  rows and 1,500 characters of each note (40 and 400 until 2026-11-09). A
   reviewer cannot check detail it was not shown.
 
 ## 9. Reproducing

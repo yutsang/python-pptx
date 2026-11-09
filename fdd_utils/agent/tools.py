@@ -496,9 +496,9 @@ def _refs_in(data: Any, depth: int = 0) -> set:
     if depth > 6:
         return found
     if isinstance(data, dict):
-        ref = data.get("ref")
-        if isinstance(ref, str) and ref[:1] in "FDN" and ref[1:].isdigit():
-            found.add(ref)
+        for ref in [data.get("ref")] + list(data.get("refs") or [] if isinstance(data.get("refs"), list) else []):
+            if isinstance(ref, str) and ref[:1] in "FDN" and ref[1:].isdigit():
+                found.add(ref)      # "refs": one per period, the evidence view's detail rows
         for value in data.values():
             found |= _refs_in(value, depth + 1)
     elif isinstance(data, list):

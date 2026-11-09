@@ -1398,26 +1398,89 @@ def to_legacy_result(account: str, claims: List[Dict[str, Any]], outcome: Dict[s
             "agent_4_validation": {"final_content": text, "clause_reviews": reviews}}
 
 
-def evidence_view(contract: EvidenceContract, *, max_components: int = 8, component_periods: int = 3) -> Dict[str, Any]:
+def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines: int = 8, material_share: float = 0.01,
+                  component_periods: int = 3) -> Dict[str, Any]:
     """The compact evidence an author is given. What decides whether a claim may be made
-    (permissions, checks, issues, notes, derived figures) comes first; the bulk (every detail
-    line) last and capped, with a count of what was left out. Facts a period does not permit
-    are not withheld -- the permission is stated beside them."""
+    (permissions, checks, issues, notes, derived figures) comes first; the detail lines last.
+
+    Detail is chosen by materiality, one row per line across the periods shown: every line at least 1% of its period's total
+    in any period shown, every line a note names, the parent of any line shown, and never fewer than the largest eight; at
+    most thirty. What is left is summed per period (a D ref, so "其他N项合计" can be cited). Until 2026-11-09 this was the
+    largest eight per period, each period its own list: the team's report enumerates groups and small special items
+    (retentions, aged balances) the writer never saw. Facts a period does not permit are not withheld -- the permission is
+    stated beside them."""
     def fact_view(f: Dict[str, Any]) -> Dict[str, Any]:
         out = {"ref": f["ref"], "period": f["period"], "basis": f["basis"], "line": f["line"] or "(total)",
                "yuan": round(f["value"], 2), "wan": round(f["value"] / 1e4, 2)}
         if f.get("nested_in"):
             out["nested_in"] = f["nested_in"]          # a sub-line of that line: never add it to its parent
         return out
-    components: Dict[str, List[Dict[str, Any]]] = {}
-    for f in contract.facts:
-        if f["role"] == ROLE_COMPONENT:
-            components.setdefault(f["period"], []).append(f)
     shown_periods = contract.periods[-component_periods:]
-    comp_view = {p: [fact_view(f) for f in sorted(components.get(p, []), key=lambda x: -abs(x["value"]))[:max_components]]
-                 for p in shown_periods}
-    omitted = sum(max(len(components.get(p, [])) - max_components, 0) for p in shown_periods) + \
-        sum(len(v) for p, v in components.items() if p not in shown_periods)
+    by_ref = {f["ref"]: f for f in contract.facts}
+    lines: Dict[Any, Dict[str, Any]] = {}          # one per sheet row (a repeated label on another row is another line)
+    for f in contract.facts:
+        if f["role"] != ROLE_COMPONENT or f["period"] not in shown_periods:
+            continue
+        key = f.get("row") if f.get("row") is not None else f["line"]
+        entry = lines.setdefault(key, {"line": f["line"], "row": f.get("row"), "facts": {}})
+        entry["facts"][f["period"]] = f
+    totals = {}
+    for p in shown_periods:
+        t = contract.total(p, BASIS_ADJUSTED)
+        if t is None:
+            t = contract.total(p, BASIS_RAW)
+        if not t:
+            t = sum(abs(e["facts"][p]["value"]) for e in lines.values() if p in e["facts"])
+        totals[p] = abs(t or 0.0)
+    live = {k: e for k, e in lines.items() if any(abs(f["value"]) > 0.005 for f in e["facts"].values())}
+
+    def weight(e: Dict[str, Any]) -> float:
+        return max((abs(f["value"]) / totals[p] if totals.get(p) else 0.0) for p, f in e["facts"].items())
+    note_text = " ".join(str(n.get("text") or "") for n in contract.notes)
+    ranked = sorted(live, key=lambda k: -weight(live[k]))
+    keep = set(ranked[:min_lines])
+    keep |= {k for k in ranked if weight(live[k]) >= material_share}
+    keep |= {k for k in ranked if len(_bare(live[k]["line"])) >= 2 and _bare(live[k]["line"]) in note_text}
+    keep = set(sorted(keep, key=ranked.index)[:max_lines])
+    parent_line = {}
+    for k in list(keep):                           # a sub-line shown with its parent, so the structure reads
+        for f in live[k]["facts"].values():
+            parent = by_ref.get(f.get("nested_in") or "")
+            if parent is not None:
+                parent_line[k] = parent["line"]
+                pk = parent.get("row") if parent.get("row") is not None else parent["line"]
+                if pk in live:
+                    keep.add(pk)
+    order = sorted(keep, key=lambda k: (live[k]["row"] if live[k]["row"] is not None else 10 ** 9, ranked.index(k)))
+    rows_out = []
+    for k in order:
+        e = live[k]
+        row = {"line": e["line"], "refs": [e["facts"][p]["ref"] if p in e["facts"] else None for p in shown_periods],
+               "wan": [round(e["facts"][p]["value"] / 1e4, 2) if p in e["facts"] else None for p in shown_periods]}
+        if k in parent_line:
+            row["nested_in"] = parent_line[k]      # a sub-line of that line: never add it to its parent
+        rows_out.append(row)
+    left = [k for k in ranked if k not in keep]
+    rest = None
+    if left:
+        rest = {"lines": len(left), "refs": [], "wan": []}
+        for p in shown_periods:
+            # only the top level of what is left: a sub-line is already inside its parent's figure
+            refs = [live[k]["facts"][p]["ref"] for k in left if p in live[k]["facts"] and not live[k]["facts"][p].get("nested_in")]
+            if not refs:
+                rest["refs"].append(None)
+                rest["wan"].append(None)
+                continue
+            d = derive_sum(contract, refs) if len(refs) > 1 else None
+            if d is not None and d.get("valid", True):
+                rest["refs"].append(d["ref"])
+                rest["wan"].append(round(d["value"] / 1e4, 2))
+            else:
+                rest["refs"].append(refs[0])
+                rest["wan"].append(round(by_ref[refs[0]]["value"] / 1e4, 2))
+    rest_refs = set((rest or {}).get("refs") or [])
+    omitted = len(left)
+    material_left = sum(1 for k in left if weight(live[k]) >= material_share)    # lines the thirty-line cap kept out
     return {
         "account": contract.account, "source_version": contract.source_version, "periods": contract.periods,
         "permissions": {p: {k: v for k, v in perm.items() if k != "reasons"} | {"why": perm.get("reasons")}
@@ -1426,9 +1489,10 @@ def evidence_view(contract: EvidenceContract, *, max_components: int = 8, compon
         "issues": contract.issues,
         "annualization": contract.annualization,
         "derived": [{k: d.get(k) for k in ("ref", "kind", "periods", "value", "pct", "valid", "invalid_reason", "formula")}
-                    for d in contract.derived],
+                    for d in contract.derived if d.get("ref") not in rest_refs],
         "notes": [{"ref": n["ref"], "kind": n["kind"], "period": n.get("period"), "text": n["text"]} for n in contract.notes],
         "totals": [fact_view(f) for f in contract.facts if f["role"] == ROLE_TOTAL],
-        "components": comp_view,
+        "components": {"periods": shown_periods, "lines": rows_out, **({"rest": rest} if rest else {})},
         "components_not_shown": omitted,
+        "material_not_shown": material_left,
     }

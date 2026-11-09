@@ -559,6 +559,63 @@ class Nesting(unittest.TestCase):
         c = build(rows, notes=[])
         self.assertEqual(c.permissions[P2]["detail_basis"], "ambiguous")
 
+    def test_two_levels_category_counterparty_contract_tie_at_the_top_and_each_line_names_its_own_parent(self):
+        # 工程款 = 甲公司 + 乙公司; 甲公司 = 一期 + 二期 (category -> counterparty -> contract)
+        rows = [("工程款", "detail", {P1: 900000, P2: 1000000}),
+                ("甲公司", "detail", {P1: 600000, P2: 700000}),
+                ("一期", "detail", {P1: 100000, P2: 100000}),
+                ("二期", "detail", {P1: 500000, P2: 600000}),
+                ("乙公司", "detail", {P1: 300000, P2: 300000}),
+                ("物管费", "detail", {P1: 100000, P2: 300000}),
+                ("Total", "total", {P1: 1000000, P2: 1300000})]
+        c = build(rows, notes=[])
+        self.assertEqual(c.permissions[P2]["detail_basis"], "tied", c.check(P2, ec.CHECK_DETAIL_VS_TOTAL))
+        by_line = {f["line"]: f for f in c.facts if f["period"] == P2 and f["role"] == ec.ROLE_COMPONENT}
+        self.assertEqual(by_line["一期"]["nested_in"], by_line["甲公司"]["ref"])
+        self.assertEqual(by_line["甲公司"]["nested_in"], by_line["工程款"]["ref"])
+        self.assertEqual(by_line["乙公司"]["nested_in"], by_line["工程款"]["ref"])
+        self.assertNotIn("nested_in", by_line["工程款"])
+        self.assertNotIn("nested_in", by_line["物管费"])
+
+
+class MaterialView(unittest.TestCase):
+    """The writer's detail: lines of 1% or more, lines a note names, never fewer than eight, at most thirty; the rest summed as a
+    citable D ref. Until 2026-11-09 it was the eight largest per period, and small special items (a retention) never reached it."""
+
+    def rows(self, n_small=40):
+        big = [(f"大客户{i}", "detail", {P1: 900000.0, P2: 1000000.0}) for i in range(5)]
+        small = [(f"小户{i:02d}", "detail", {P1: 100.0, P2: 200.0}) for i in range(n_small)]
+        special = [("质保金甲", "detail", {P1: 50.0, P2: 50.0})]     # smaller than every filler line
+        rows = big + small + special
+        rows.append(("Total", "total", {p: sum(r[2][p] for r in rows) for p in (P1, P2)}))
+        return rows
+
+    def test_material_and_note_named_lines_are_shown_and_the_rest_is_one_citable_sum(self):
+        c = build(self.rows(), notes=["质保金甲 为工程质保金，待竣工验收后支付"])
+        v = cl.evidence_view(c)
+        names = [r["line"] for r in v["components"]["lines"]]
+        for i in range(5):
+            self.assertIn(f"大客户{i}", names)
+        self.assertIn("质保金甲", names)                       # tiny, but a note names it
+        self.assertEqual(len(names), 9)                          # five material, three filler, and the retention a note names
+        rest = v["components"]["rest"]
+        self.assertEqual(rest["lines"], 46 - len(names))
+        d = rest["refs"][-1]
+        self.assertTrue(d.startswith("D"))
+        shown_small = sum(r["wan"][-1] for r in v["components"]["lines"] if r["line"].startswith("小户"))
+        self.assertAlmostEqual(rest["wan"][-1], round((40 * 200.0) / 1e4 - shown_small, 2), places=2)
+        self.assertEqual(v["material_not_shown"], 0)
+        self.assertNotIn(d, {x["ref"] for x in v["derived"]})    # listed once, under rest
+        w = verdict(f"其余{rest['lines']}项合计{rest['wan'][-1]:.2f}万元", c, [d], [P2], "composition")
+        self.assertNotIn(w["verdict"], ("failed",), w["findings"])
+
+    def test_the_thirty_line_cap_is_what_raises_evidence_cut(self):
+        rows = [(f"客户{i:02d}", "detail", {P1: 1000.0, P2: 1000.0}) for i in range(40)]
+        rows.append(("Total", "total", {P1: 40000.0, P2: 40000.0}))
+        v = cl.evidence_view(build(rows, notes=[]))
+        self.assertEqual(len(v["components"]["lines"]), 30)
+        self.assertEqual(v["material_not_shown"], 10)           # each is 2.5% of the total
+
 
 class PercentBinding(unittest.TestCase):
     """A percentage is bound to the period, the line and the kind of ratio the sentence says, as an amount is."""

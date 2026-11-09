@@ -70,32 +70,54 @@ TIE_RELATIVE = 0.005
 TIE_ABSOLUTE = 1.0
 
 
+# A note longer than this is cut. 400 until 2026-11-09, which cut real notes on a client file mid-sentence (the evidence view
+# shows every note, so this is the only limit on what the writer reads of one).
+NOTE_CHARS = 1500
+
+
 def find_nesting(parts: List[Dict[str, Any]], tolerance: float = TIE_ABSOLUTE) -> Dict[str, Any]:
     """Lines that are the exact sum of the run of lines right under them (or right above them, a subtotal), in sheet order.
-    {"parents": {parent id: [child ids]}, "children": {child ids}}. Needs a row for every line; two lines at least per run."""
+    {"parents": {parent id: [direct child ids]}, "children": {every id under some parent}}. Needs a row for every line; two
+    lines at least per run. Several levels (category -> counterparty -> contract): a line found to be a parent counts as one
+    unit, its own sub-lines skipped, when a run is summed for the level above it; passes repeat until nothing new is found.
+    Single-level until 2026-11-09, which left a three-level layout 'ambiguous' and its composition blocked."""
     rows = [f for f in parts if f.get("row") is not None]
     if len(rows) != len(parts) or len(rows) < 3:
         return {"parents": {}, "children": set()}
     rows.sort(key=lambda f: f["row"])
     parents: Dict[str, List[str]] = {}
-    children: set = set()
-    for i, line in enumerate(rows):
-        if line["id"] in children or abs(line["value"]) <= tolerance:
-            continue
-        for run in (range(i + 1, len(rows)), range(i - 1, -1, -1)):
-            total, picked = 0.0, []
-            for j in run:
-                if rows[j]["id"] in children or rows[j]["id"] in parents:
+    parent_of: Dict[str, str] = {}
+
+    def top_of(fid: str) -> str:
+        while fid in parent_of:
+            fid = parent_of[fid]
+        return fid
+
+    found = True
+    while found:
+        found = False
+        for i, line in enumerate(rows):
+            if line["id"] in parents or line["id"] in parent_of or abs(line["value"]) <= tolerance:
+                continue
+            for run in (range(i + 1, len(rows)), range(i - 1, -1, -1)):
+                total, picked = 0.0, []
+                for j in run:
+                    rid = rows[j]["id"]
+                    if rid in parent_of:
+                        if top_of(rid) in picked:
+                            continue        # a sub-line of a unit already counted
+                        break               # belongs to a block outside this run
+                    total += rows[j]["value"]
+                    picked.append(rid)
+                    if len(picked) >= 2 and abs(total - line["value"]) <= tolerance:
+                        parents[line["id"]] = list(picked)
+                        for child in picked:
+                            parent_of[child] = line["id"]
+                        found = True
+                        break
+                if line["id"] in parents:
                     break
-                total += rows[j]["value"]
-                picked.append(rows[j]["id"])
-                if len(picked) >= 2 and abs(total - line["value"]) <= tolerance:
-                    parents[line["id"]] = list(picked)
-                    children.update(picked)
-                    break
-            if line["id"] in parents:
-                break
-    return {"parents": parents, "children": children}
+    return {"parents": parents, "children": set(parent_of)}
 
 
 def tie_tolerance(left: float, right: float) -> float:
@@ -332,7 +354,7 @@ def build_contract(
     graph_facts: Optional[Dict[str, Any]] = None,
     binding: Optional[SourceBinding] = None,
     digest: Optional[Dict[str, Any]] = None,
-    max_components: int = 40,
+    max_components: int = 400,
 ) -> EvidenceContract:
     """The contract for one account. Pure and deterministic: same frame, same
     Financials, same contract."""
@@ -483,10 +505,9 @@ def build_contract(
                 top = sum(f["value"] for f in parts if f["id"] not in nested["children"])
                 if nested["parents"] and abs(top - adjusted_value) <= tol:
                     for parent_id, child_ids in nested["parents"].items():
-                        parent_ref = next((f.get("ref") for f in parts if f["id"] == parent_id), "")
                         for f in parts:
                             if f["id"] in child_ids:
-                                f["nested_in"] = parent_ref or parent_id
+                                f["nested_in"] = parent_id      # replaced by the parent's ref once refs exist
                     status, note = PASS, (f"nested: {len(nested['parents'])} line(s) listed with their own sub-lines; the top level "
                                           f"({top:,.2f}) ties to the total")
                 else:
@@ -540,7 +561,7 @@ def build_contract(
             return          # a bare number or a stray label is not an explanation
         seen_notes.add(text)
         contract.notes.append({"id": f"{account}|note|{len(contract.notes) + 1}", "kind": kind,
-                               "text": text[:400], "period": period or None, "sheet": sheet or None})
+                               "text": text[:NOTE_CHARS], "period": period or None, "sheet": sheet or None})
 
     for text in attrs.get("supporting_notes") or []:
         add_note("supporting_note", text if isinstance(text, str) else str(text))
@@ -555,6 +576,10 @@ def build_contract(
     # -- short references the prompt and the model use ---------------------------------
     for i, item in enumerate(sorted(contract.facts, key=lambda f: f["id"]), 1):
         item["ref"] = f"F{i}"
+    ref_of = {f["id"]: f["ref"] for f in contract.facts}
+    for item in contract.facts:
+        if item.get("nested_in") in ref_of:
+            item["nested_in"] = ref_of[item["nested_in"]]
     for i, item in enumerate(contract.notes, 1):
         item["ref"] = f"N{i}"
     return contract

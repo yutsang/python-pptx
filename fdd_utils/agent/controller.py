@@ -368,7 +368,7 @@ CLAIM_SCHEMA = (
 
 def writer_system_prompt(language: str) -> str:
     """The prepared write's instructions: the same rules as the tool loop's, without the tool menu (nothing here calls a tool)."""
-    answer_lang = "繁體中文" if language in ("Chi", "Chn") else "English"
+    answer_lang = "简体中文" if language in ("Chi", "Chn") else "English"
     return (
         "You write ONE account's paragraph for a financial due diligence report. EVIDENCE is what Python read from the workbook and\n"
         "checked; you know nothing else about it.\n"
@@ -378,8 +378,9 @@ def writer_system_prompt(language: str) -> str:
         "   describe_total=false is in conflict: state the difference (its D ref), not either figure. Detail lines may explain a total\n"
         "   only where permissions say explain_with_detail=true. Read the notes (N refs) for causes and adjustments.\n"
         "3. The paragraph states the latest balance the deck uses (REQUIRED), the movement where a D ref exists, the main detail\n"
-        "   lines where detail is permitted, and causes only from notes. A line marked nested_in is a sub-line of that line: never\n"
-        "   add it to its parent.\n"
+        "   lines where detail is permitted, and causes only from notes. components.lines has one row per line, one ref and one\n"
+        "   万元 figure per period in components.periods. A line marked nested_in is a sub-line of that line: never add it to its\n"
+        "   parent. components.rest is the sum of the smaller lines not listed (cite its D ref, e.g. 其余N项合计).\n"
         "4. Notes are evidence too. A figure, percentage or date written in a note may be stated when the claim cites that note in\n"
         "   'cites' (an amount in the note's own currency, e.g. 万美元; never convert it). MUST ADDRESS lists the notes Python found\n"
         "   material: state what each says in a claim that cites it, or name its ref in 'unresolved' with the reason. None may be\n"
@@ -395,7 +396,7 @@ def writer_system_prompt(language: str) -> str:
 
 
 def system_prompt(mode: str, session: SourceSession, language: str, remembered: bool = False) -> str:
-    answer_lang = "繁體中文" if language in ("Chi", "Chn") else "English"
+    answer_lang = "简体中文" if language in ("Chi", "Chn") else "English"
     rules = (
         "You work for a financial due diligence team on ONE workbook. You know nothing about it except what tools return.\n"
         "1. Use the tools. Never state a figure, period, flag or cause that a tool did not return.\n"
@@ -775,8 +776,8 @@ class AgentController:
         for u in unresolved:
             if not any(r in deferred for r in re.findall(r"(?<![A-Za-z])N\d+(?!\d)", str(u))):
                 flags.append({"kind": "unresolved", "text": str(u)[:200]})
-        if view.get("components_not_shown"):
-            flags.append({"kind": "evidence_cut", "text": f"{view['components_not_shown']} detail line(s) were not shown to the writer"})
+        if view.get("material_not_shown"):
+            flags.append({"kind": "evidence_cut", "text": f"{view['material_not_shown']} detail line(s) of at least 1% were not shown to the writer"})
         if escalated:
             flags.append({"kind": "escalated", "text": "the cheaper model's draft was rejected; the stronger model repaired it"})
         return flags
@@ -1124,7 +1125,7 @@ class AgentController:
             return False
         self._view, self._must, self._lead_header = view, [], True
         lead, cheap, strong = self._lead_roles()
-        answer_lang = "繁體中文" if self.language in ("Chi", "Chn") else "English"
+        answer_lang = "简体中文" if self.language in ("Chi", "Chn") else "English"
         text = self._lead_call(run, lead, LEAD_UNDERSTAND_SYSTEM + f"\nWrite each point in {answer_lang}.",
                                f"EVIDENCE for {account}:\n{_compact(view)}\n\nREQUEST: {goal}\n\n{LEAD_UNDERSTAND_PROTOCOL}\nYour JSON object:",
                                2500, usage, "understand")
