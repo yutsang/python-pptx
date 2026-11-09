@@ -72,6 +72,15 @@ def lead_write(config: Optional[Dict[str, Any]] = None) -> bool:
     return bool(_agent_block(config).get("lead_write"))
 
 
+def plan_first(config: Optional[Dict[str, Any]] = None) -> bool:
+    """agent.plan_first (default false): in a prepared write the escalation model reads the evidence once and writes a short plan
+    (the points to make and the traps to avoid); the primary model writes from it, the verifier decides, and a paragraph the
+    primary cannot repair goes to the escalation model as in routing. The lead without its checking loop: the lead arms checked
+    every claim and cost 6 to 8 yuan a databook for 8 to 11 accepted of 26 (2026-11-08). Off until entity_trial (arm 'planned')
+    shows it helps."""
+    return bool(_agent_block(config).get("plan_first"))
+
+
 def seed_facts(config: Optional[Dict[str, Any]] = None) -> bool:
     """agent.seed_facts (default false): in a prepared write Python writes the balance and movement sentences and the model adds
     the rest. Off until a paid comparison (entity_trial.py, arm 'seeded') shows it helps."""

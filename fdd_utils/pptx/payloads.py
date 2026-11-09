@@ -429,14 +429,19 @@ def round_to_house_precision(text: str) -> str:
     reader notices before anything else on the page. Only ever REDUCES
     precision; a figure already at or under the house rule is untouched.
     """
+    from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+
     def _fix(match: "re.Match") -> str:
         whole, frac, unit = (match.group(1), match.group(2), match.group(3))
         places = 1
         if whole is None:
             whole, frac, unit, places = match.group(4), match.group(5), match.group(6), 2
         try:
-            value = float(whole.replace(",", "") + "." + frac)
-        except ValueError:
+            # decimal half-up on the written digits: float formatting printed 1.95 as 1.9 (client file, 2026-11-09). Rounding
+            # an already-rounded figure can still be off by the last digit (36.848675 written 36.85 becomes 36.9); the agent's
+            # evidence gives one decimal from the exact value so its text never reaches this with two.
+            value = Decimal(whole.replace(",", "") + "." + frac).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
+        except (InvalidOperation, ValueError):
             return match.group(0)
         return "{:,.{p}f}{u}".format(value, p=places, u=unit)
 

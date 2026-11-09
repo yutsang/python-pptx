@@ -711,6 +711,77 @@ class DeckColours(unittest.TestCase):
                          "data-backed")
 
 
+class FalseRejects20261109(unittest.TestCase):
+    """Right sentences the verifier refused (and the deck then marked) on the client file, per a sentence-level review."""
+
+    def test_respectively_pairs_periods_and_amounts_in_order(self):
+        c = build()
+        v = verdict("2024年12月31日和2025年12月31日应收账款余额分别为100.0万元和130.0万元", c, [ref(c, P1), ref(c, P2)], [P1, P2])
+        self.assertNotIn("WRONG_PERIOD", codes(v), v["findings"])
+        swapped = verdict("2024年12月31日和2025年12月31日应收账款余额分别为130.0万元和100.0万元", c, [ref(c, P1), ref(c, P2)], [P1, P2])
+        self.assertIn("WRONG_PERIOD", codes(swapped))
+
+    def test_the_period_after_jiao_is_the_base_of_the_change(self):
+        c = build()
+        cl.standard_derived(c)
+        move = next(d["ref"] for d in c.derived if d.get("kind") == cl.KIND_MOVEMENT)
+        v = verdict("2025年12月31日应收账款余额130.0万元，较2024年12月31日增加30.0万元", c, [ref(c, P2), move], [P1, P2], kind="movement")
+        self.assertNotIn("WRONG_PERIOD", codes(v), v["findings"])
+
+    def test_a_label_hyphen_before_a_currency_word_is_not_a_minus(self):
+        self.assertEqual(cl.text_amounts("应付利息-人民币37.2万元")[0]["sign"], "")
+        self.assertEqual(cl.text_amounts("管理层调整-473.2万元")[0]["sign"], "-")
+
+    def test_a_generic_accounting_word_is_not_a_line_to_cite(self):
+        rows = [("原值", "detail", {P1: 900000, P2: 1000000}), ("累计折旧", "detail", {P1: -100000, P2: -200000}),
+                ("Total", "total", {P1: 800000, P2: 800000})]
+        c = build(rows=rows, notes=[])
+        v = verdict("2025年12月31日账面净值80.0万元，系原值扣除累计折旧后的金额", c, [ref(c, P2)], [P2])
+        self.assertNotIn("LINE_NOT_CITED", codes(v), v["findings"])
+
+    def test_a_name_after_prose_words_is_read_as_the_name(self):
+        c = build(notes=["原值为支付给上海甲企业管理有限公司的租赁管理费"])
+        self.assertEqual(cl.names_not_in_evidence("原值系支付给上海甲企业管理有限公司的租赁管理费", c), [])
+        self.assertEqual(cl.names_not_in_evidence("原值系支付给上海乙企业管理有限公司的租赁管理费", c), ["上海乙企业管理有限公司"])
+
+    def test_one_unit_after_a_list_of_figures_covers_each(self):
+        figures = cl.note_figures({"text": "包括2025年审计费191,400+2026年一季度50,000元", "period": None}, [P1, P2])["amounts"]
+        self.assertIn(191400.0, [a["value"] for a in figures])
+
+    def test_an_adjustment_word_answers_to_its_note_not_to_a_movement(self):
+        c = build(notes=["「2025」Audit ADJ#2：-4.4万元（调减）（对方科目：应付账款）"], statement="IS")
+        cl.standard_derived(c)
+        move = next(d["ref"] for d in c.derived if d.get("kind") == cl.KIND_MOVEMENT)     # the total rose
+        note = c.notes[0]["ref"]
+        right = verdict("2025年度应收账款增加30.0万元，其中审计调整调减4.4万元", c, [move, note], [P1, P2], kind="movement")
+        self.assertFalse({"SIGN_ERROR", "DIRECTION_UNBOUND"} & {f["code"] for f in right["findings"]}, right["findings"])
+        wrong = verdict("2025年度应收账款增加30.0万元，其中审计调整调增4.4万元", c, [move, note], [P1, P2], kind="movement")
+        self.assertIn("SIGN_ERROR", codes(wrong))
+
+
+class DeckDelivery20261109(unittest.TestCase):
+    """What reaches the slide: the marks a person must see, and figures rounded once from the exact value."""
+
+    def test_a_mark_survives_the_slide_texts_own_rewriting(self):
+        from fdd_utils.pptx.helpers import _build_clause_segments
+        from fdd_utils.pptx.payloads import _normalize_slide_commentary_text
+        good, bad = "余额为130.0万元。", "其中甲公司83.85万元，调整-473.2万元。"
+        slide = _normalize_slide_commentary_text(good + bad)
+        self.assertNotIn(bad, slide)                                      # the slide rewrote it (rounding, 负)
+        segments = _build_clause_segments(slide, [{"clause": good, "category": "data-backed"}, {"clause": bad, "category": "hallucination"}])
+        self.assertIn("hallucination", [cat for _t, cat in segments], segments)
+
+    def test_house_rounding_is_half_up_on_the_written_digits(self):
+        from fdd_utils.pptx.payloads import round_to_house_precision
+        self.assertEqual(round_to_house_precision("1.95万元"), "2.0万元")     # float formatting printed 1.9
+        self.assertEqual(round_to_house_precision("83.85万元"), "83.9万元")
+
+    def test_the_writer_is_shown_one_decimal_rounded_from_the_exact_value(self):
+        self.assertEqual(cl._wan(368486.75), 36.8)      # shown 36.85 before, which the deck rounded again to 36.9
+        self.assertEqual(cl._wan(19500), 2.0)           # an exact half rounds up
+        self.assertEqual(cl._wan(1333.18), 0.1333)      # under 1万元: the exact yuan stays readable
+
+
 class PercentBinding(unittest.TestCase):
     """A percentage is bound to the period, the line and the kind of ratio the sentence says, as an amount is."""
 

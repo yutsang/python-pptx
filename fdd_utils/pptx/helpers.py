@@ -2117,6 +2117,11 @@ def _build_clause_segments(
         if not clause_text:
             continue
         category = str(review.get("category") or ("data-backed" if review.get("supported") else "hallucination")).lower()
+        if clause_text not in commentary:
+            # The slide text went through _normalize_slide_commentary_text (house rounding, shortened company names, 负 for a
+            # glued minus) after the clauses were judged; the clause is looked for the way it now reads. Without this, 30 of 46
+            # marked sentences of an agent deck came out black (client file, 2026-11-09): the person never saw them.
+            clause_text = _normalize_slide_commentary_text(clause_text).rstrip("。；;，, ") or clause_text
         search_from = 0
         # Find first non-overlapping occurrence
         while True:

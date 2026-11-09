@@ -243,6 +243,18 @@ def attached_period(text: str, start: int, end: int, mentions: List[Dict[str, An
     """The period an amount at [start, end) is written under: the nearest mention before it in the
     same sentence, else the nearest after it ("余额130万元（2025年12月31日）"). None if the sentence names none."""
     before = [m for m in mentions if m["end"] <= start and "。" not in text[m["end"]:start]]
+    # "2023年和2024年…分别调减614.5万元和826.9万元": the n-th amount after 分别 is the n-th period before it
+    split = text.rfind("分别", 0, start)
+    if split >= 0 and "。" not in text[split:start]:
+        listed = sorted((m for m in before if m["end"] <= split), key=lambda m: m["start"])
+        series = [sp for sp in text_amounts(text) if sp["start"] > split and "。" not in text[split:sp["start"]]]
+        index = next((i for i, sp in enumerate(series) if sp["start"] == start), None)
+        if len(listed) >= 2 and index is not None and len(series) == len(listed):
+            return listed[index]
+    # "较2025年末减少705.67万元": the period after 较 is what the change is measured from, not the period of an amount written
+    # after the change word (client file, 2026-11-09: such amounts were refused as written under the wrong period)
+    before = [m for m in before if not (re.search(r"(?:较|比|相比|相较|对比)\s*$", text[max(0, m["start"] - 3):m["start"]])
+                                        and _has(text[m["end"]:start], _UP + _DOWN))]
     if before:
         return max(before, key=lambda m: m["end"])
     after = [m for m in mentions if m["start"] >= end and "。" not in text[end:m["start"]]]
@@ -302,6 +314,8 @@ def _written_sign(text: str, start: int) -> str:
         j -= 1
     if j >= 0 and (text[j].isdigit() or text[j] in "%％"):
         return ""
+    if j >= 0 and re.match(r"[一-鿿A-Za-z]", text[j]) and re.match(r"\s*(?:人民币|人民幣|RMB|CNY)", text[i + 1:i + 8]):
+        return ""           # "应付利息-人民币37.2万元": a label and its currency, not a negative amount
     return "+" if text[i] in "+＋" else "-"
 
 
@@ -345,6 +359,9 @@ _ANNUAL_ANY = _ANNUAL_WORD + _FORECAST_WORD + ("全年", "full year", "full-year
 #: share of a cause sentence's content bigrams that must be in the notes it cites for it to read as the note's own statement
 NOTE_FAITHFUL = 0.6
 
+_GENERIC_LINE = re.compile(r"^(?:原值|净值|账面价值|账面净值|累计折旧|累计摊销|减值准备|坏账准备|直线法|合计|小计|总计|其他|其中|"
+                           r"本金|利息|余额|期初|期末|本年增加|本年减少|本期增加|本期减少)$")
+_ADJUST_WORDS = ("调增", "调减")
 _ORG = re.compile(r"[一-鿿A-Za-z（）()·]{2,40}?(?:股份有限公司|有限责任公司|有限公司|分公司|公司|银行|事务所|集团)")
 _ORG_END = re.compile(r"(?:股份有限公司|有限责任公司|有限公司|分公司|公司|银行|事务所|集团)$")
 _ORG_GENERIC = re.compile(r"^(?:目标|本|该|母|子|关联|项目|总|分|上市|贵|我|其|一家|两家|多家|各|上述|以上|该等)?(?:公司|银行|集团|事务所)$")
@@ -368,12 +385,15 @@ def names_not_in_evidence(text: str, contract: Any) -> List[str]:
     known = {k for k in known if len(k) >= 3 and not _ORG_GENERIC.match(k)}
     out = []
     for m in _ORG.finditer(str(text or "")):
-        name = _org_core(m.group(0))
+        # the sentence's own words run into the match: "原值系支付给上海甲公司", "（含乙公司": cut at the last of them
+        raw = re.split(r"支付给|付给|支付|应付|应收|预付|预收|系|为|含|包括|其中|主要|向|对|与|和|及|给|自|由|于|在|的|、|，|,|（含|\(含",
+                       m.group(0))[-1]
+        name = _org_core(raw)
         if len(name) < 6 or _ORG_GENERIC.match(name):
             continue
         if name in pool or any(k in name for k in known):
             continue
-        out.append(m.group(0))
+        out.append(raw)
     return out
 
 
@@ -420,6 +440,12 @@ def note_figures(note: Dict[str, Any], periods: List[str]) -> Dict[str, Any]:
     # a written sign is kept: "ADJ#4：-133.2万元" is a reduction (dropping it failed every adjustment written with its sign)
     amounts = [{"value": sp["value"] * (-1.0 if sp.get("sign") == "-" else 1.0), "currency": _currency_at(text, sp["start"], sp["end"]),
                 "written": sp["written"], "period": own} for sp in text_amounts(text)]
+    # "191,400+50,000元": the unit written once covers each figure of the list (a fee was refused as uncited, 2026-11-09)
+    scale = {"元": 1.0, "千元": 1e3, "万元": 1e4, "亿元": 1e8}
+    for m in re.finditer(r"((?:\d[\d,]*(?:\.\d+)?\s*[+＋、和及]\s*)+)(\d[\d,]*(?:\.\d+)?)\s*(亿元|万元|千元|元)", text):
+        for figure in re.findall(r"\d[\d,]*(?:\.\d+)?", m.group(1)):
+            amounts.append({"value": float(figure.replace(",", "")) * scale[m.group(3)], "currency": "CNY", "written": figure + m.group(3),
+                            "period": own})
     # a remark's cell values carry their period ("2026-03-31: 4342452.0"): yuan, like the facts, and bound to that period
     for m in _REMARK_VALUE.finditer(text):
         if m.group(1) in periods:
@@ -776,9 +802,19 @@ def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict
         return None
 
     seen_unsupported = set()
+    adjusted = set()
+    for i in infos:
+        w = i["w"]
+        if w["word"] in _ADJUST_WORDS and note_signs and not i["cause"]:
+            # an adjustment's direction is the cited note's (each bridge entry says 调增 or 调减 for this account), not a
+            # movement's: "调减" beside a movement of the other sign was refused as unbound (2026-11-09)
+            adjusted.add(id(i))
+            if w["sign"] not in note_signs:
+                out.append(("failed", "SIGN_ERROR", "arithmetic",
+                            f"{word_text(w)}, but the cited adjustment note says the opposite for this account"))
     for i in infos:
         w, subject, line = i["w"], i["subject"], i["line"]
-        if not subject:
+        if not subject or id(i) in adjusted:
             continue
         truths = _pick(share_truths if subject == "share" else amount_truths, line)
         signs = {_sign(t["value"]) for t in truths}
@@ -810,7 +846,7 @@ def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict
     seen_loose = set()
     for i in result_words:
         w, line = i["w"], i["line"]
-        if i["subject"]:
+        if i["subject"] or id(i) in adjusted:
             continue
         truths = _pick(amount_truths, line) + [t for t in share_truths if not line or t["line"] == line]
         signs = {_sign(t["value"]) for t in truths}
@@ -1245,6 +1281,8 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     # ("due to 甲公司's late rent"): the rule bites where a figure sits right after the name.
     line_level = bool(cited_lines) or _has(text, _COMPOSITION_CUES)
     for label in labels:
+        if _GENERIC_LINE.match(label):
+            continue        # 原值, 直线法: words a sentence uses for what they mean, not a line it must cite (2026-11-09)
         position = masked.find(label)
         if position >= 0:
             masked = masked.replace(label, " " * len(label))
@@ -1518,6 +1556,16 @@ def to_legacy_result(account: str, claims: List[Dict[str, Any]], outcome: Dict[s
             "agent_4_validation": {"final_content": text, "clause_reviews": reviews}}
 
 
+def _wan(value: float) -> float:
+    """A yuan figure as the writer is shown it, in 万元: one decimal, rounded half-up from the exact value, as the report writes
+    it; under 1万元 four decimals, so the exact yuan can be written. Shown with two decimals, the writer copied 36.85 and the
+    deck rounded that again to 36.9 for 36.848675 (client file, 2026-11-09: twelve sentences wrong only in the deck)."""
+    from decimal import ROUND_HALF_UP, Decimal
+    wan = Decimal(str(float(value))) / Decimal(10000)
+    places = Decimal("0.1") if abs(wan) >= 1 else Decimal("0.0001")
+    return float(wan.quantize(places, rounding=ROUND_HALF_UP))
+
+
 def _supporting_view(contract: EvidenceContract, totals: Dict[str, float], shown_periods: List[str], *, max_tables: int = 3,
                      max_rows: int = 15) -> List[Dict[str, Any]]:
     """The other tables of the account's tab, as the preparer laid them out: one row per line, one ref and one 万元 figure per
@@ -1547,7 +1595,7 @@ def _supporting_view(contract: EvidenceContract, totals: Dict[str, float], shown
             if key not in keep_keys:
                 continue
             rows.append({"line": key[1], "refs": [cells[c]["ref"] if c in cells else None for c in cols],
-                         "wan": [round(cells[c]["value"] / 1e4, 2) if c in cells else None for c in cols],
+                         "wan": [_wan(cells[c]["value"]) if c in cells else None for c in cols],
                          **({"subtotal": True} if cells["subtotal"] else {})})
         entry = {"title": t["title"], "where": t["where"],
                  "columns": [{"head": h, "period": p, **({"period_assumed": True} if a else {})} for h, p, a in cols], "rows": rows}
@@ -1570,7 +1618,7 @@ def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines:
     stated beside them."""
     def fact_view(f: Dict[str, Any]) -> Dict[str, Any]:
         out = {"ref": f["ref"], "period": f["period"], "basis": f["basis"], "line": f["line"] or "(total)",
-               "yuan": round(f["value"], 2), "wan": round(f["value"] / 1e4, 2)}
+               "yuan": round(f["value"], 2), "wan": _wan(f["value"])}
         if f.get("nested_in"):
             out["nested_in"] = f["nested_in"]          # a sub-line of that line: never add it to its parent
         return out
@@ -1615,7 +1663,7 @@ def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines:
     for k in order:
         e = live[k]
         row = {"line": e["line"], "refs": [e["facts"][p]["ref"] if p in e["facts"] else None for p in shown_periods],
-               "wan": [round(e["facts"][p]["value"] / 1e4, 2) if p in e["facts"] else None for p in shown_periods]}
+               "wan": [_wan(e["facts"][p]["value"]) if p in e["facts"] else None for p in shown_periods]}
         if k in parent_line:
             row["nested_in"] = parent_line[k]      # a sub-line of that line: never add it to its parent
         rows_out.append(row)
@@ -1633,14 +1681,14 @@ def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines:
             d = derive_sum(contract, refs) if len(refs) > 1 else None
             if d is not None and d.get("valid", True):
                 rest["refs"].append(d["ref"])
-                rest["wan"].append(round(d["value"] / 1e4, 2))
+                rest["wan"].append(_wan(d["value"]))
             else:
                 rest["refs"].append(refs[0])
-                rest["wan"].append(round(by_ref[refs[0]]["value"] / 1e4, 2))
+                rest["wan"].append(_wan(by_ref[refs[0]]["value"]))
     rest_refs = set((rest or {}).get("refs") or [])
     omitted = len(left)
     tables = _supporting_view(contract, totals, shown_periods)
-    related = [{"account": f.get("from_account") or f["line"], "ref": f["ref"], "period": f["period"], "wan": round(f["value"] / 1e4, 2),
+    related = [{"account": f.get("from_account") or f["line"], "ref": f["ref"], "period": f["period"], "wan": _wan(f["value"]),
                 **({"flow": True} if str(f.get("statement") or "").upper().startswith("IS") else {})}
                for f in contract.facts if f["role"] == ROLE_RELATED]
     # this account with its related accounts of the same statement, one citable figure: the team writes the VAT on both asset
@@ -1655,7 +1703,7 @@ def evidence_view(contract: EvidenceContract, *, max_lines: int = 30, min_lines:
         if mates:
             d = derive_sum(contract, [f["ref"]] + [g["ref"] for g in mates])
             if d.get("valid", True) and d.get("value") is not None:
-                group_totals.append({"ref": d["ref"], "period": f["period"], "wan": round(d["value"] / 1e4, 2),
+                group_totals.append({"ref": d["ref"], "period": f["period"], "wan": _wan(d["value"]),
                                      "accounts": [contract.account] + [g.get("from_account") or g["line"] for g in mates]})
     rest_refs |= {g["ref"] for g in group_totals}
     material_left = sum(1 for k in left if weight(live[k]) >= material_share)    # lines the thirty-line cap kept out

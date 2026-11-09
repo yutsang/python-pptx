@@ -546,6 +546,27 @@ class DispatchAndOverview(unittest.TestCase):
         self.assertEqual([r.purpose for r in work.shared.records][-2:], ["overview", "overview"])
 
 
+    def test_the_stronger_model_plans_once_and_the_cheaper_writes_from_the_plan(self):
+        cheap = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
+
+        def strong(system, user, n):
+            assert "You are the senior" in system, "the stronger model only plans here"
+            return {"points": [{"point": "先写余额及构成", "refs": ["F1"]}], "cautions": ["甲公司一期余额不是合计"]}
+        senior = Writer(strong)
+        tmp = tempfile.mkdtemp(prefix="plan_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        source = session_on(book)
+        source.load_params = {"workbook": book}
+        work = W.WorkSession(source, model=cheap, escalation=senior, model_name="m", policy=R.Policy(mode="escalate"),
+                             budget=C.Budget(max_steps=8), prepare=True, config={"agent": {"plan_first": True}})
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual((len(senior.users), len(cheap.users)), (1, 1))
+        self.assertIn("甲公司一期余额不是合计", cheap.users[0])
+        self.assertIn("先写余额及构成", cheap.users[0])
+        self.assertEqual([r.purpose for r in work.shared.records][:1], ["plan"])
+
     def test_the_overview_keeps_a_sentence_once_and_stops_at_the_bands_size(self):
         cheap = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
 

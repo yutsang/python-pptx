@@ -12,6 +12,7 @@ Arms. The models are config.yml agent.models: primary is the cheaper one (Flash)
     pro     the stronger model writes every account
     flash   the cheaper model writes every account
     mixed   the cheaper model writes; after --escalate-after rejected drafts the stronger one repairs what was rejected
+    planned mixed, but the stronger model first reads each account's evidence once and writes a plan (points to make, traps)
     seeded  mixed, but Python writes the balance and movement sentences itself and the cheaper model only adds the rest
     reviewed  seeded, and a verified paragraph with something only a reader can judge (a cause, notes, a basis caveat, part-year
             figures; Python decides) is read once by the stronger model for meaning; the cheaper one repairs what it objects to,
@@ -62,7 +63,7 @@ sys.path.insert(0, str(ROOT))
 import agent_acceptance as A  # noqa: E402
 
 OUT_DIR = ROOT / "fdd_utils" / "output" / "agent_trial"
-ARMS = ("pro_lead", "flash_lead", "mixed_lead", "pro", "flash", "mixed", "routed", "seeded", "reviewed", "loop")
+ARMS = ("pro_lead", "flash_lead", "mixed_lead", "pro", "flash", "mixed", "planned", "routed", "seeded", "reviewed", "loop")
 # the model leads (understands, decides, checks); Python reads, computes and verifies as a tool. pro / flash / mixed are the
 # Python-gated prepared write, kept to compare against; seeded / reviewed were measured 2026-11-08 and dropped
 DEFAULT_ARMS = "pro_lead,flash_lead,mixed_lead"
@@ -92,6 +93,9 @@ def arm_setup(cfg: Dict[str, Any], name: str, args: argparse.Namespace) -> Dict[
     if name in ("mixed", "seeded", "reviewed"):
         return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "escalate_after": int(args.escalate_after),
                 "seed": name in ("seeded", "reviewed"), "review": name == "reviewed"}
+    if name == "planned":                        # the stronger model plans each account once (points, traps); the cheaper writes
+        return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "escalate_after": int(args.escalate_after),
+                "plan": True}
     if name == "routed":                         # the stronger model assigns each account (dispatch.py); the cheaper writes the rest
         return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "escalate_after": int(args.escalate_after),
                 "dispatch": True}
@@ -112,6 +116,7 @@ def arm_config(cfg: Dict[str, Any], setup: Dict[str, Any]) -> Dict[str, Any]:
     agent["seed_facts"] = bool(setup.get("seed"))
     agent["review_meaning"] = bool(setup.get("review"))
     agent["lead_write"] = bool(setup.get("lead"))
+    agent["plan_first"] = bool(setup.get("plan"))
     return out
 
 
@@ -273,7 +278,7 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                                      "sources": sources_for_review(work.source, key, c),
                                      "flags": list((c.flags if c is not None else []) or []),
                                      "refusals": refusals(c) if not (c is not None and c.accepted and c.validated) else [],
-                                     "deck_marks": deck_marks(key, c)}
+                                     "deck_marks": deck_marks(key, c), "plan": (turn.report or {}).get("plan") or {}}
             marks.append(books.calls)
             clock.append(time.perf_counter())
             result.update(done=len(per), ok=sum(p["ok"] for p in per), books=A._books_delta(books, 0))
@@ -421,6 +426,8 @@ class ScriptedWriter:
             lines = [json.loads(x) for x in user.split("ACCOUNTS:\n", 1)[-1].split("\n\n", 1)[0].splitlines() if x.startswith("{")]
             reply = {"claims": [{"account": x["account"], "kind": "amount", "periods": [x["balance"]["period"]], "cites": [x["balance"]["ref"]],
                                  "text": f"{x['account']}余额{x['balance']['wan']:,.1f}万元。"} for x in lines[:3]]}
+        elif "You are the senior" in system:
+            reply = {"points": [{"point": "scripted: state the balance", "refs": []}], "cautions": ["scripted: no trap"]}
         elif "You lead the writing" in system:
             reply = {"points": [], "cautions": [], "difficulty": "simple", "writer": "cheap"}
         elif "You check ONE paragraph" in system:
@@ -458,7 +465,7 @@ def scripted_for(name: str) -> Dict[str, Any]:
         holder: Dict[str, Any] = {}
         primary, good = A.scripted_models(lambda: holder["source"], wrong_first=True)
         return {"primary": A.Scripted(primary, "scripted-cheap"), "escalation": A.Scripted(good, "scripted-strong"), "holder": holder}
-    if name in ("mixed", "seeded", "reviewed", "mixed_lead", "routed"):
+    if name in ("mixed", "seeded", "reviewed", "mixed_lead", "routed", "planned"):
         return {"primary": ScriptedWriter("cheap", wrong_first=(name == "mixed")), "escalation": ScriptedWriter("strong")}
     return {"primary": ScriptedWriter(name)}
 
@@ -734,6 +741,10 @@ def quality_markdown(report: Dict[str, Any], legacy: Dict[str, str], order: List
                 out.append("\n_reviewer objections_: " + "; ".join([f"[{o.get('index')}] {o.get('why')}" for o in review.get("objections") or []]
                                                                   + [f"missing {x.get('ref')}: {x.get('why')}" for x in review.get("missing") or []])
                            + (f" ({review.get('settled')})" if review.get("settled") else ""))
+            plan = t.get("plan") or {}
+            if plan.get("points") or plan.get("cautions"):
+                out.append("\n_plan by the stronger model_: " + " | ".join(p["point"] for p in plan.get("points") or [])
+                           + ("\n_traps it named_: " + " | ".join(plan.get("cautions") or []) if plan.get("cautions") else ""))
             out.append("\n_marked in the deck_ (what a person is shown): " + ("none" if not t.get("deck_marks") else ""))
             out.extend(f"- [{m['claim']}] {m['colour'].upper()}: {m['text']}\n  why: {m['why']}" for m in t.get("deck_marks") or [])
             if t.get("refusals"):

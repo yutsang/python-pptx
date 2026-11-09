@@ -344,6 +344,21 @@ LEAD_UNDERSTAND_PROTOCOL = (
     '  {"points": [{"point": "<what must be said>", "refs": ["F/D/N refs it rests on"], "why": "<why it matters>"}],\n'
     '   "cautions": ["<what the writer must not get wrong>"], "difficulty": "simple" | "complex", "writer": "cheap" | "strong"}'
 )
+PLAN_SYSTEM = (
+    "You are the senior on a financial due diligence team. A junior will write ONE account's paragraph from EVIDENCE (what Python\n"
+    "read from the workbook: figures by basis, figures Python computed, notes, the tab's other tables, related accounts). Read it\n"
+    "and tell the junior, briefly: the points the paragraph should make, most important first (the balance and what it is made\n"
+    "of, the movements that matter and their cause where a note gives one, material notes, adjustments, retentions, deposits,\n"
+    "related parties, ageing, risks a buyer should check); and the traps in THIS evidence: a subtotal or one phase that is not the\n"
+    "whole, a sub-line already inside its parent, a line that is one tenant's part and not its whole balance, current against\n"
+    "long-term, gross against net, the target company against its shareholder, figures before and after adjustment, an\n"
+    "adjustment's direction for this account, a gain against a loss, a blank that is not a nil, a note that disagrees with a cell.\n"
+    "Only what EVIDENCE shows; cite refs. At most 8 points and 6 traps, one short line each."
+)
+PLAN_PROTOCOL = (
+    "Reply with exactly ONE JSON object and nothing else:\n"
+    '  {"points": [{"point": "<what to say>", "refs": ["F/D/N refs"]}], "cautions": ["<trap to avoid, with refs>"]}'
+)
 LEAD_CHECK_SYSTEM = (
     "You check ONE paragraph of a financial due diligence report. For each claim you see what it cites, as read from the workbook,\n"
     "and what a verifier tool found (it checks figures, periods, signs and citations mechanically, and can be wrong in both\n"
@@ -451,8 +466,11 @@ def system_prompt(mode: str, session: SourceSession, language: str, remembered: 
 class AgentController:
     def __init__(self, session: SourceSession, model: Model, *, budget: Optional[Budget] = None, language: Optional[str] = None,
                  memory: Optional[Memory] = None, prepare: bool = False, seed: bool = False, review: bool = False,
-                 lead: bool = False):
+                 lead: bool = False, plan: bool = False):
         self.session = session
+        #: prepared write only: the escalation model reads the evidence once and plans; the primary writes (agent.plan_first)
+        self.plan = plan
+        self._plan: Dict[str, Any] = {}
         #: the paragraph is led by the model: it understands, decides who writes, checks every claim and decides (agent.lead_write)
         self.lead = lead
         self._lead_header = False
@@ -823,6 +841,24 @@ class AgentController:
             flags.append({"kind": "escalated", "text": "the cheaper model's draft was rejected; the stronger model repaired it"})
         return flags
 
+    def _make_plan(self, run: AgentRun, account: str, view: Dict[str, Any], usage: Dict[str, Any]) -> Dict[str, Any]:
+        """The escalation model's reading of the evidence, once per account: the points to make and the traps to avoid. Guidance
+        for the writer only; the verifier still decides every sentence and MUST ADDRESS is still Python's."""
+        answer_lang = "简体中文" if self.language in ("Chi", "Chn") else "English"
+        called = self._call_model(run, PLAN_SYSTEM + f"\nWrite each point and trap in {answer_lang}.",
+                                  f"EVIDENCE for {account}:\n{_compact(view)}\n\n{PLAN_PROTOCOL}\nYour JSON object:", 1200, usage,
+                                  role=R.ROLE_ESCALATION, purpose="plan")
+        if called is None:
+            return {}
+        plan, _error = parse_turn(called[0])
+        plan = plan or {}
+        contract = self.session.contracts[account]
+        known = {f["ref"] for f in contract.facts} | {n["ref"] for n in contract.notes} | {d["ref"] for d in contract.derived}
+        points = [{"point": str(p.get("point"))[:200], "refs": [r for r in (p.get("refs") or []) if r in known]}
+                  for p in plan.get("points") or [] if isinstance(p, dict) and str(p.get("point") or "").strip()][:8]
+        cautions = [str(c)[:200] for c in plan.get("cautions") or [] if str(c).strip()][:6]
+        return {"points": points, "cautions": cautions}
+
     def _repaired_by_stronger(self) -> bool:
         """The stronger model took the turn over after the cheaper one failed. A turn the dispatcher started there
         ("configured_task") was never the cheaper model's, and saying its draft was rejected misled the review form."""
@@ -858,6 +894,12 @@ class AgentController:
             parts.append(("POINTS TO MAKE (the lead's reading of the evidence; state each citing its refs, or say in 'unresolved' why not):\n"
                           if self._lead_header else "MUST ADDRESS (state it citing the ref, or name the ref in 'unresolved' with the reason):\n")
                          + "\n".join(f"  {m['ref']} ({m['why']}): {m['text']}" for m in must))
+        plan = getattr(self, "_plan", None) or {}
+        if plan.get("points") or plan.get("cautions"):
+            parts.append("PLAN (the senior's reading of this evidence; follow it where EVIDENCE bears it out, the verifier still checks every "
+                         "sentence):\n" + "\n".join(f"  - {p['point']}" + (f" [{', '.join(p['refs'])}]" if p.get("refs") else "")
+                                                     for p in plan.get("points") or [])
+                         + ("\nTRAPS:\n" + "\n".join(f"  - {c}" for c in plan.get("cautions") or []) if plan.get("cautions") else ""))
         if required:
             parts.append("REQUIRED: a claim must cite " + ", ".join(required) + " (the latest balance the deck uses, or the difference that replaces it).")
         parts.append(length_line(view, self.language))
@@ -1340,6 +1382,10 @@ class AgentController:
             return False
         required = self._required_refs(view)
         self._view, self._must = view, self._must_address(view)
+        self._plan = {}
+        if self.plan and self.router is not None and R.ROLE_ESCALATION in self.router.roles:
+            self._plan = self._make_plan(run, account, view, usage)
+            run.report["plan"] = self._plan
         system = writer_system_prompt(self.language)
         router = self.router
         claims: List[Dict[str, Any]] = []

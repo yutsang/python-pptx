@@ -1,6 +1,6 @@
 """How much of a finished report each trial arm states, from a trial's review file and the report's text. No model call; free.
 
-    python ad-hoc/workbench/score_reference.py --trial <trial_quality_*.md> --reference <report text> [--verbose]
+    python ad-hoc/workbench/score_reference.py --reference <report text> [--trial <trial_quality_*.md>] [--verbose]
 
 The reference is a text dump of the team's finished deck (`inspect_pptx.py <deck> --dump-text`, saved to a file); an account's
 paragraph runs from its name followed by a dash ("应收账款 –") to the next such header. For every account the trial wrote, each
@@ -60,12 +60,19 @@ def _arm_paragraph(block: str, arm: str) -> Tuple[str, str, int]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--trial", required=True, help="trial_quality_<stamp>.md")
+    ap.add_argument("--trial", default="", help="trial_quality_<stamp>.md (default: the newest in fdd_utils/output/agent_trial)")
     ap.add_argument("--reference", required=True, help="the finished report's text")
     ap.add_argument("--verbose", action="store_true", help="list the reference figures each arm misses")
     args = ap.parse_args()
     from fdd_utils.ai import claims as cl
 
+    if not args.trial:
+        found = sorted((ROOT / "fdd_utils" / "output" / "agent_trial").glob("trial_quality_*.md"), key=lambda f: f.stat().st_mtime)
+        if not found:
+            print("no trial_quality_*.md in fdd_utils/output/agent_trial; pass --trial")
+            return 2
+        args.trial = str(found[-1])
+    print(f"trial: {Path(args.trial).name}")
     md, ref = _read(args.trial), _read(args.reference)
     blocks = {}
     for b in re.split(r"\n## ", md)[1:]:

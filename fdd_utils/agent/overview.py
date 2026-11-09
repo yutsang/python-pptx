@@ -50,11 +50,11 @@ def _account_line(session: Any, key: str, labels: Dict[str, str]) -> Optional[Di
     verified = [cl_text for cl_text, v in zip((x.get("text") for x in cand.claims), cand.outcome.get("verdicts") or [])
                 if v.get("verdict") in ("verified", "verified_inference")]
     line = {"account": key, "period_label": labels.get(latest, latest),
-            "balance": {"ref": total["ref"], "period": latest, "wan": round(total["value"] / 1e4, 1)},
+            "balance": {"ref": total["ref"], "period": latest, "wan": cl._wan(total["value"])},
             "paragraph": "".join(str(t) for t in verified[:2])[:180],
             "flags": len(cand.flags or [])}
     if move is not None:
-        line["movement"] = {"ref": move["ref"], "periods": move.get("periods"), "wan": round(float(move.get("value") or 0) / 1e4, 1),
+        line["movement"] = {"ref": move["ref"], "periods": move.get("periods"), "wan": cl._wan(float(move.get("value") or 0)),
                             "pct": move.get("pct")}
     return line
 

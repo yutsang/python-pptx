@@ -728,6 +728,40 @@ deck including marked drafts, all text) and the length against the team's. With
 the length given (2026-11-09 rerun) every arm came to 1.3 to 1.4 times the team's
 length, as legacy does.
 
+**What reaches the slide (2026-11-09, second review).** A sentence-level review
+of the third trial checked the decks themselves: 30 of 46 marked sentences were
+black, and twelve right sentences were wrong only on the slide. The slide text
+goes through `_normalize_slide_commentary_text` (house rounding, shortened company
+names, 负 for a glued minus) after the sentences were judged, so a judged sentence
+was no longer found in it; it is now looked for as it reads after that rewriting.
+The rounding was a second rounding: the writer copied 万元 figures shown with two
+decimals and the slide rounded them again (36.848675 shown as 36.85, printed
+36.9). The evidence now shows 万元 with one decimal rounded half-up from the exact
+value (four decimals under 1万元), and the slide's own rounding is half-up on the
+written digits.
+
+The same review listed right sentences the verifier refused. Fixed: periods
+listed before 分别 pair with the amounts after it in order; a period after 较
+(比, 相比) is the base of the change written after it, not the period of that
+amount; a hyphen joining a label to 人民币 is not a minus; generic words that are
+also line names (原值, 直线法, 累计折旧, 合计 and the like) are not lines a
+sentence must cite; a company name is read after the prose words that run into
+it ("支付给", "含"); one unit after a list of figures in a note ("191,400+50,000元")
+covers each figure; and 调增/调减 answer to the cited adjustment note's
+direction, not to a movement. On the DEMO self-test the verifier still accepts
+none of 667 wrong claims.
+
+**Planned (`agent.plan_first`, trial arm `planned`).** The stronger model reads
+an account's evidence once and returns at most eight points and six traps (a
+phase that is not the whole, a sub-line inside its parent, current against
+long-term, the target against its shareholder, before and after adjustment, an
+adjustment's direction, a gain against a loss, a blank that is not a nil); the
+cheaper model writes from that plan, the verifier decides every sentence, and a
+paragraph the cheaper model cannot repair goes to the stronger as in `mixed`.
+This is the lead without its checking loop: the lead arms, which had the
+stronger model check every claim, cost 6 to 8 yuan for 8 to 11 accepted of 26
+(2026-11-08).
+
 **What a person is shown, and why (2026-11-09).** A sentence-level review of the
 client file's first trial (621 sentences across three arms, every figure and
 name read against the visible sheets) found 33 to 55 marks per arm on sentences
