@@ -2663,7 +2663,7 @@ def _composition_reviews(final_content: str) -> List[Dict[str, Any]]:
         #   * a drill-down inside a drill-down (「计提867.4万元及第三方9.9万元；
         #     计提中主要为…731.3万元，其中…725.0万元」);
         #   * a period comparison beside the total (「合计366.1万元，年化后
-        #     1,464.3万元，较2025年度1,463.3万元基本持平」);
+        #     1,200.0万元，较2025年度1,190.0万元基本持平」);
         #   * an earlier period's breakdown after the latest balance (「2025年末
         #     余额为16.6万元…2023年末余额23.6万元则主要为…16.1万元及…7.3万元」);
         #   * gross items with the deduction stated after them (「主要包括…5.49
