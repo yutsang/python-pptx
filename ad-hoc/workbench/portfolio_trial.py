@@ -9,6 +9,8 @@ offline gate runs once for all of them.
     python ad-hoc/workbench/portfolio_trial.py --dir databooks --recheck                             free: the verifier as it is
                                                                                                      now, over those runs' drafts
 
+--untried picks only entities no paid trial has run on: the books a frozen version is accepted on.
+
 Which entity: of those whose sheet the roll-up's matcher finds (inspect_databook.resolve_auto_rollup_targets, the one the UI
 uses), the file with the most visible sheets (the most accounts to write), ties by name. --entities picks by name instead.
 Hidden sheets are neither counted nor read. Each book writes its own trial files and prints its own DIGEST.
@@ -26,11 +28,32 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT))
 
 
-def survey(folder: str, entities: Optional[List[str]] = None) -> List[Dict[str, Any]]:
-    """Per portfolio: the roll-up, its visible Financials-like sheets, every entity with the sheet it resolves to, and the pick."""
+def paid_trials(out_dir: Optional[Path] = None) -> List[Any]:
+    """(stamp, report) of every paid trial written to out_dir, oldest first."""
+    import json
+    import re
+    import entity_trial as E
+    found = []
+    for f in Path(out_dir or E.OUT_DIR).glob("trial_*.json"):
+        m = re.fullmatch(r"trial_(\d{8}_\d{6})\.json", f.name)
+        if m:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            if not data.get("scripted"):
+                found.append((m.group(1), data))
+    return sorted(found, key=lambda t: t[0])
+
+
+def survey(folder: str, entities: Optional[List[str]] = None, untried: bool = False,
+           out_dir: Optional[Path] = None) -> List[Dict[str, Any]]:
+    """Per portfolio: the roll-up, its visible Financials-like sheets, every entity with the sheet it resolves to, and the pick.
+    With untried, only entities no paid trial has run on are picked: the books a frozen version is accepted on."""
     import inspect_databook as I
     from entity_trial import _sha
     from fdd_utils.workbook.visibility import visible_sheet_names
+    done = [str(t[1].get("databook_sha256") or "") for t in paid_trials(out_dir)]
     files = sorted(Path(folder).glob("*.xlsx"))
     groups = I.group_portfolio_files(files)
     targets = I.resolve_auto_rollup_targets(files)
@@ -40,11 +63,12 @@ def survey(folder: str, entities: Optional[List[str]] = None) -> List[Dict[str, 
         rows = []
         for entity, path in sorted(group["entities"].items()):
             visible = visible_sheet_names(str(path)) or []
+            sha = _sha(str(path))[:8]
             rows.append({"entity": entity, "path": path, "sheet": (targets.get(path) or (None, None))[1], "sheets": len(visible),
-                         "sha": _sha(str(path))[:8]})
+                         "sha": sha, "tried": any(d.startswith(sha) for d in done)})
         fin = [s for s in (visible_sheet_names(str(rollup)) or []) if "financ" in s.lower()] if rollup else []
         chosen = [r for r in rows if r["entity"] in entities] if entities else \
-            sorted([r for r in rows if r["sheet"]], key=lambda r: (-r["sheets"], r["entity"]))[:1]
+            sorted([r for r in rows if r["sheet"] and not (untried and r["tried"])], key=lambda r: (-r["sheets"], r["entity"]))[:1]
         out.append({"portfolio": name, "rollup": rollup, "financials": fin, "entities": rows, "pick": chosen})
     return out
 
@@ -57,7 +81,7 @@ def show(found: List[Dict[str, Any]]) -> List[str]:
         picked = {r["entity"] for r in g["pick"]}
         for r in g["entities"]:
             out.append(f"  {'*' if r['entity'] in picked else ' '} {r['entity']}: {r['sheets']} visible sheets, sha {r['sha']}, "
-                       f"Financials {r['sheet'] or 'NOT FOUND in the roll-up'}")
+                       f"Financials {r['sheet'] or 'NOT FOUND in the roll-up'}" + ("; tried before" if r.get("tried") else ""))
     picks = [r for g in found for r in g["pick"]]
     out.append(f"will run {len(picks)} book(s): " + (", ".join(r["entity"] for r in picks) or "none"))
     return out
@@ -90,21 +114,10 @@ def run(found: List[Dict[str, Any]], args: argparse.Namespace, trial: Optional[C
 def recheck_all(found: List[Dict[str, Any]], out_dir: Optional[Path] = None, check: Optional[Callable[..., Any]] = None) -> List[str]:
     """For each pick, the newest paid trial on that workbook (by its sha), and every arm's saved drafts in it: the marks the
     verifier gives now against those it gave then (recheck_session.py). No model call."""
-    import json
-    import re
     import entity_trial as E
     import recheck_session as RS
     out_dir, check = out_dir or E.OUT_DIR, check or RS.recheck
-    trials = []
-    for f in Path(out_dir).glob("trial_*.json"):
-        m = re.fullmatch(r"trial_(\d{8}_\d{6})\.json", f.name)
-        if m:
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-            except ValueError:
-                continue
-            if not data.get("scripted"):
-                trials.append((m.group(1), data))
+    trials = paid_trials(out_dir)
     out = []
     for g in found:
         for r in g["pick"]:
@@ -131,10 +144,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--pro", default="")
     ap.add_argument("--i-accept-paid-calls", action="store_true")
     ap.add_argument("--recheck", action="store_true", help="free: re-verify the newest paid trial of each pick with the code as it is now")
+    ap.add_argument("--untried", action="store_true", help="pick only entities no paid trial has run on (acceptance books)")
     args = ap.parse_args(argv)
     import agent_acceptance as A
     A._utf8()
-    found = survey(args.dir, [e.strip() for e in args.entities.split(",") if e.strip()] or None)
+    found = survey(args.dir, [e.strip() for e in args.entities.split(",") if e.strip()] or None, untried=args.untried)
     print("\n".join(show(found)), flush=True)
     if args.recheck:
         print("\n".join(recheck_all(found)))

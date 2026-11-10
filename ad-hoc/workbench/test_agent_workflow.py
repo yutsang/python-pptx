@@ -1334,7 +1334,7 @@ class WholeDatabookTrial(unittest.TestCase):
         row = result["accounts"][ACCOUNT]
         self.assertEqual((row["before"], [(m["claim"], m["colour"]) for m in row["after"]]), ([], [(0, "orange")]))
         self.assertIn("AMBIGUOUS_SUBJECT", row["codes"])
-        self.assertIn("new 1, gone 0", RS.report(result)[0])
+        self.assertIn("new 1, gone 0, recoloured 0", RS.report(result)[0])
 
     def test_a_portfolio_folder_runs_one_entity_per_portfolio_against_its_roll_up_sheet_with_one_gate(self):
         import portfolio_trial as PT
@@ -1388,6 +1388,10 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertEqual(seen, [(pick["path"].name, "trial_checked_20260101_000000.agent-session.json"),
                                 (pick["path"].name, "trial_pro_20260101_000000.agent-session.json")])
         self.assertIn("no paid trial of this workbook", "\n".join(lines), "the second portfolio has none")
+        # --untried: the acceptance books are those no paid trial has run on
+        again = PT.survey(str(tmp), untried=True, out_dir=out)
+        self.assertEqual([[r["entity"] for r in g["pick"]] for g in again], [["南湖"], ["东湖"]])
+        self.assertIn("tried before", "\n".join(PT.show(again)))
 
     def test_the_scripted_writer_writes_the_latest_balance_it_is_shown(self):
         import entity_trial as E

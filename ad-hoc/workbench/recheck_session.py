@@ -56,14 +56,21 @@ def report(result: Dict[str, Any], width: int = 400) -> List[str]:
     (rb, ob), (ra, oa) = count("before"), count("after")
     gained = {k: [m for m in r["after"] if m["claim"] not in {x["claim"] for x in r["before"]}] for k, r in rows.items()}
     lost = {k: [m for m in r["before"] if m["claim"] not in {x["claim"] for x in r["after"]}] for k, r in rows.items()}
+    # marked before and after, but in another colour (a red period refusal that is now an orange cause, say)
+    moved = {k: [(b, a) for b in r["before"] for a in r["after"] if a["claim"] == b["claim"] and a["colour"] != b["colour"]]
+             for k, r in rows.items()}
     out = [f"RECHECK {result.get('id') or '?'}: {len(rows)} accounts; marks before {rb} red {ob} orange, now {ra} red {oa} orange; "
-           f"new {sum(map(len, gained.values()))}, gone {sum(map(len, lost.values()))}"]
+           f"new {sum(map(len, gained.values()))}, gone {sum(map(len, lost.values()))}, recoloured {sum(map(len, moved.values()))}"]
     if result.get("notice"):
         out.append(f"note: {result['notice']}")
     for key in rows:
-        if not gained[key] and not lost[key]:
+        if not gained[key] and not lost[key] and not moved[key]:
             continue
         out.append(key)
+        for b, a in moved[key]:
+            cut = a["text"] if len(a["text"]) <= width else a["text"][:width] + "…"
+            out.append(f"  ~ {b['colour'][0].upper()}>{a['colour'][0].upper()} [{a['claim']}] {a['why']}")
+            out.append(f"      {cut}")
         for sign, marks in (("+", gained[key]), ("-", lost[key])):
             for m in marks:
                 cut = m["text"] if len(m["text"]) <= width else m["text"][:width] + "…"
