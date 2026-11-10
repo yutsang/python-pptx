@@ -175,3 +175,6 @@ pptx_previews/
 *.lineage.json
 # an agent working session holds a workbook's figures and commentary
 *.agent-session.json
+
+# A wrap debugger fed with a real deck's paragraphs (client names and figures): local only
+wrap_debug_real.py

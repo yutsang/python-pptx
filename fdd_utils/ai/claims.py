@@ -446,16 +446,16 @@ def note_figures(note: Dict[str, Any], periods: List[str]) -> Dict[str, Any]:
     plainly yuan (below); a remark's cell values are read with the period they carry."""
     text = str(note.get("text") or "")
     own = note_period(note, periods)
-    # a written sign is kept: "ADJ#4：-133.2万元" is a reduction (dropping it failed every adjustment written with its sign)
+    # a written sign is kept: "ADJ#4：-50.0万元" is a reduction (dropping it failed every adjustment written with its sign)
     amounts = [{"value": sp["value"] * (-1.0 if sp.get("sign") == "-" else 1.0), "currency": _currency_at(text, sp["start"], sp["end"]),
                 "written": sp["written"], "period": own} for sp in text_amounts(text)]
-    # "191,400+50,000元": the unit written once covers each figure of the list (a fee was refused as uncited, 2026-11-09)
+    # "183,600+40,000元": the unit written once covers each figure of the list (a fee was refused as uncited, 2026-11-09)
     scale = {"元": 1.0, "千元": 1e3, "万元": 1e4, "亿元": 1e8}
     for m in re.finditer(r"((?:\d[\d,]*(?:\.\d+)?\s*[+＋、和及]\s*)+)(\d[\d,]*(?:\.\d+)?)\s*(亿元|万元|千元|元)", text):
         for figure in re.findall(r"\d[\d,]*(?:\.\d+)?", m.group(1)):
             amounts.append({"value": float(figure.replace(",", "")) * scale[m.group(3)], "currency": "CNY", "written": figure + m.group(3),
                             "period": own})
-    # a remark's cell values carry their period ("2026-03-31: 4342452.0"): yuan, like the facts, and bound to that period
+    # a remark's cell values carry their period ("2026-03-31: 1234567.0"): yuan, like the facts, and bound to that period
     for m in _REMARK_VALUE.finditer(text):
         if m.group(1) in periods:
             amounts.append({"value": float(m.group(3)), "currency": "CNY", "written": m.group(0), "period": m.group(1),
@@ -806,7 +806,7 @@ def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict
     def by_written_amount(w: Dict[str, Any], truths: List[Dict[str, Any]]) -> Optional[set]:
         """The sign a direction word is bound to by the amounts written beside it, when several cited movements disagree:
         the movement written right after it ("2024年度减少13.8万元，2025年度增加6.7万元"), the one written just before a
-        percentage word ("减少26.7万元，降幅50.0%"), or from-to figures ("由4.53亿元增加至4.88亿元"). Refused before as
+        percentage word ("减少20.0万元，降幅50.0%"), or from-to figures ("由2.00亿元增加至2.50亿元"). Refused before as
         unbound: a sentence listing a total's movements over several periods (client file, 2026-11-09)."""
         gap = re.match(r"[\s了约为额度幅至到]{0,3}", text[w["end"]:])
         after = next((sp for sp in spans if w["end"] <= sp["start"] <= w["end"] + (gap.end() if gap else 0)), None)
@@ -1264,7 +1264,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             fail("PERIODS_UNDECLARED", "binding", "the sentence names a period but the claim declares none")
             break
     # A movement into an earlier period, written without that period, reads as the change to the latest balance: "较2024年12月
-    # 31日减少187.86万元" after the March 2026 balance quoted the 2025-on-2024 change (client file, 2026-11-09).
+    # 31日减少120.00万元" after the March 2026 balance quoted the 2025-on-2024 change (client file, 2026-11-09).
     mentioned = period_mentions(text)
     latest_period = contract.periods[-1] if contract.periods else None
     for d in cited_derived:
@@ -1712,8 +1712,8 @@ def to_legacy_result(account: str, claims: List[Dict[str, Any]], outcome: Dict[s
 
 def _wan(value: float) -> float:
     """A yuan figure as the writer is shown it, in 万元: one decimal, rounded half-up from the exact value, as the report writes
-    it; under 1万元 four decimals, so the exact yuan can be written. Shown with two decimals, the writer copied 36.85 and the
-    deck rounded that again to 36.9 for 36.848675 (client file, 2026-11-09: twelve sentences wrong only in the deck)."""
+    it; under 1万元 four decimals, so the exact yuan can be written. Shown with two decimals, the writer copied 12.35 and the
+    deck rounded that again to 12.4 for 12.348675 (client file, 2026-11-09: twelve sentences wrong only in the deck)."""
     from decimal import ROUND_HALF_UP, Decimal
     wan = Decimal(str(float(value))) / Decimal(10000)
     places = Decimal("0.1") if abs(wan) >= 1 else Decimal("0.0001")

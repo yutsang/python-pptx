@@ -256,7 +256,7 @@ _FULL_LEGAL_NAME_MARKERS = (
 #: A name ends where prose does. Walking back to one of these gives the
 #: actual party rather than a window that bleeds into the previous clause.
 #: Brackets are deliberately NOT boundaries: place-of-registration brackets
-#: are part of the name itself (（上海）/（中国）/（平湖）), and treating them
+#: are part of the name itself (（上海）/（中国）/（苏州）), and treating them
 #: as boundaries made every such company invisible to this check -- the walk
 #: stopped inside the name and the leftover was a bare suffix, which is then
 #: discarded as a false positive.

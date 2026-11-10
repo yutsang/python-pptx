@@ -144,7 +144,7 @@ def _sentence_is_numeric_heavy(sentence: str) -> bool:
 #: Legal-form tails and place-of-registration brackets carry NO identifying
 #: information -- they say what kind of company it is and where it was
 #: registered, not which company. The reference deck strips both throughout
-#: (浙江卓圣, not 浙江卓圣物业管理有限公司) and only writes a full legal name
+#: (甲物业, not 甲物业管理有限公司) and only writes a full legal name
 #: when first naming a specific contract counterparty.
 _LEGAL_FORM_TAILS = (
     "股份有限责任公司", "股份有限公司", "有限责任公司", "私人有限公司",
@@ -184,15 +184,15 @@ def shorten_company_names(text: str) -> str:
     body = str(text or "")
     if not body:
         return body
-    # The databook marks counterparty rows with a leading asterisk (*丽迅企业发
-    # 展, *XINSHENG LOGISTICS). It is a workpaper marker, not part of the name,
-    # and it reached a real deck as "*嘉兴粤浩纸业有限公司" once the model was
+    # The databook marks counterparty rows with a leading asterisk (*甲企业发
+    # 展, *ABC LOGISTICS). It is a workpaper marker, not part of the name,
+    # and it reached a real deck as "*乙纸业有限公司" once the model was
     # given the component rows to quote from. Same reasoning as the legal-form
     # tail below: mechanical, so it does not belong in an instruction.
     # Anywhere in the sentence, not only at its start. The old lookbehind
     # required a NON-word character before the asterisk, and Chinese is all
-    # word characters, so "应付*丽迅企业发展" kept its marker and a real deck
-    # shipped "备注提及*嘉兴粤浩纸业3,588元". Guarding on a preceding asterisk
+    # word characters, so "应付*甲企业发展" kept its marker and a real deck
+    # shipped "备注提及*乙纸业1,234元". Guarding on a preceding asterisk
     # instead leaves markdown emphasis alone: in "**x**" the first star is
     # followed by a star (not a name character) and the second is preceded by
     # one.
@@ -438,7 +438,7 @@ def round_to_house_precision(text: str) -> str:
             whole, frac, unit, places = match.group(4), match.group(5), match.group(6), 2
         try:
             # decimal half-up on the written digits: float formatting printed 1.95 as 1.9 (client file, 2026-11-09). Rounding
-            # an already-rounded figure can still be off by the last digit (36.848675 written 36.85 becomes 36.9); the agent's
+            # an already-rounded figure can still be off by the last digit (12.348675 written 12.35 becomes 12.4); the agent's
             # evidence gives one decimal from the exact value so its text never reaches this with two.
             value = Decimal(whole.replace(",", "") + "." + frac).quantize(Decimal(1).scaleb(-places), rounding=ROUND_HALF_UP)
         except (InvalidOperation, ValueError):

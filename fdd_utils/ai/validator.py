@@ -623,7 +623,7 @@ def _attr_text_blob(df) -> str:
 
 def _numbers_in_text(text: str) -> List[float]:
     """Every number a remark could supply: scale-aware amounts (万/亿/million/comma)
-    PLUS bare integers/decimals (e.g. '191400', '7000', '572')."""
+    PLUS bare integers/decimals (e.g. '183600', '5000', '480')."""
     out = list(extract_amounts(text))
     for m in _BARE_NUMBER_RE.finditer(str(text or "")):
         v = _to_float(m.group(0))
@@ -1224,7 +1224,7 @@ class SourceIndex:
                 facts += cls._category_sum_facts(analysis_df, cls_sheet)
                 facts += cls._annualised_tail_facts(df, analysis_df, cls_sheet)
         # Also ground against numbers cited in the supporting notes / remarks
-        # (df.attrs), e.g. registered capital "7000万美元" that never appears in
+        # (df.attrs), e.g. registered capital "5000万美元" that never appears in
         # the numeric table. Without this they were false-flagged as hallucinations.
         text_values = _numbers_in_text(_attr_text_blob(df))
         note_kind = "note_number" if own else "sibling_cell"
@@ -1786,9 +1786,8 @@ _RESIDUAL_ITEM = re.compile(
 # matched, so a real run summed three named items to 55.9万元 against a 9.5万元
 # total and reported 488% unaccounted for -- the 42.1 that closes it was sitting
 # in the sentence, spelled 其他 rather than 其余.
-# And the third way: a catch-all named last in the list. 「主要包括中国电子系统工程
-# 第四建设工程款731.3万元及其他应付款项124.7万元」 for an 877.2万元 balance -- the
-# rest is 145.9, the sentence says 124.7, and with no 其余 or 合计 the check only
+# And the third way: a catch-all named last in the list. 「主要包括甲建设公司工程款600.0万元及其他应付款项100.0万元」
+# for an 750.0万元 balance -- the rest is 150.0, the sentence says 100.0, and with no 其余 or 合计 the check only
 # called it 2% short, an omission, when it is a wrong number in the deck.
 _RESIDUAL_TAIL = re.compile(
     r"(?:及|和|以及)其他[^，,。；;、\d]{0,12}?(负|-)?\s*([\d,]+(?:\.\d+)?)\s*(万元|亿元|元)"

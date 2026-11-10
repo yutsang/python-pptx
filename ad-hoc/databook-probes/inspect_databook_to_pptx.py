@@ -479,7 +479,7 @@ def style_profile(args, dfs) -> int:
 
     # Bare-by-default is right, but the one case the convention keeps 人民币
     # for is a sentence that also names a foreign currency -- '注册资本为
-    # 7,000万美元（折合人民币4.88亿元）'. A bare figure there is genuinely
+    # 5,000万美元（折合人民币3.50亿元）'. A bare figure there is genuinely
     # ambiguous, so flag it rather than treat 0% as unambiguously ideal.
     ambiguous = []
     for t in texts:

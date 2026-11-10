@@ -508,7 +508,7 @@ Draft summary:
         deliverable wants THERE. It is not what a page summary wants: the band
         is a few lines covering seven accounts, so an enumeration inherited
         wholesale reads as one item per account and nothing else. A real export
-        opened with "货币资金余额为1.23亿元，主要包括：1）工商银行嘉兴平湖支行
+        opened with "货币资金余额为1.23亿元，主要包括：1）某银行某支行
         #6028#-美元资本金户8,404.9万元；截至..." -- a bank account number in the
         executive summary, and the other components never mentioned.
 

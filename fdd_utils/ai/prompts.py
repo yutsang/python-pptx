@@ -824,7 +824,7 @@ class PromptEngine:
         }
         # The residual, computed. The rule "any difference is itself a component
         # you have to account for" has been in this block for a while and the
-        # model still writes "其余为上海宝和、嘉兴君道及管理层调整等" -- naming the
+        # model still writes "其余为甲公司、乙公司及管理层调整等" -- naming the
         # remainder without pricing it, which is the single most common
         # composition warning left after the hierarchy fix. It cannot price it
         # reliably by summing a list in its head, so the number is worked out

@@ -210,7 +210,7 @@ class HiddenSheets(unittest.TestCase):
         self.assertTrue(visible.facts)
 
     def test_an_expense_adjustment_is_written_in_the_expenses_own_direction(self):
-        # client file, 2026-11-09: the period bridges show costs by their effect on profit (negative), so -60.2万元 on 财务费用
+        # client file, 2026-11-09: the period bridges show costs by their effect on profit (negative), so an adjustment of -45.0万元 on 财务费用
         # raised the expense; a model copied the sign and wrote 调减
         from fdd_utils.workbook.authority import adjustment_bridge
 
@@ -221,11 +221,11 @@ class HiddenSheets(unittest.TestCase):
                      "col_labels": {"1": "TB", "2": "Audit ADJ#4", "3": "审定数"},
                      "row_labels": {"1": "营业成本", "2": "财务费用", "3": "投资收益"}, "texts": []}
             return adjustment_bridge({"sheets": {"2025": sheet}}, "财务费用")["lines"]
-        # costs shown negative (by their effect on profit): -602 on the expense line raised the expense
-        self.assertTrue(any("+60.2万元（调增）" in x for x in bridge(-1, -602.0)), bridge(-1, -602.0))
+        # costs shown negative (by their effect on profit): -450 on the expense line raised the expense
+        self.assertTrue(any("+45.0万元（调增）" in x for x in bridge(-1, -450.0)), bridge(-1, -450.0))
         # costs shown positive: the sign is the expense's own
-        self.assertTrue(any("-60.2万元（调减）" in x for x in bridge(+1, -602.0)), bridge(+1, -602.0))
-        self.assertTrue(any("+60.2万元（调增）" in x for x in bridge(+1, 602.0)), bridge(+1, 602.0))
+        self.assertTrue(any("-45.0万元（调减）" in x for x in bridge(+1, -450.0)), bridge(+1, -450.0))
+        self.assertTrue(any("+45.0万元（调增）" in x for x in bridge(+1, 450.0)), bridge(+1, 450.0))
 
     def test_adjustment_entries_ignore_a_hidden_register(self):
         from fdd_utils.workbook.authority import adjustment_entries

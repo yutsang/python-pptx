@@ -431,7 +431,7 @@ def _sublist_text_for_table(table: Dict[str, Any], is_chinese_databook: bool, so
     how OI/OC accounts already state multi-year figures in this
     project's own reference style. Top-level rows only: nested children
     are already rolled into their own parent's total (e.g. 物业管理费's
-    第三方/上海熙麦 sub-vendors), and a plain-text bullet list is not the
+    第三方/关联方 sub-vendors), and a plain-text bullet list is not the
     place for two levels of indentation -- this already keeps
     same-nature items merged under their shared parent.
 

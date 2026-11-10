@@ -159,13 +159,13 @@ What "checked" means here has four parts.
   unmatched; the fixed pipeline's matcher uses the same function.
 - **Notes as evidence.** A figure, percentage or date written in a note (with
   its unit) may be stated when the claim cites that note. An amount must be in
-  the note's own currency (7,000万美元 matches a dollar figure, never a yuan
+  the note's own currency (5,000万美元 matches a dollar figure, never a yuan
   one), a date the note states is not a reporting period the claim must
   declare, and each such figure is marked `NOTE_SOURCED_AMOUNT` for a person,
   because a note is free text, not a cell. A remark's cell values are read only
-  where they carry their period ("2026-03-31: 4342452.0", in yuan, bound to that
+  where they carry their period ("2026-03-31: 1234567.0", in yuan, bound to that
   period; "annualised" values count as annualised). A sign the note writes is
-  kept (an adjustment of -133.2万元 is a reduction), a direction the note states,
+  kept (an adjustment of -50.0万元 is a reduction), a direction the note states,
   in its words or by its sign, backs the same direction word in the sentence,
   and a year the note names ("2025审计费") may be named. Naming the line a cited
   note is about needs no line figure, and line names are compared without the
@@ -173,7 +173,7 @@ What "checked" means here has four parts.
   put under the wrong counterparty passed. Before 2026-11-08 notes could only
   support a cause, so a paragraph could not state what the notes said and
   material facts went to `unresolved`; the first run that allowed it refused
-  about 60 of 71 claims for these reasons, not for errors in them.
+  most of its claims for these reasons, not for errors in them.
 - **Three meaning checks.** No reference or internal name in the text
   (`INTERNAL_TERMS_IN_TEXT`: "(F52)", "authority_adjusted"). No percentage
   change over a negative base or across a change of sign
@@ -221,9 +221,9 @@ What "checked" means here has four parts.
   follows one giving a reason, "主要系A，B"). A correct sentence of that last kind,
   such as "余额减少，导致坏账风险上升", therefore waits for a person. When the
   cited movements disagree in sign, the amounts written beside the word decide
-  first: the movement written right after it ("2024年度减少13.8万元，2025年度增加
-  6.7万元"), the one just before a percentage word ("减少26.7万元，降幅50.0%"), or
-  from-to figures ("由4.53亿元增加至4.88亿元"); a word bound that way to a
+  first: the movement written right after it ("2024年度减少10.0万元，2025年度增加
+  5.0万元"), the one just before a percentage word ("减少20.0万元，降幅50.0%"), or
+  from-to figures ("由2.00亿元增加至2.50亿元"); a word bound that way to a
   movement of the other sign fails (`SIGN_ERROR`). Until 2026-11-09 every such
   sentence was `DIRECTION_UNBOUND`. A line name is read without an Excel text
   prefix ("'*甲公司…"), which refused a sentence naming that tenant.
@@ -261,11 +261,10 @@ wording the pattern list does not recognise is not screened at all; citing a not
   claims a real model writes.
 - The older pool search (`SourceIndex.matches`) remains in the fixed pipeline.
   **Re-measured on the current revision**, `replay_verification.py --decoys`
-  (seed 1234, one local test workbook): about a third of deformed real values
-  (tenfold, one-tenth, transposed digits, jitter) are still accepted. The
-  historical figures quoted in earlier versions of this file (about 88% and 80%
-  before narrowing, about 31% and 27% after) came from a different workbook and
-  are not reproducible here.
+  (seed 1234, one local test workbook): a material share of deformed real values
+  (tenfold, one-tenth, transposed digits, jitter) is still accepted. Figures
+  quoted in earlier versions of this file came from a different workbook and are
+  not reproducible here.
 
 ## 5. Tools and the controller
 
@@ -700,18 +699,18 @@ result counts them). A first-generation export puts it in the summary band and
 no longer reports `SUMMARY_SPLICED`. Net assets and other statement totals have
 no contract yet, so the overview cannot state them. An account with a nil latest
 balance is not offered, a sentence written twice is kept once, and sentences
-stop at the band's size (the request alone was not kept: 271 characters for 140).
+stop at the band's size (the request alone was not kept).
 
 **What goes into a first-generation deck.** Every accepted paragraph, and every
 draft the gate did not accept that has at least one verified sentence and was
 written against the current sources: its rejected sentences are marked (red
 where the databook contradicts a figure, orange otherwise) and the delivery
-decision lists it as `ACCOUNT_NOT_ACCEPTED`, which blocks delivery. Until
-2026-11-09 such an account was left out and its slot was empty; on the client
-file that was five to eleven accounts per arm, most with one to three rejected
-sentences among five to ten verified ones, so the person had nothing to correct.
-A dispatched turn that started on the stronger model is not flagged `escalated`
-(that flag means the cheaper model's draft was rejected).
+decision lists it as `ACCOUNT_NOT_ACCEPTED`, which blocks delivery. That includes
+a draft whose every sentence verified but whose write ended before it was
+accepted (a material note or the latest balance left unaddressed). Until
+2026-11-09 such accounts were left out and their slots were empty, so the person
+had nothing to correct. A dispatched turn that started on the stronger model is
+not flagged `escalated` (that flag means the cheaper model's draft was rejected).
 
 **Length and house style.** The writer is given the length finished team
 reports wrote for the account: `fdd_utils/report_lengths.yml` holds one number
@@ -719,37 +718,36 @@ per report and account (characters, whitespace removed), built from text dumps
 of finished decks by `ad-hoc/workbench/report_lengths.py`, and the writer is
 asked for about the median, never under 60 (`fdd_utils/agent/lengths.py`). The
 owner's call (2026-11-09) was that length follows the team's record and what
-matters, not how much evidence there is, and the first report measured bears it
-out: the largest liability got 144 characters, a small deferred-cost account with
-a proposed adjustment 265, and P&L accounts whose slide carries a detail table a
-lead-in of 31 to 64. One report is in the table so far, the client file's own, so
-on that file the length matches by construction; other databooks are the test.
-An account no report wrote keeps the earlier rule, a length from its evidence (at
-most about 120 Chinese characters with up to three detail lines and no other
-table, 250 with up to seven or one table, 400 above that; two thirds as many
-English words). The writer is told to put the most important first, to state a movement only
-where it matters (never every period pair), and to write 1亿元 or more as 亿元
-with two decimals and the rest as 万元 with one. Before this the writer had no
-length and listed each period's movement: on the client file the paragraphs ran
-1.5 to 2.8 times the team's in total, the cheaper model's longest, which also
-inflates how many of the team's figures an arm appears to state.
-`ad-hoc/workbench/score_reference.py` reads a trial's review file and the team's
-report text and prints, per arm, the team's figures stated (accepted only, in the
-deck including marked drafts, all text) and the length against the team's. With
-the length given (2026-11-09 rerun) every arm came to 1.3 to 1.4 times the team's
-length, as legacy does.
+matters, not how much evidence there is. The team's lengths do not follow the
+size of the balance: a small account with a proposed adjustment can get a long
+paragraph, and a P&L account whose slide carries a detail table only a lead-in.
+While the table holds only the reports of databooks the agent is also tested on,
+length matches on those databooks by construction; a databook held out for
+acceptance is scored before its report is added. An account no report wrote
+keeps the earlier rule, a length from its evidence (at most about 120 Chinese
+characters with up to three detail lines and no other table, 250 with up to
+seven or one table, 400 above that; two thirds as many English words). The
+writer is told to put the most important first, to state a movement only where
+it matters (never every period pair), and to write 1亿元 or more as 亿元 with two
+decimals and the rest as 万元 with one. Without a length the paragraphs ran well
+over the team's, which also inflates how many of the team's figures an arm
+appears to state. `ad-hoc/workbench/score_reference.py` reads a trial's review
+file and the team's report text and prints, per arm, the team's figures stated
+(accepted only, in the deck including marked drafts, all text) and the length
+against the team's. It matches figures by size within the same account, without
+binding period, party or meaning, so it is a measure of overlap, not of
+completeness or correctness.
 
-**What reaches the slide (2026-11-09, second review).** A sentence-level review
-of the third trial checked the decks themselves: 30 of 46 marked sentences were
-black, and twelve right sentences were wrong only on the slide. The slide text
-goes through `_normalize_slide_commentary_text` (house rounding, shortened company
-names, 负 for a glued minus) after the sentences were judged, so a judged sentence
-was no longer found in it; it is now looked for as it reads after that rewriting.
-The rounding was a second rounding: the writer copied 万元 figures shown with two
-decimals and the slide rounded them again (36.848675 shown as 36.85, printed
-36.9). The evidence now shows 万元 with one decimal rounded half-up from the exact
-value (four decimals under 1万元), and the slide's own rounding is half-up on the
-written digits.
+**What reaches the slide (2026-11-09).** A sentence-level review of a trial's
+decks found most marked sentences black, and right sentences wrong only on the
+slide. The slide text goes through `_normalize_slide_commentary_text` (house
+rounding, shortened company names, 负 for a glued minus) after the sentences were
+judged, so a judged sentence was no longer found in it; it is now looked for as
+it reads after that rewriting. The rounding was a second rounding: the writer
+copied 万元 figures shown with two decimals and the slide rounded them again
+(12.348675 shown as 12.35, printed 12.4). The evidence now shows 万元 with one
+decimal rounded half-up from the exact value (four decimals under 1万元), and the
+slide's own rounding is half-up on the written digits.
 
 The same review listed right sentences the verifier refused. Fixed: periods
 listed before 分别 pair with the amounts after it in order; a period after 较
@@ -757,143 +755,89 @@ listed before 分别 pair with the amounts after it in order; a period after 较
 amount; a hyphen joining a label to 人民币 is not a minus; generic words that are
 also line names (原值, 直线法, 累计折旧, 合计 and the like) are not lines a
 sentence must cite; a company name is read after the prose words that run into
-it ("支付给", "含"); one unit after a list of figures in a note ("191,400+50,000元")
+it ("支付给", "含"); one unit after a list of figures in a note ("183,600+40,000元")
 covers each figure; and 调增/调减 answer to the cited adjustment note's
-direction, not to a movement. On the DEMO self-test the verifier still accepts
-none of 667 wrong claims.
+direction, not to a movement.
 
-Still refused after that, read from the third trial's review file, and fixed:
-"无异常" against a note's "未发现异常" was a contradiction because only 未 counted as
-a negation (无 and 不存在 now answer a negation but do not start a conflict, so a
-note's "无重大异常" next to a phrase the sentence quotes without it is still no
-contradiction); a date the cited note writes with dots ("2026.3.21-3.31") was
-not recognised as the note's own; a whole number of five or more digits written
-straight after the words of a note with no unit ("审计费183600") is read as yuan,
-a decimal cell value is not; and a period inside a bracket that is followed by
+Later reviews, fixed the same way: "无异常" against a note's "未发现异常" was a
+contradiction because only 未 counted as a negation (无, 不存在 and 不 now answer a
+negation but do not start a conflict); a date the cited note writes with dots
+("2026.3.21-3.31") is the note's own; a whole number of five or more digits
+written straight after the words of a note with no unit ("审计费183600") is read as
+yuan, a decimal cell value is not; a period inside a bracket that is followed by
 an amount of its own ("22.36万元（含2025年审计费18.36万元…）") belongs to that
-amount, while a bracket holding only a period still labels the amount before it.
+amount, while a bracket holding only a period still labels the amount before it;
+a starred counterparty in a note is the same line as its name in prose; a
+sentence citing several notes, one per line, is no "different line" against
+each; a negated direction word (无新增, 未增加) is no direction; the amount after
+由 in "由A增至B" is where the period began; two or three of the cited lines may
+be summed, not only all of them; a share of a cited line in a cited total of the
+same period is arithmetic on the citations; and 调增/调减 next to the other
+account of the entry is that account's side.
 
-**Planned (`agent.plan_first`, trial arm `planned`).** The stronger model reads
-an account's evidence once and returns at most eight points and six traps (a
-phase that is not the whole, a sub-line inside its parent, current against
-long-term, the target against its shareholder, before and after adjustment, an
-adjustment's direction, a gain against a loss, a blank that is not a nil); the
-cheaper model writes from that plan, the verifier decides every sentence, and a
-paragraph the cheaper model cannot repair goes to the stronger as in `mixed`.
-This is the lead without its checking loop: the lead arms, which had the
-stronger model check every claim, cost 6 to 8 yuan for 8 to 11 accepted of 26
-(2026-11-08). Fourth paid trial (2026-11-09, client file, 26 accounts): flash 0.27
-yuan, 21 accepted; mixed 0.96, 20; planned 1.98, 20; routed 3.21, 20 (19 accounts
-dispatched to the stronger model). Of the team's 83 figures the deck carried 54%,
-54%, 52% and 51% (legacy 57% at 10.87 yuan), and planned wrote 1.8 times the
-team's length against 1.3 for the others. On coverage and cost the stronger
-model's share bought nothing on this file. The sentence-level review of that
-trial (560 sentences, every figure read against the visible sheets) counted
-wrong or unsupported sentences: flash 9 of 129, mixed 15 of 128, planned 25 of
-168, routed 6 of 135. The first trial's review had ranked them the same way
-(routed 7 unmarked wrong of 220, flash 14 of 243). So the stronger model writing
-the accounts it is dispatched halves the wrong sentences at about 3.2 yuan;
-repairing the cheaper model's drafts (mixed) does not; and planning first is
-the worst, partly because some of its traps were themselves wrong (it told the
-writer an adjustment decreased an asset that it increased). `plan_first` stays
-off.
+**Checks added for wrong sentences reviews found unmarked.** `REST_INCOMPLETE`
+(red): the lines a sentence names and the rest it cites fall short of the total,
+because the view's rest sums only the lines it did not show. `NOTE_FIGURE_ROUNDED`
+(red): a figure taken from a note differs in its last digit from the tab's exact
+figure for the period it is written under (1.87亿 in a note for 187,654,321).
+`GAIN_LOSS_REVERSED` (red): a 损益 line in an expense account called a gain while
+positive, or a loss while negative (a written minus turns the word).
+`COMPOSITION_BASIS` (red): every line of a period given as the make-up of an
+adjusted balance ("构成", "组成", "其中") while they are the tab's lines before
+adjustment, unless the sentence says so (未经调整). `AMBIGUOUS_SUBJECT` (sent back):
+该公司 can be read as the target or as the company named before it.
+`TERM_NOT_IN_NOTE` (red): a spread's 加/减 that the note does not give. The writer
+is told the last two as rules.
 
-**Fourth trial review, what changed.** Of 90 listed marks, 23 were on problems
-and 60 on right sentences; 36 of those 60 were causes citing a note on the same
-subject at 21% to 59% wording overlap, with the one wrong sentence among them at
-47%. A cause citing a related note with no contradiction is no longer coloured
-(it stays on the record as `note_wording_unchecked`); a cause with no note still
-is. New checks for wrong sentences the review found unmarked:
-`REST_INCOMPLETE` (red) when the lines a sentence names and the rest it cites
-fall short of the total, because the view's rest sums only the lines it did not
-show; `NOTE_FIGURE_ROUNDED` (red) when a figure taken from a note differs in its
-last digit from the tab's exact figure for the period it is written under
-(1.87亿 in a note for 187,654,321); `GAIN_LOSS_REVERSED` (red) when a 损益 line
-in an expense account is called a gain while positive, or a loss while negative
-(a written minus turns the word). Right sentences no longer refused: two or
-three of the cited lines may be summed, not only all of them; 调增/调减 next to
-the other account of the entry is that account's side. A bug of 72bc66d is
-fixed: an account whose name contains 费用 was treated as an expense on a
-profit-signed bridge, so 长期待摊费用's adjustment was turned and the writer was
-shown an increase as 调减. An account whose tab is hidden is offered its Financials
-row (the visible sheet) as its totals, with no detail; before, it had no facts
-and every arm wrote nothing. When a draft fails the same way twice the write no
-longer hands the turn to the tool loop (`agent.tool_loop_on_repeat`, default
-off): that cost 0.3 to 0.9 yuan an account on the stronger model and finished one
-of four; the write now ends at the rejection limit and the draft goes into the
-deck marked. A paid `entity_trial.py run` now runs `migration_checks.py` first and
-sends nothing unless it is all green (`--skip-gate` to skip). On the three local
-databooks the verifier still accepts none of 667, 786 and 695 wrong claims.
+**Evidence fixes from the same reviews.** An account whose name contains 费用 but
+is a balance-sheet line (长期待摊费用, 预提费用, 开发支出) is not an expense on a
+profit-signed bridge; its adjustment was being turned. An account whose own tab
+is hidden is offered its Financials row (the visible sheet) as its totals, with
+no detail. A supporting table's count columns (折旧月数, 年限, 面积 and the like)
+are not amounts. A line that repeats under several sections closed by their own
+subtotals (一期合计, 二期合计) takes the section's name. An account that raises an
+error outside the controller is recorded as failed and the rest of the entity is
+written.
 
-**Fifth trial, what changed (2026-11-10).** The hidden-tab change above returned
-before the contract's refs were assigned, so the first view of that account
-raised `KeyError: 'ref'` and stopped both arms of the paid run; refs are now
-assigned there too, and an account that raises outside the controller is
-recorded as failed with its error while the rest of the entity is written. A
-supporting table's count columns (折旧月数, 年限, 面积 and the like) are no longer
-read as amounts: a count of months had been scaled with the table's 千元
-into yuan. A line that repeats under several sections closed by their own subtotals
-(一期合计, 二期合计) takes the section's name, so phase one's 房屋建筑物 is no
-longer read as the account's. Right sentences the fourth and fifth trials
-refused: a starred counterparty in a note is the same line as its name in prose
-(the star was compared); a sentence citing several notes, one per line, is no
-"different line" against each; 不 answers a negation; a negated direction word
-(无新增, 未增加) is no direction; the amount after 由 in "由A增至B" is where the
-period began; and a share of a cited line in a cited total of the same period is
-arithmetic on the citations (five right shares were refused in one paragraph).
-`entity_trial.py` ends a run with `trial_digest.py`'s screenful: per arm,
-accounts accepted, cost, the accounts not accepted and every marked sentence with
-its reason, so the run's output is what is pasted back instead of the review
-file.
+**What a person is shown, and why (2026-11-09).** Sentence-level reviews found
+far more marks on right sentences than on wrong ones. Most of the needless marks
+were three state flags on verified sentences (an amount taken from a note, a
+cause citing a note, a detail line whose level was unknown) and causes citing a
+note on the same subject, whose wording overlap with the note did not separate
+right sentences from wrong ones. So: those flags no longer turn a sentence
+orange (they stay on the candidate and in the review file), and a cause citing a
+related note with no contradiction is not coloured (`note_wording_unchecked` on
+the record); a cause with no note is. Checks were added for wrong sentences the
+reviews found unmarked: a company, bank or firm name the account's evidence does
+not carry (`NAME_NOT_IN_EVIDENCE`, held for a person: a model named the wrong
+insurer); a movement into an earlier period written without that period
+(`MOVEMENT_END_UNSTATED`, red: "较2024年12月31日减少120.0万元" after the latest
+balance was the earlier change); an adjustment written against its own direction
+(调增/调减 are direction words, and each bridge adjustment carries the account's
+own direction: on a bridge that shows costs by their effect on profit, negative,
+an expense line's sign is turned); and an unfilled template ("2023年ZZ月", rows
+客商1, 客商2) is not read as a table.
 
-**Sixth trial (2026-11-10, 232eae1).** flash 0.22 yuan, 25 of 26 accepted, 53%
-of the team's figures, 1.0 times their length; routed 2.19 yuan, 23 accepted,
-45%. The sentence review found 5 problems in 105 sentences for flash and 5 in
-113 for routed, so on this file the cheaper model alone now writes as well as
-the stronger one does for ten times the cost. Only two sentences were marked,
-both right; all ten problems were black. They were meaning errors: a
-shareholder given the target's capital, the tab's lines before adjustment
-given as the adjusted balance's make-up, a gross loan called the long-term
-part, a note's broad period repeated against its own detail, a cause that
-cannot carry the movement, a rate term the note does not give. Three recur in
-every trial and are now checked: a make-up after 其中 naming every line, on the
-tab's basis when the balance is adjusted, must say it is before adjustment
-(`COMPOSITION_BASIS`, and a sentence that says 未经调整 is no longer refused);
-该公司 is sent back for a named subject (`AMBIGUOUS_SUBJECT`); and a spread's
-加/减 must be the note's (`TERM_NOT_IN_NOTE`). The writer is told the same. The
-rest need a reader: `agent.review_meaning: mark` has the stronger model read
-each verified paragraph once and mark the sentences it objects to, orange with
-its reason, changing nothing and leaving nothing out (the repair mode sends
-objections back and drops a paragraph whose objection stands); trial arm
-`checked` is the cheaper writer with that review. A draft whose every sentence
-verified but whose write ended unaccepted (a material note left unanswered) is
-now carried into the first-generation deck as `ACCOUNT_NOT_ACCEPTED`: routed
-had left two such paragraphs out.
+**Which model does what (2026-11-10).** Measured on the client file against the
+cheaper model writing alone (per-run results are kept locally, not here): the
+stronger model writing the accounts it judges hard, repairing the cheaper
+model's drafts, planning each account first (`agent.plan_first`, arm `planned`:
+at most eight points and six traps, the cheaper model writing from them), or
+leading the write and checking every claim (`agent.lead_write`) did not raise
+coverage; repairing and planning produced more wrong sentences, and leading cost
+several times the budget. Once the evidence and the verifier were fixed, the
+cheaper model alone wrote as accurately as the stronger one at a fraction of the
+cost. `plan_first` and `lead_write` stay off. When a draft fails the same way
+twice the write no longer hands the turn to the tool loop
+(`agent.tool_loop_on_repeat`, default off): on the stronger model it cost far
+more and rarely finished the paragraph. The wrong sentences that remain are
+meaning errors Python cannot see (a shareholder given the target's facts, a
+gross amount called the net one, a note's broad statement repeated against its
+own detail, a cause that cannot carry the movement), and they were unmarked.
+That is the stronger model's remaining role on trial: `agent.review_meaning:
+mark`, see below.
 
-**What a person is shown, and why (2026-11-09).** A sentence-level review of the
-client file's first trial (621 sentences across three arms, every figure and
-name read against the visible sheets) found 33 to 55 marks per arm on sentences
-that were right, against 9 to 22 real problems marked and 6 to 14 not marked.
-Most of the needless marks were three state flags on verified sentences (an
-amount taken from a note, a cause citing a note, a detail line whose level was
-unknown) and every note-based cause. So: those three flags no longer turn a
-sentence orange (they stay on the candidate and in the review file); a cause
-citing a note is read as the note's own statement, and not marked, when at least
-60% of its content bigrams are in the notes it cites (77 of the 90 such
-sentences in the rerun; the rest were advice and causes the writer added); and
-four checks were added for wrong sentences the review found unmarked: a
-company, bank or firm name the account's evidence does not carry
-(`NAME_NOT_IN_EVIDENCE`, held for a person: a model named the wrong insurer); a
-movement into an earlier period written without that period
-(`MOVEMENT_END_UNSTATED`, red: "较2024年12月31日减少187.86万元" after the March
-2026 balance was the 2025-on-2024 change); an adjustment written against its own
-direction (调增/调减 are direction words, and each bridge adjustment carries the
-account's own direction: on a bridge that shows costs by their effect on
-profit, negative, an expense line's sign is turned, which the model had copied
-the wrong way five times); and an unfilled template ("2023年ZZ月", rows 客商1,
-客商2) is not read as a table. On the rerun's paragraphs the marks would fall to
-roughly half (60 to 27 for the cheaper model, 85 to 40 for the stronger).
-Each arm gets a fresh copy and session, drafts every in-scope account, and
+**The trial harness.** Each arm gets a fresh copy and session, drafts every in-scope account, and
 exports a first-generation deck. `plan` sends nothing; `run --scripted` runs the
 whole flow with a scripted writer, free; `run --i-accept-paid-calls` is the paid
 measurement. It prints, per arm, accounts accepted, calls, provider-reported
@@ -1036,18 +980,16 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
   column that is not a period is read at the latest period and marked
   `period_assumed`. The view shows at most three tables, fifteen rows each (rows
   of 1% or more of the latest total, and subtotals). Checked on four local
-  databooks; the client file's tables were located by a separate read of the
-  workbook and have not yet been run through this reader.
+  databooks and on one client file run on the company machine.
   The schedule's own area ends at the last row it took a figure from, not at the
   extractor's block end, which runs on to the last row with any number in the
-  schedule's columns (on the client file that put the fixed-asset phase table,
-  the payables table and a receivables block inside the schedule, so the first
-  company-side run read none of them). A tie-out row ('Check' and its
+  schedule's columns (on one client file that put three tables inside the
+  schedule, so the first company-side run read none of them). A tie-out row ('Check' and its
   differences) is not part of any table and never its title; a figure in a
   header row names no column. A table that names no unit is read in the
   schedule's unit unless that makes it more than ten times the account's largest
   balance: then in yuan, or left out if that is still too large (a yuan working
-  block under a 千元 schedule read as 4,037亿 on the DEMO databook). A header or
+  block under a 千元 schedule read as thousands of 亿 on a local databook). A header or
   title that names only a year takes that year's period, and a year the account
   does not report drops the column (a 2020 pivot was filed as 2022 on a local databook).
 - What other accounts say about an account is filed on it (`add_related_evidence`):
@@ -1060,9 +1002,8 @@ flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
   around the name (300 characters), not to its opening. The view also gives
   `related_total`: the account's adjusted balance plus its related accounts' of
   the same statement and period, one citable D ref (the report writes the VAT on
-  both asset tabs as one amount); a balance is never added to an expense. An account with no visible tab of its own (a
-  hidden one, such as investment income on the client file) has no contract and
-  gets no paragraph from this; it is still a gap.
+  both asset tabs as one amount); a balance is never added to an expense. An account whose own tab
+  is hidden is offered its Financials row as totals, with no detail (see section 4).
 - The writer and the reviewer see the same evidence view: the last three periods,
   one row per detail line chosen by materiality (every line at least 1% of its
   period's total in a period shown, every line a note names, the parent of any

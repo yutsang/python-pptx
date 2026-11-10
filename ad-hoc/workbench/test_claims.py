@@ -134,11 +134,11 @@ class ReviewFindings20261109(unittest.TestCase):
         self.assertNotIn("MOVEMENT_END_UNSTATED", codes(named), named["findings"])
 
     def test_an_adjustment_written_the_other_way_from_its_note_fails(self):
-        c = build(notes=["「2025」Audit ADJ#4：+60.2万元（调增）（对方科目：投资收益）"], statement="IS")
+        c = build(notes=["「2025」Audit ADJ#4：+45.0万元（调增）（对方科目：投资收益）"], statement="IS")
         note = c.notes[0]["ref"]
-        wrong = verdict("2025年度审计调整调减本科目60.2万元", c, [note], [P2], kind="descriptive")
+        wrong = verdict("2025年度审计调整调减本科目45.0万元", c, [note], [P2], kind="descriptive")
         self.assertTrue({"DIRECTION_UNSUPPORTED", "SIGN_ERROR"} & codes(wrong), wrong["findings"])
-        right = verdict("2025年度审计调整调增本科目60.2万元", c, [note], [P2], kind="descriptive")
+        right = verdict("2025年度审计调整调增本科目45.0万元", c, [note], [P2], kind="descriptive")
         self.assertFalse({"DIRECTION_UNSUPPORTED", "SIGN_ERROR"} & codes(right), right["findings"])
 
 
@@ -496,8 +496,8 @@ class NotesAndGuards(unittest.TestCase):
     """2026-11-08 ten-case review: note facts could not be stated (so material notes went to unresolved), a nested layout blocked
     every composition, and three meaning problems passed the verifier."""
 
-    NOTES = ["注册资本为7000万美元，已全额实缴，我们已检查至FDI入账凭证",
-             "2024年6月18日目标公司将注册资本从15000万美元变更为7000万美元",
+    NOTES = ["注册资本为5000万美元，已全额实缴，我们已检查至出资入账凭证",
+             "2024年5月20日目标公司将注册资本从12000万美元变更为5000万美元",
              "应付二期项目监理的5%工程尾款"]
 
     def note_ref(self, c, start):
@@ -505,13 +505,13 @@ class NotesAndGuards(unittest.TestCase):
 
     def test_an_amount_and_a_date_written_in_a_cited_note_can_be_stated_in_its_currency(self):
         c = build(notes=self.NOTES)
-        n2 = self.note_ref(c, "2024年6月18日")
-        v = verdict("2024年6月18日，注册资本由15,000万美元变更为7,000万美元。", c, [n2], [P1], "descriptive")
+        n2 = self.note_ref(c, "2024年5月20日")
+        v = verdict("2024年5月20日，注册资本由12,000万美元变更为5,000万美元。", c, [n2], [P1], "descriptive")
         self.assertEqual(v["verdict"], "verified", v["findings"])
         self.assertIn("NOTE_SOURCED_AMOUNT", {f["code"] for f in v["findings"]})
-        wrong_currency = verdict("2024年6月18日，注册资本由15,000万元变更为7,000万元。", c, [n2], [P1], "descriptive")
+        wrong_currency = verdict("2024年5月20日，注册资本由12,000万元变更为5,000万元。", c, [n2], [P1], "descriptive")
         self.assertIn("AMOUNT_UNMATCHED", codes(wrong_currency), "a dollar amount is not a yuan amount")
-        uncited = verdict("2024年6月18日，注册资本由15,000万美元变更为7,000万美元。", c, [ref(c, P1)], [P1], "descriptive")
+        uncited = verdict("2024年5月20日，注册资本由12,000万美元变更为5,000万美元。", c, [ref(c, P1)], [P1], "descriptive")
         self.assertNotEqual(uncited["verdict"], "verified", "a note's figures need that note cited")
 
     def test_a_percentage_written_in_a_cited_note_can_be_stated(self):
@@ -556,12 +556,12 @@ class NoteContentRefusals(unittest.TestCase):
         return next(n["ref"] for n in c.notes if n["text"].startswith(start))
 
     def test_an_adjustments_sign_and_direction_come_from_the_note(self):
-        c = build(notes=["「2025」Audit ADJ#4：-133.2万元（对方科目：投资收益）；调整说明：应收借款利息重分类至投资收益"])
+        c = build(notes=["「2025」Audit ADJ#4：-50.0万元（对方科目：投资收益）；调整说明：应收借款利息重分类至投资收益"])
         n = self.note_ref(c, "「2025」")
-        for text in ("2025年度审计调整-133.2万元，系应收借款利息重分类。", "2025年度审计调整减少133.2万元，系应收借款利息重分类。"):
+        for text in ("2025年度审计调整-50.0万元，系应收借款利息重分类。", "2025年度审计调整减少50.0万元，系应收借款利息重分类。"):
             v = verdict(text, c, [n], [P2], "descriptive")
             self.assertEqual(v["verdict"], "verified", (text, v["findings"]))
-        wrong = verdict("2025年度审计调整增加133.2万元。", c, [n], [P2], "descriptive")
+        wrong = verdict("2025年度审计调整增加50.0万元。", c, [n], [P2], "descriptive")
         self.assertNotEqual(wrong["verdict"], "verified", "the note says the adjustment reduced it")
 
     def test_a_direction_the_note_itself_states_is_backed_by_it(self):
@@ -571,18 +571,18 @@ class NoteContentRefusals(unittest.TestCase):
         self.assertNotIn("DIRECTION_UNSUPPORTED", codes(v), v["findings"])
 
     def test_a_remarks_period_value_is_a_yuan_figure_of_that_period(self):
-        c = build(notes=["租金收入 | 2025-12-31: 4342452.0; Detail 26: 会计角度直线法下形成的应收租金",
-                         "房产税 | 2025-12-31 annualised: 6705120.0; Detail 22: 按月计提"])
+        c = build(notes=["租金收入 | 2025-12-31: 3214567.0; Detail 26: 会计角度直线法下形成的应收租金",
+                         "房产税 | 2025-12-31 annualised: 5432100.0; Detail 22: 按月计提"])
         n1, n2 = self.note_ref(c, "租金收入"), self.note_ref(c, "房产税")
-        v = verdict("2025年12月31日租金收入为434.2万元，系直线法下形成的应收租金。", c, [n1], [P2], "descriptive")
+        v = verdict("2025年12月31日租金收入为321.5万元，系直线法下形成的应收租金。", c, [n1], [P2], "descriptive")
         self.assertEqual(v["verdict"], "verified", v["findings"])
-        other = verdict("2024年12月31日租金收入为434.2万元。", c, [n1], [P1], "descriptive")
+        other = verdict("2024年12月31日租金收入为321.5万元。", c, [n1], [P1], "descriptive")
         self.assertEqual(other["verdict"], "failed", "a remark's value belongs to its own period")
         self.assertTrue(codes(other) & {"AMOUNT_UNMATCHED", "WRONG_PERIOD"}, other["findings"])
-        self.assertEqual(verdict("2025年度房产税年化金额为670.5万元。", c, [n2], [P2], "descriptive")["verdict"], "verified")
+        self.assertEqual(verdict("2025年度房产税年化金额为543.2万元。", c, [n2], [P2], "descriptive")["verdict"], "verified")
 
     def test_a_year_the_note_names_without_the_character_is_still_its_year(self):
-        c = build(notes=["*某会计师事务所 | 2023审计费191400和2025Q1审计费50000"])
+        c = build(notes=["*某会计师事务所 | 2023审计费183600和2025Q1审计费40000"])
         n = self.note_ref(c, "*某会计师")
         v = verdict("其中包括2023年审计费。", c, [n], [P2], "descriptive")
         self.assertNotIn("WRONG_PERIOD", codes(v), v["findings"])
@@ -590,9 +590,9 @@ class NoteContentRefusals(unittest.TestCase):
     def test_naming_the_line_a_cited_note_is_about_needs_no_line_figure(self):
         rows = [("资产管理费", "detail", {P1: 400000, P2: 500000}), ("折旧", "detail", {P1: 600000, P2: 800000}),
                 ("Total", "total", {P1: 1000000, P2: 1300000})]
-        c = build(rows, notes=["「2025」ADJ#1：+180.7万元（对方科目：毛利）；调整说明：资产管理费截止性调整"])
+        c = build(rows, notes=["「2025」ADJ#1：+90.0万元（对方科目：毛利）；调整说明：资产管理费截止性调整"])
         n = self.note_ref(c, "「2025」")
-        v = verdict("2025年度包含资产管理费截止性调整增加180.7万元。", c, [n], [P2], "descriptive")
+        v = verdict("2025年度包含资产管理费截止性调整增加90.0万元。", c, [n], [P2], "descriptive")
         self.assertEqual(v["verdict"], "verified", v["findings"])
 
     def test_a_counterparty_line_with_a_star_is_the_line_the_sentence_names(self):
@@ -747,8 +747,8 @@ class FalseRejects20261109(unittest.TestCase):
         self.assertEqual(cl.names_not_in_evidence("原值系支付给上海乙企业管理有限公司的租赁管理费", c), ["上海乙企业管理有限公司"])
 
     def test_one_unit_after_a_list_of_figures_covers_each(self):
-        figures = cl.note_figures({"text": "包括2025年审计费191,400+2026年一季度50,000元", "period": None}, [P1, P2])["amounts"]
-        self.assertIn(191400.0, [a["value"] for a in figures])
+        figures = cl.note_figures({"text": "包括2025年审计费183,600+2026年一季度40,000元", "period": None}, [P1, P2])["amounts"]
+        self.assertIn(183600.0, [a["value"] for a in figures])
 
     def test_an_adjustment_word_answers_to_its_note_not_to_a_movement(self):
         c = build(notes=["「2025」Audit ADJ#2：-4.4万元（调减）（对方科目：应付账款）"], statement="IS")
@@ -944,7 +944,7 @@ class DeckDelivery20261109(unittest.TestCase):
         self.assertEqual(round_to_house_precision("83.85万元"), "83.9万元")
 
     def test_the_writer_is_shown_one_decimal_rounded_from_the_exact_value(self):
-        self.assertEqual(cl._wan(368486.75), 36.8)      # shown 36.85 before, which the deck rounded again to 36.9
+        self.assertEqual(cl._wan(123486.75), 12.3)      # shown 12.35 before, which the deck rounded again to 12.4
         self.assertEqual(cl._wan(19500), 2.0)           # an exact half rounds up
         self.assertEqual(cl._wan(1333.18), 0.1333)      # under 1万元: the exact yuan stays readable
 

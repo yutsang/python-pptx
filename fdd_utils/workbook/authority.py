@@ -412,7 +412,7 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
                 related.extend(x for x in list(others) + list(linked) if x not in related)
                 words = _register_words(registers, account, v, row_labels, label)
                 # the account's own direction, said in words too: an expense line shown by its effect on profit (negative)
-                # reads the other way round, and a model copied "-60.2万元" on 财务费用 as 调减 when the expense rose
+                # reads the other way round, and a model copied "-45.0万元" on 财务费用 as 调减 when the expense rose
                 own = -v if flip else v
                 line = f"「{name}」{label}：{'+' if own > 0 else '-'}{abs(yuan) / 1e4:,.1f}万元（{'调增' if own > 0 else '调减'}）"
                 if others:
@@ -423,7 +423,7 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
                     line += "；调整说明：" + "；".join(words)
                 ranked.append((-position, 0 if kind == "示意" else 1, line))
         # The model adds a sheet's entries up and quotes the total: 「我方对
-        # 2026年03月31日应付账款作示意性调增89.7万元，包括…60.2万元、9.9万元及
+        # 2026年03月31日应付账款作示意性调增75.0万元，包括…45.0万元、10.0万元及
         # 其他19.6万元」 was flagged as an invented figure and sent back twice.
         for total in sheet_sums.values():
             if abs(total) >= 500:
@@ -435,7 +435,7 @@ def adjustment_bridge(digest: Optional[Dict[str, Any]], account: str, limit: int
 def _profit_signed(row_labels: Dict[int, str], col_labels: Dict[int, str], grid: Dict[Tuple[int, int], float]) -> bool:
     """Does this bridge sheet show income-statement costs by their effect on profit (negative)? Read from its own cost
     rows: 营业成本 or 管理费用 negative in an audited or adjusted column. On the client file (2026-11-09) the period bridges
-    did, so an adjustment of -60.2万元 on 财务费用 was an increase of the expense; written as the sheet shows it, the model
+    did, so an adjustment of -45.0万元 on 财务费用 was an increase of the expense; written as the sheet shows it, the model
     wrote 调减 for three expense adjustments that raised the expense and 调增 for two that lowered it."""
     costs = [r for r, label in row_labels.items() if label in ("营业成本", "管理费用")]
     after = [c for c, label in col_labels.items() if re.search(r"审定数|示意性调整后", label)]

@@ -880,7 +880,7 @@ def _reclassify_indent_rollup_children(
                 # has been verified. Nothing downstream could tell a parent
                 # from its child otherwise: both end up "breakdown", so the
                 # model received a flat list and enumerated across levels --
-                # "应付账款-预提管理费用82.2万元、嘉兴市晶美新能源48.8万元、
+                # "应付账款-预提管理费用82.2万元、丙新能源48.8万元、
                 # 缪治彬12.5万元" against an 81.7万元 account, where items 2
                 # and 3 are inside item 1.
                 if parent_desc:
@@ -1132,7 +1132,7 @@ def _is_composition_label(label: str) -> bool:
 
 # A real breakdown can be two-level -- a real 营业成本 table has 折旧与摊销
 # broken further into 房屋建筑物/土地使用权/租赁服务费/其他, and 物业管理费 into
-# 第三方/上海熙麦 (rendered indented and in a different colour in the deck).
+# 第三方/关联方 (rendered indented and in a different colour in the deck).
 # openpyxl indent/colour don't survive pd.read_excel, and even if they did,
 # a preparer's indent choice is a formatting decision, not a structural one
 # to depend on. The reliable signal is the same one the block's OVERALL tie-
@@ -1890,7 +1890,7 @@ def synthesize_detail_table_from_breakdown(
     return None
 
 
-#: 「*上海海之信…」: a leading * marks a subsidiary-ledger line -- one
+#: 「*上海甲咨询…」: a leading * marks a subsidiary-ledger line -- one
 #: counterparty -- under the account row above it (第三方 / 预提费用 / 押金及保证金
 #: on a real reference case 其他应付款, each followed by its * lines).
 _LEDGER_LINE = re.compile(r"^\s*[*＊]")
@@ -1905,7 +1905,7 @@ def _ledger_grouped_rows(row_entries: List[Dict[str, Any]],
     "breakdown" and nothing else. On a sheet laid out as account rows with
     their * counterparty lines, that is the counterparties alone, from every
     account at once: a real 其他应付款 table came out as 20 lines with
-    海之信 and 上海保炬 each listed twice (they sit under two accounts), the
+    two vendors each listed twice (they sit under two accounts), the
     four accounts that make up the balance gone, and its largest item (安永,
     typed "detail") missing. Here the account rows are the components and the
     * lines their children, so the table's cap can fold the children away and
