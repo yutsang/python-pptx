@@ -6,6 +6,9 @@ offline gate runs once for all of them.
     python ad-hoc/workbench/portfolio_trial.py --dir databooks --arms checked,pro --max-cost-per-book 12 \\
         --flash <provider::model> --pro <provider::model> --i-accept-paid-calls                      PAID
 
+    python ad-hoc/workbench/portfolio_trial.py --dir databooks --recheck                             free: the verifier as it is
+                                                                                                     now, over those runs' drafts
+
 Which entity: of those whose sheet the roll-up's matcher finds (inspect_databook.resolve_auto_rollup_targets, the one the UI
 uses), the file with the most visible sheets (the most accounts to write), ties by name. --entities picks by name instead.
 Hidden sheets are neither counted nor read. Each book writes its own trial files and prints its own DIGEST.
@@ -84,6 +87,39 @@ def run(found: List[Dict[str, Any]], args: argparse.Namespace, trial: Optional[C
     return 0 if codes and all(c == 0 for c in codes) else 1
 
 
+def recheck_all(found: List[Dict[str, Any]], out_dir: Optional[Path] = None, check: Optional[Callable[..., Any]] = None) -> List[str]:
+    """For each pick, the newest paid trial on that workbook (by its sha), and every arm's saved drafts in it: the marks the
+    verifier gives now against those it gave then (recheck_session.py). No model call."""
+    import json
+    import re
+    import entity_trial as E
+    import recheck_session as RS
+    out_dir, check = out_dir or E.OUT_DIR, check or RS.recheck
+    trials = []
+    for f in Path(out_dir).glob("trial_*.json"):
+        m = re.fullmatch(r"trial_(\d{8}_\d{6})\.json", f.name)
+        if m:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except ValueError:
+                continue
+            if not data.get("scripted"):
+                trials.append((m.group(1), data))
+    out = []
+    for g in found:
+        for r in g["pick"]:
+            mine = sorted((t for t in trials if str(t[1].get("databook_sha256") or "").startswith(r["sha"])), key=lambda t: t[0])
+            if not mine:
+                out.append(f"===== {r['entity']}: no paid trial of this workbook in {out_dir}")
+                continue
+            stamp, data = mine[-1]
+            for arm in data.get("arms") or {}:
+                session = Path(out_dir) / f"trial_{arm}_{stamp}.agent-session.json"
+                out.append(f"===== {r['entity']} {arm} (trial {stamp})")
+                out.extend(RS.report(check(str(r["path"]), str(session)), 160) if session.exists() else [f"no session file {session.name}"])
+    return out
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dir", required=True, help="the folder of portfolio databooks")
@@ -94,11 +130,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--flash", default="")
     ap.add_argument("--pro", default="")
     ap.add_argument("--i-accept-paid-calls", action="store_true")
+    ap.add_argument("--recheck", action="store_true", help="free: re-verify the newest paid trial of each pick with the code as it is now")
     args = ap.parse_args(argv)
     import agent_acceptance as A
     A._utf8()
     found = survey(args.dir, [e.strip() for e in args.entities.split(",") if e.strip()] or None)
     print("\n".join(show(found)), flush=True)
+    if args.recheck:
+        print("\n".join(recheck_all(found)))
+        return 0
     if not args.i_accept_paid_calls:
         print("free listing only; add --i-accept-paid-calls to run the books above")
         return 0

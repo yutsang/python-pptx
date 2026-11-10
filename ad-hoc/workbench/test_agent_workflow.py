@@ -1369,6 +1369,26 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertEqual(len(first[first.index("--expect-sha") + 1]), 8)
         self.assertEqual([c[c.index("--max-cost") + 1] for c in calls], ["12.0", "12.0"])
 
+        # --recheck: the newest paid trial of each pick (found by the workbook's sha), every arm's saved drafts, no model call
+        out = tmp / "out"
+        out.mkdir()
+        pick = found[0]["pick"][0]
+        (out / "trial_20260101_000000.json").write_text(json.dumps({"databook_sha256": pick["sha"] + "x" * 56, "scripted": False,
+                                                                    "arms": {"checked": {}, "pro": {}}}), encoding="utf-8")
+        (out / "trial_20250101_000000.json").write_text(json.dumps({"databook_sha256": pick["sha"], "scripted": False,
+                                                                    "arms": {"flash": {}}}), encoding="utf-8")   # older: not read
+        for arm in ("checked", "pro"):
+            (out / f"trial_{arm}_20260101_000000.agent-session.json").write_text("{}", encoding="utf-8")
+        seen = []
+
+        def check(book_path, session):
+            seen.append((Path(book_path).name, Path(session).name))
+            return {"id": "s", "notice": "", "accounts": {}}
+        lines = PT.recheck_all(found, out_dir=out, check=check)
+        self.assertEqual(seen, [(pick["path"].name, "trial_checked_20260101_000000.agent-session.json"),
+                                (pick["path"].name, "trial_pro_20260101_000000.agent-session.json")])
+        self.assertIn("no paid trial of this workbook", "\n".join(lines), "the second portfolio has none")
+
     def test_the_scripted_writer_writes_the_latest_balance_it_is_shown(self):
         import entity_trial as E
         tmp = tempfile.mkdtemp(prefix="trial_w_")

@@ -983,6 +983,41 @@ class MajorErrorsPhaseA(unittest.TestCase):
         self.assertFalse([f for f in v["findings"] if f["dimension"] == "causal"], "a balance said to be rent is no cause")
 
 
+class CrossBookKinds(unittest.TestCase):
+    """Kinds of major error that recurred unmarked across three portfolio books and both writers (2026-11-10). Each test also
+    holds a right sentence of the same shape."""
+
+    def test_the_databook_is_not_described_instead_of_the_company(self):
+        c = build()
+        self.assertIn("WORKBOOK_META", codes(verdict("该科目明细表为隐藏工作表，无法进一步拆分余额性质", c, [ref(c, P2)], [P2])))
+        self.assertIn("WORKBOOK_META", codes(verdict("2025年12月31日余额130.0万元，工作底稿未更新", c, [ref(c, P2)], [P2])))
+        self.assertNotIn("WORKBOOK_META", codes(verdict("该科目明细未提供，无法进一步分析构成", c, [ref(c, P2)], [P2])))
+
+    def test_a_stated_total_is_the_sum_of_the_parts_before_it(self):
+        c = build()
+        cites = [ref(c, P2, "甲公司"), ref(c, P2, "乙公司"), ref(c, P2)]
+        self.assertIn("SUM_STATED", codes(verdict("甲公司70.0万元，乙公司30.0万元，合计130.0万元", c, cites, [P2])))
+        right = verdict("甲公司70.0万元，乙公司30.0万元，丙公司30.0万元，合计130.0万元", c, cites + [ref(c, P2, "丙公司")], [P2])
+        self.assertNotIn("SUM_STATED", codes(right), right["findings"])
+        self.assertNotIn("SUM_STATED", codes(verdict("主要为甲公司70.0万元、乙公司30.0万元等，合计130.0万元", c, cites, [P2])),
+                         "a list said to be partial")
+
+    def test_a_change_is_not_put_down_to_an_adjustment_larger_than_it(self):
+        c = build(notes=[])
+        mv = cl.derive_movement(c, P1, P2)                                   # +30.0万元
+        v = verdict("较2024年末增加30.0万元，主要系管理层调整调增80.0万元所致", c, [ref(c, P2), mv], [P1, P2], kind="movement")
+        self.assertIn("ADJUSTMENT_AS_MOVEMENT", {f["code"] for f in v["findings"]}, v["findings"])
+        v = verdict("主要因管理层调整调增80.0万元", c, [ref(c, P2)], [P2])          # the change is the account's own
+        self.assertIn("ADJUSTMENT_AS_MOVEMENT", {f["code"] for f in v["findings"]}, v["findings"])
+        v = verdict("较2024年末增加30.0万元，主要系管理层调整调增25.0万元所致", c, [ref(c, P2), mv], [P1, P2], kind="movement")
+        self.assertNotIn("ADJUSTMENT_AS_MOVEMENT", {f["code"] for f in v["findings"]}, "an adjustment within the change can carry it")
+        v = verdict("2025年12月31日余额130.0万元，其中80.0万元系管理层调整调增", c, [ref(c, P2)], [P2])
+        self.assertNotIn("ADJUSTMENT_AS_MOVEMENT", {f["code"] for f in v["findings"]}, "a part, not a reason")
+
+    def test_a_long_shou_ying_xiang_is_a_cause(self):
+        self.assertTrue(cl._CAUSE_RE.search("主要受法律及咨询顾问费、服务费及租赁费等明细增长影响"))
+
+
 class DeckDelivery20261109(unittest.TestCase):
     """What reaches the slide: the marks a person must see, and figures rounded once from the exact value."""
 

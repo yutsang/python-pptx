@@ -359,7 +359,7 @@ _NIL = ("无余额", "余额为零", "余额为0", "未发生", "首次形成", 
 # annualised figure is arithmetic with its own rules and must not be asked for a "cause".
 _CAUSE_RE = re.compile(
     r"driven by|attributed to|due to|owing to|as a result|because|thanks to|resulted from|caused by|"
-    r"由于|因为|主要系|主要由于|所致|导致|归因于|得益于|受[^，。；]{1,12}影响|系因|源于|源自|"
+    r"由于|因为|主要系|主要由于|所致|导致|归因于|得益于|受[^，。；]{1,40}影响|系因|源于|源自|"
     r"以致|致使|使得|鉴于|(?<![原起])因(?![素此子])|since |on account of|result of", re.IGNORECASE)
 _FORWARD_RE = re.compile(r"预计|预期|有望|expected to|is expected|forecast", re.IGNORECASE)
 #: "较上年末减少50.0万元，系正常摊销": a movement explained with a bare 系 is a cause like 主要系. Kept out of _CAUSE_RE, which
@@ -375,6 +375,11 @@ _ITEM_PERIOD_RE = re.compile(r"(?:为|系|均为|全部为|属于)\s*(?:应收|�
 _TERM_SPAN_RE = re.compile(r"(账龄|到期(?:时间|期限|日)?|剩余期限|期限)\s*(?:为|在|均)?\s*(超过|超出|超|大于|多于|长于|小于|少于|短于|不足|未满|未超过)?"
                            r"\s*(一|二|两|三|1|2|3)\s*年\s*(以上|以内|以下|之内)?")
 _YEARS = {"一": 1, "二": 2, "两": 2, "三": 3, "1": 1, "2": 2, "3": 3}
+#: a sentence about the databook itself rather than the company: a hidden tab, a workpaper not updated
+_WORKBOOK_META_RE = re.compile(r"隐藏(?:的)?(?:工作表|表|页)|(?:工作)?底稿未(?:及时)?更新|明细表未更新")
+#: an adjustment given as the reason: "主要系管理层调整调增600.0万元所致"
+_ADJUSTMENT_CAUSE_RE = re.compile(r"(?P<why>主要系|主要因|主要由于|由于|系|因)[^，。；]{0,6}?(?:管理层|审计|示意性)?调整(?:调增|调减|增加|减少)?")
+_MOVE_WORD_RE = re.compile(r"(?:增加|减少|上升|下降|增长|下滑)\s*(?:了|约)?\s*$")
 
 
 def _plain_number(written: str) -> Optional[float]:
@@ -1552,6 +1557,50 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                 review("NOTE_SCOPE", "binding", f"'{m.group(0).lstrip('为系均全部属于 ')}': {n['ref']} lists {item[:2]} for {other[0]}年{other[1]}月; "
                        "say which part is which period, or do not put all of it in one")
                 break
+
+    # The cross-book trial (three portfolio books, 2026-11-10): kinds that recurred unmarked across books and both writers.
+    # (5) the databook described instead of the company: "原表为隐藏工作表", "工作底稿未更新" (five sentences, both writers).
+    meta = _WORKBOOK_META_RE.search(text)
+    if meta:
+        fail("WORKBOOK_META", "format", f"'{meta.group(0)}' describes the databook, not the company: say what the reader lacks "
+             "(e.g. 明细未提供), not how the workbook is kept")
+
+    # (6) a stated total that the parts listed before it do not make: "房屋建筑物为500.0万元，机械设备为100.0万元，合计700.0万元"
+    total_word = re.search(r"合计|共计|总计|合共", text)
+    if total_word and not _has(text, ("等", "主要")):
+        spans = sorted(amounts, key=lambda a: a["start"])
+        after = [a for a in spans if a["start"] >= total_word.end()]
+        parts = [a for a in spans if a["end"] <= total_word.start()]
+        if after and len(parts) >= 2:
+            signed = [-a["value"] if text[max(0, a["start"] - 1):a["start"]] in ("-", "−", "－") or text[max(0, a["start"] - 1):a["start"]] == "负"
+                      else a["value"] for a in parts]
+            stated, slack = after[0]["value"], sum(a["tolerance"] for a in parts) + after[0]["tolerance"]
+            if min(abs(abs(sum(signed)) - stated), abs(sum(abs(v) for v in signed) - stated)) > slack:
+                fail("SUM_STATED", "arithmetic", f"'{after[0]['written']}' is given as the total of "
+                     f"{', '.join(a['written'] for a in parts)}, which add up to {abs(sum(signed)) / 1e4:,.1f}万元: name every part, "
+                     "or do not call it their total")
+
+    # (7) a period's change put down to an adjustment larger than the change: "较上年末增加100.0万元，主要系管理层调整调增
+    # 600.0万元所致". The adjustment is a period-end level; what it adds to the change is the difference from the one before.
+    for m in _ADJUSTMENT_CAUSE_RE.finditer(text):
+        adj = next((a for a in sorted(amounts, key=lambda a: a["start"]) if m.end() <= a["start"] <= m.end() + 3), None)
+        if adj is None:
+            continue
+        moved = [a for a in amounts if a["end"] <= m.start() and _MOVE_WORD_RE.search(text[max(0, a["start"] - 8):a["start"]])]
+        if not moved and m.group("why") == "系":
+            continue                        # "其中80.0万元系管理层调整调增" names a part; with no change in the sentence it is no reason
+        change = moved[-1]["value"] if moved else None
+        if change is None:
+            ordered = sorted(contract.periods)
+            last = max(claim_periods) if claim_periods else (ordered[-1] if ordered else None)
+            before = [p for p in ordered if last and p < last]
+            if last and before and contract.total(last) is not None and contract.total(before[-1]) is not None:
+                change = abs(contract.total(last) - contract.total(before[-1]))
+        if change is not None and adj["value"] > change + adj["tolerance"] + max(1.0, 0.02 * change):
+            review("ADJUSTMENT_AS_MOVEMENT", "causal", f"'{adj['written']}' is the adjustment at the period end, larger than the "
+                   f"change it is given as the reason for ({change / 1e4:,.1f}万元); what it adds to the change is the difference "
+                   "from the adjustment the period before: state that, or do not give it as the reason")
+            break
 
     # -- cause --------------------------------------------------------------------------------------
     if claim["cause_cites"] or _CAUSE_RE.search(text) or _FORWARD_RE.search(text) or _MOVEMENT_CAUSE_RE.search(text):
