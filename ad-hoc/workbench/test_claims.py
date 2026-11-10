@@ -1014,6 +1014,18 @@ class CrossBookKinds(unittest.TestCase):
         v = verdict("2025年12月31日余额130.0万元，其中80.0万元系管理层调整调增", c, [ref(c, P2)], [P2])
         self.assertNotIn("ADJUSTMENT_AS_MOVEMENT", {f["code"] for f in v["findings"]}, "a part, not a reason")
 
+    def test_a_range_of_years_takes_one_amount_each_after_fenbie(self):
+        p0 = "2023-12-31"
+        rows = [("甲公司", "detail", {p0: 1000000, P1: 862000, P2: 929000}), ("Total", "total", {p0: 1000000, P1: 862000, P2: 929000})]
+        c = build(rows=rows, periods=(p0, P1, P2), notes=[])
+        cites = [ref(c, p) for p in (p0, P1, P2)]
+        for text in ("2023年至2025年各年末，余额分别为100.0万元、86.2万元和92.9万元",
+                     "2023-2025年各年末余额分别为100.0万元、86.2万元、92.9万元"):
+            v = verdict(text, c, cites, [p0, P1, P2])
+            self.assertNotIn("WRONG_PERIOD", codes(v), (text, v["findings"]))
+        v = verdict("2023年至2025年各年末，余额分别为86.2万元、100.0万元和92.9万元", c, cites, [p0, P1, P2])
+        self.assertIn("WRONG_PERIOD", codes(v), "swapped years are still caught")
+
     def test_a_long_shou_ying_xiang_is_a_cause(self):
         self.assertTrue(cl._CAUSE_RE.search("主要受法律及咨询顾问费、服务费及租赁费等明细增长影响"))
 

@@ -252,6 +252,18 @@ def attached_period(text: str, start: int, end: int, mentions: List[Dict[str, An
         index = next((i for i, sp in enumerate(series) if sp["start"] == start), None)
         if len(listed) >= 2 and index is not None and len(series) == len(listed):
             return listed[index]
+        # "2023年至2025年各年末…分别为A、B和C": a range of years is one year per amount (a portfolio book wrote its differences
+        # this way four times and each was refused as written under the last year, 2026-11-10)
+        span = None
+        for span in re.finditer(r"(\d{4})\s*年?\s*(?:至|到|-|－|—|~)\s*(\d{4})\s*年", text[:split]):
+            pass
+        if span is not None and index is not None:
+            years = list(range(int(span.group(1)), int(span.group(2)) + 1))
+            if 2 <= len(years) == len(series):
+                where = {"text": f"{years[index]}年", "start": span.start(), "end": span.end()}
+                if "末" in text[span.end():split]:
+                    return {"kind": "date", "year": years[index], "month": 12, "day": 31, **where}
+                return {"kind": "year", "year": years[index], **where}
     # "较2025年末减少705.67万元": the period after 较 is what the change is measured from, not the period of an amount written
     # after the change word (client file, 2026-11-09: such amounts were refused as written under the wrong period)
     before = [m for m in before if not (re.search(r"(?:较|比|相比|相较|对比)\s*$", text[max(0, m["start"] - 3):m["start"]])
