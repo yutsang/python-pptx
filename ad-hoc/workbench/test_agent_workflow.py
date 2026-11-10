@@ -1263,6 +1263,39 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertEqual(res["books"]["calls"], 2, "both accounts' calls are on the books, the failed one's too")
         self.assertTrue(res.get("session_file"))
 
+    def test_the_checked_arm_reports_the_reviewer_marks_and_their_cost_on_each_account(self):
+        # 2026-11-10: the review marked six drafts, but the review file and its digest were written per account before the
+        # review ran, so neither showed one reviewer mark and no account carried a review call
+        import entity_trial as E
+        from trial_digest import digest
+        tmp = tempfile.mkdtemp(prefix="trial_checked_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        source = session_on(book)
+        source.load_params = {"workbook": book}
+        opened = lambda path, **kw: W.WorkSession(source, **{k: v for k, v in kw.items() if k != "config"},
+                                                  config={"agent": {"review_meaning": "mark"}})
+        reviewer = Writer(lambda system, user, n: {"objections": [{"index": 0, "why": "余额口径是调整前，需写明"}], "missing": []}
+                          if "Judge meaning only" in system else {})
+        setup = E.arm_setup(self.CFG, "checked", self.args())
+        with mock.patch.object(W.WorkSession, "open", side_effect=opened), mock.patch.object(E, "OUT_DIR", Path(tmp)):
+            res = E.run_arm("checked", setup, self.CFG, book, Path(tmp), R.Limits(), select=lambda work: [ACCOUNT],
+                            scripted={"primary": E.ScriptedWriter("x"), "escalation": reviewer}, stamp="t", deck=False, overview="none")
+        self.assertFalse(res.get("error"), res.get("error"))
+        row = res["per_account"][0]
+        self.assertEqual((row["review_status"], row["review_calls"], row["calls"]), ("marked", 1, 2), "the review call is the account's")
+        marks = res["_texts"][ACCOUNT]["deck_marks"]
+        self.assertEqual([(m["claim"], m["colour"]) for m in marks], [(0, "orange")])
+        self.assertTrue(marks[0]["why"].startswith("review_objection"), marks[0]["why"])
+        md = E.quality_markdown({"stamp": "t", "arms": {"checked": res}}, {}, [ACCOUNT])
+        self.assertIn("(1 by the reviewer)", "\n".join(digest(md)))
+        # a run made before this fix: its saved session holds the marks, and the digest reads them from it without a model call
+        from trial_digest import session_digest
+        saved = json.loads(next(Path(tmp).glob("trial_checked_t.agent-session.json")).read_text(encoding="utf-8"))
+        head = session_digest(saved)[0]
+        self.assertIn("1 orange (1 by the reviewer)", head)
+        self.assertIn("'marked': 1", head)
+
     def test_the_scripted_writer_writes_the_latest_balance_it_is_shown(self):
         import entity_trial as E
         tmp = tempfile.mkdtemp(prefix="trial_w_")

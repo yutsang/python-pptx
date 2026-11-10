@@ -2,6 +2,11 @@
 sentence the deck marks with why. No model call; free. entity_trial.py prints it at the end of a run; this reads any trial.
 
     python ad-hoc/workbench/trial_digest.py [--trial <trial_quality_*.md>] [--width 60]
+    python ad-hoc/workbench/trial_digest.py --session <trial_<arm>_<stamp>.agent-session.json> [--width 400]
+
+--session reads the marks from an arm's saved session (each account's sentences, verdicts, flags and review, as the deck was
+built from them) instead of the review file. Before 2026-11-10 the review file was written per account before the marks-only
+review ran, so it showed none of the reviewer's marks; the session file has them, and this shows them without a model call.
 
 The review file holds every paragraph, citation and form and runs to several hundred KB; pasting it back cost more than it
 showed. The digest is what is needed to find a wrong refusal or a needless mark: the sentence (cut to --width characters) and
@@ -69,6 +74,35 @@ def digest(text: str, width: int = 60) -> List[str]:
     return out
 
 
+def session_digest(data: Dict, width: int = 400) -> List[str]:
+    """Every sentence the deck marks, read from a saved session, and what the reviewer said was missing (listed for a person,
+    not coloured)."""
+    from types import SimpleNamespace
+    from entity_trial import deck_marks
+    cands = data.get("candidates") or {}
+    rows, statuses = [], {}
+    for account, c in cands.items():
+        review = c.get("review") or {}
+        statuses[str(review.get("status") or "-")] = statuses.get(str(review.get("status") or "-"), 0) + 1
+        marks = deck_marks(account, SimpleNamespace(claims=c.get("claims") or [], outcome=c.get("outcome") or {}, flags=c.get("flags") or []))
+        missing = list(review.get("missing") or [])
+        if marks or missing:
+            rows.append((account, review.get("status") or "-", marks, missing))
+    every = [m for _a, _s, marks, _m in rows for m in marks]
+    red = sum(1 for m in every if m["colour"] == "red")
+    by_review = sum(1 for m in every if m["why"].startswith("review_objection"))
+    out = [f"SESSION MARKS {data.get('id') or '?'}: {len(cands)} accounts, review {statuses}, marks {red} red "
+           f"{len(every) - red} orange ({by_review} by the reviewer), reviewer 'missing' {sum(len(x[3]) for x in rows)}"]
+    for account, status, marks, missing in rows:
+        out.append(f"{account} (review {status})")
+        for m in marks:
+            cut = m["text"] if len(m["text"]) <= width else m["text"][:width] + "…"
+            out.append(f"  {m['colour'][0].upper()} [{m['claim']}] {m['why']}")
+            out.append(f"      {cut}")
+        out.extend(f"  MISSING {x.get('ref')}: {x.get('why')}" for x in missing)
+    return out
+
+
 def newest() -> Path:
     found = sorted(TRIAL_DIR.glob("trial_quality_*.md"), key=lambda f: f.stat().st_mtime)
     if not found:
@@ -79,10 +113,15 @@ def newest() -> Path:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--trial", default="", help="trial_quality_<stamp>.md (default: the newest)")
-    ap.add_argument("--width", type=int, default=60, help="characters of each marked sentence to show")
+    ap.add_argument("--session", default="", help="trial_<arm>_<stamp>.agent-session.json: the marks as the deck carries them")
+    ap.add_argument("--width", type=int, default=0, help="characters of each marked sentence to show (default 60; 400 with --session)")
     args = ap.parse_args()
+    if args.session:
+        import json
+        print("\n".join(session_digest(json.loads(_read(Path(args.session))), args.width or 400)))
+        return 0
     path = Path(args.trial) if args.trial else newest()
-    print("\n".join(digest(_read(path), args.width)))
+    print("\n".join(digest(_read(path), args.width or 60)))
     return 0
 
 

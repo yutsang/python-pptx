@@ -291,11 +291,14 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
             bar.step(ok=result["ok"], tokens=f"{books.charged_tokens:,}", cost=f"{books.cost or 0:.3f}")
 
         review_bar: List[Any] = []
+        review_spend: Dict[str, Dict[str, Any]] = {}
 
         def on_review(key: str, review: Dict[str, Any]) -> None:   # the marks-only pass after the drafts (agent.review_meaning: mark)
             if not review_bar:
                 bar.close()
                 review_bar.append(_Bar(len(accounts), f"{name} review"))
+            review_spend[key] = A._books_delta(books, marks[-1])   # the reviews run one at a time: the calls since the last mark are this one's
+            marks.append(books.calls)
             review_bar[0].step(status=review.get("status"), cost=f"{books.cost or 0:.3f}")
 
         try:
@@ -306,13 +309,23 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
             for b in review_bar:
                 b.close()
         if done.get("review"):
-            # the review ran after every draft was written: its state is read now, not when each account finished
+            # the review ran after every draft was written: its state, its marks in the deck and its cost are read now, not when
+            # each account finished (the 2026-11-10 run's review file and digest showed none of the reviewer's six marks)
             for row in per:
-                c = work.source.candidates.get(accounts[row["case"] - 1])
+                key = accounts[row["case"] - 1]
+                c = work.source.candidates.get(key)
                 review = dict((c.review if c is not None else {}) or {})
                 row.update(review_status=review.get("status"),
                            review_objections=len(review.get("objections") or []) + len(review.get("missing") or []),
                            flags=_flag_counts((c.flags if c is not None else []) or []))
+                spent = review_spend.get(key)
+                if spent:
+                    row.update(calls=row["calls"] + spent["calls"], cost=round((row.get("cost") or 0) + (spent.get("cost") or 0), 4),
+                               review_calls=row["review_calls"] + spent["calls"],
+                               review_cost=round((row.get("review_cost") or 0) + (spent.get("cost") or 0), 4))
+                if key in result["_texts"]:
+                    result["_texts"][key].update(review=review, flags=list((c.flags if c is not None else []) or []),
+                                                 deck_marks=deck_marks(key, c))
         if overview != "none" and not result.get("stopped"):
             # the summary band from the finished paragraphs; with two models, the cheaper one's is written too, for comparison,
             # and the stronger one's (written last) is what the deck carries
