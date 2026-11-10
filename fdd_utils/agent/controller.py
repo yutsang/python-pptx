@@ -329,6 +329,12 @@ REVIEW_SYSTEM = (
     "- a balance described as a flow, or a flow as a balance; one period's fact applied to other periods;\n"
     "- a parent line and its own children both counted; a detail line presented as the whole;\n"
     "- a note's party, condition, timing, restriction or amount misstated;\n"
+    "- the subject confused: the target's facts (its capital, its checks) given to a shareholder or counterparty, or the reverse;\n"
+    "- one basis presented as another: the tab's lines before adjustment as the make-up of the adjusted balance, a gross amount\n"
+    "  (with the current portion, before a deduction) as the net or long-term one;\n"
+    "- a note's broad statement repeated where the detail lines contradict it (a period, a party, an amount);\n"
+    "- a cause that cannot carry the movement: opposite in direction, far smaller, or a balance offered for a period's change;\n"
+    "- a term the notes do not give (a benchmark, a sign, a rate basis);\n"
     "- a material fact in the notes left out (give its N ref under 'missing').\n"
     "Object only where EVIDENCE shows the problem; a style preference is not an objection."
 )
@@ -440,7 +446,8 @@ def writer_system_prompt(language: str) -> str:
         f"6. Write for the report, in {answer_lang}, within LENGTH: the most important first, nothing the reader does not need.\n"
         "   Amounts: 1亿元 or more as 亿元 with two decimals (6.65亿元), otherwise 万元 with one decimal (598.1万元), under 1万元\n"
         "   in 元. Periods as period_labels gives them (an income-statement line is a flow: 2024年度, 2026年1-3月, never\n"
-        "   '2024年12月31日营业成本');\n"
+        "   '2024年12月31日营业成本'); name the subject (目标公司, or the company's name), never 该公司; a note's term as the\n"
+        "   note writes it (a spread written '20BP' stays 20BP: no benchmark or 加/减 the note does not give);\n"
         "   no refs (F12, N3) and no internal names (authority_adjusted, raw_schedule) in the text. No percentage change over a\n"
         "   negative base or across a change of sign. The tab's lines are not the make-up of an adjusted balance unless they add\n"
         "   up to it.\n"
@@ -478,11 +485,12 @@ def system_prompt(mode: str, session: SourceSession, language: str, remembered: 
 class AgentController:
     def __init__(self, session: SourceSession, model: Model, *, budget: Optional[Budget] = None, language: Optional[str] = None,
                  memory: Optional[Memory] = None, prepare: bool = False, seed: bool = False, review: bool = False,
-                 lead: bool = False, plan: bool = False, tool_loop_on_repeat: bool = False):
+                 lead: bool = False, plan: bool = False, tool_loop_on_repeat: bool = False, review_mark: bool = False):
         self.session = session
         #: prepared write only: the escalation model reads the evidence once and plans; the primary writes (agent.plan_first)
         self.plan = plan
         self.tool_loop_on_repeat = tool_loop_on_repeat
+        self.review_mark = review_mark
         self._plan: Dict[str, Any] = {}
         #: the paragraph is led by the model: it understands, decides who writes, checks every claim and decides (agent.lead_write)
         self.lead = lead
@@ -1362,6 +1370,13 @@ class AgentController:
         if candidate is not None and getattr(self, "_view", None) is not None:
             candidate.flags = self._flags(account, self._view, self._must, candidate.claims, candidate.outcome, unresolved,
                                           escalated=self._repaired_by_stronger())
+            if review is not None and review.get("status") == "marked":
+                for o in review.get("objections") or []:
+                    if 0 <= o["index"] < len(candidate.claims):
+                        candidate.flags.append({"kind": "review_objection", "claim": o["index"], "why": o["why"],
+                                                "text": str(candidate.claims[o["index"]].get("text"))[:160]})
+                for m in review.get("missing") or []:
+                    candidate.flags.append({"kind": "review_missing", "ref": m["ref"], "why": m["why"]})
             run.report["flags"] = list(candidate.flags)
         if review is not None:
             run.report["review"] = dict(review, outcome=review.get("status"))
@@ -1489,6 +1504,11 @@ class AgentController:
                                 review = {"status": "not_needed", "reasons": []}
                             else:
                                 review = dict(self._review_meaning(run, account, view, claims, usage), reasons=reasons)
+                                if self.review_mark:
+                                    # marks only: the objections colour their sentences, the paragraph stands as verified
+                                    if review["status"] == "objected":
+                                        review["status"] = "marked"
+                                    return self._end_with_review(run, account, claims, review, unresolved, record, STOP_DONE, export=export)
                                 if review["status"] == "objected":
                                     pre_review = list(claims)
                                     review["text_reviewed"] = cl.render_claims(claims)      # what the reviewer read, kept for the record

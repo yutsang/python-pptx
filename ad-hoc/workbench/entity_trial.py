@@ -63,7 +63,7 @@ sys.path.insert(0, str(ROOT))
 import agent_acceptance as A  # noqa: E402
 
 OUT_DIR = ROOT / "fdd_utils" / "output" / "agent_trial"
-ARMS = ("pro_lead", "flash_lead", "mixed_lead", "pro", "flash", "mixed", "planned", "routed", "seeded", "reviewed", "loop")
+ARMS = ("pro_lead", "flash_lead", "mixed_lead", "pro", "flash", "mixed", "planned", "routed", "seeded", "reviewed", "checked", "loop")
 # the model leads (understands, decides, checks); Python reads, computes and verifies as a tool. pro / flash / mixed are the
 # Python-gated prepared write, kept to compare against; seeded / reviewed were measured 2026-11-08 and dropped
 DEFAULT_ARMS = "pro_lead,flash_lead,mixed_lead"
@@ -99,6 +99,9 @@ def arm_setup(cfg: Dict[str, Any], name: str, args: argparse.Namespace) -> Dict[
     if name == "routed":                         # the stronger model assigns each account (dispatch.py); the cheaper writes the rest
         return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "escalate_after": int(args.escalate_after),
                 "dispatch": True}
+    if name == "checked":                        # the cheaper writes alone; the stronger reads each verified paragraph once and
+        # marks the sentences it objects to (agent.review_meaning: mark), changing nothing; it never takes over a write
+        return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "escalate_after": 99, "review": "mark"}
     if name == "loop":
         return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": False}
     raise ValueError(f"unknown arm {name!r} (arms: {', '.join(ARMS)})")
@@ -114,7 +117,7 @@ def arm_config(cfg: Dict[str, Any], setup: Dict[str, Any]) -> Dict[str, Any]:
     agent["routing"] = setup["routing"]
     agent["prepared_write"] = bool(setup["prepare"])
     agent["seed_facts"] = bool(setup.get("seed"))
-    agent["review_meaning"] = bool(setup.get("review"))
+    agent["review_meaning"] = setup.get("review") if setup.get("review") == "mark" else bool(setup.get("review"))
     agent["lead_write"] = bool(setup.get("lead"))
     agent["plan_first"] = bool(setup.get("plan"))
     return out
@@ -466,7 +469,7 @@ def scripted_for(name: str) -> Dict[str, Any]:
         holder: Dict[str, Any] = {}
         primary, good = A.scripted_models(lambda: holder["source"], wrong_first=True)
         return {"primary": A.Scripted(primary, "scripted-cheap"), "escalation": A.Scripted(good, "scripted-strong"), "holder": holder}
-    if name in ("mixed", "seeded", "reviewed", "mixed_lead", "routed", "planned"):
+    if name in ("mixed", "seeded", "reviewed", "mixed_lead", "routed", "planned", "checked"):
         return {"primary": ScriptedWriter("cheap", wrong_first=(name == "mixed")), "escalation": ScriptedWriter("strong")}
     return {"primary": ScriptedWriter(name)}
 

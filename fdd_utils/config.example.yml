@@ -254,6 +254,8 @@ agent:
   # Off until entity_trial.py shows they help. seed_facts: Python writes the balance and movement sentences, the model adds
   # the rest. review_meaning: a verified paragraph with a cause, notes, a basis caveat or part-year figures is read once by
   # the escalation model for meaning (needs agent.models.escalation); a repair that does not verify keeps the verified text.
+  # review_meaning: mark -- the escalation model reads each verified paragraph once and only marks the sentences it objects to
+  # (orange in the deck, with its reason); nothing is rewritten or left out. true is the repair mode described above.
   seed_facts: false
   review_meaning: false
   # The model leads each paragraph: it reads the evidence and records what must be said, decides who writes, checks every claim

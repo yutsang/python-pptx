@@ -1318,7 +1318,11 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     # "由A和B构成" over every detail line of a period says they make up the balance. When the deck's balance is adjusted and the
     # lines are the tab's own, they add up to the tab's total, not to it; within the detail check's tolerance that passed before
     # (the ten-case review, 2026-11-08: retained earnings, 9.2万 of adjustments).
-    if _has(text, ("构成", "组成", "consist", "made up of", "comprise")):
+    # "其中A-60.0万元，B-9.0万元" naming every line is the same statement (every trial on the client file stated retained
+    # earnings this way after the adjusted balance, 2026-11-09/10); a sentence that says the lines are before the adjustments
+    # ("（未经调整）") states it rightly and was refused before
+    if _has(text, ("构成", "组成", "其中", "consist", "made up of", "comprise", "of which")) and \
+            not _has(text, ("调整前", "未经调整", "未调整", "before adjustment", "unadjusted")):
         by_p: Dict[str, List[Dict[str, Any]]] = {}
         for f in cited_facts:
             if f["role"] == ROLE_COMPONENT:
@@ -1450,6 +1454,23 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     for name in names_not_in_evidence(text, contract):
         review("NAME_NOT_IN_EVIDENCE", "names", f"'{name}' is not a name the evidence carries: write the name as the tab or a note "
                "gives it, or leave it out")
+
+    # -- subject -------------------------------------------------------------------------------------
+    # "全部由甲公司持有，该公司注册资本为5000万美元": 该公司 read as the shareholder gave it the target's capital (every
+    # trial on the client file, 2026-11-09/10). The writer names the subject instead.
+    if re.search(r"该公司|该企业|该主体", text):
+        review("AMBIGUOUS_SUBJECT", "names", "'该公司' can be read as the target or as the company named before it: write 目标公司 or "
+               "that company's name")
+
+    # -- terms a note states -------------------------------------------------------------------------
+    # "二期是20BP" in the note became "LPR减20BP" in the sentence: the sign and the benchmark were the writer's (2026-11-09/10)
+    note_pool = " ".join(str(n.get("text") or "") for n in source_notes) or " ".join(str(n.get("text") or "") for n in contract.notes)
+    for m in re.finditer(r"(加|减|上浮|下浮|\+|-|＋|－)\s*(\d+(?:\.\d+)?)\s*(?:BP|bp|bps|个基点|基点)", text):
+        sign = "+" if m.group(1) in ("加", "上浮", "+", "＋") else "-"
+        words = ("加", "上浮", "\\+", "＋") if sign == "+" else ("减", "下浮", "-", "－")
+        if not re.search(r"(?:" + "|".join(words) + r")\s*" + re.escape(m.group(2)) + r"\s*(?:BP|bp|bps|个基点|基点)", note_pool):
+            fail("TERM_NOT_IN_NOTE", "citations", f"'{m.group(0)}': the notes give {m.group(2)}BP without "
+                 f"{'加' if sign == '+' else '减'}; write the spread as the note does")
 
     # -- cause --------------------------------------------------------------------------------------
     if claim["cause_cites"] or _CAUSE_RE.search(text) or _FORWARD_RE.search(text):
@@ -1652,7 +1673,7 @@ _RED_DIMENSIONS = ("amounts", "arithmetic", "binding", "citations")
 #: detail_caveat were here until 2026-11-09: a sentence-level review of the client file found them on 33 to 55 right
 #: sentences per arm against 9 to 22 real problems, so the orange told a person nothing. They stay on the candidate and in
 #: the review file; a note-based cause the verifier cannot read as the note's own words is still orange through its verdict.
-HIGHLIGHT_FLAGS = ("cause_not_proven", "lead_left_to_person")
+HIGHLIGHT_FLAGS = ("cause_not_proven", "lead_left_to_person", "review_objection")
 
 
 def to_legacy_result(account: str, claims: List[Dict[str, Any]], outcome: Dict[str, Any],

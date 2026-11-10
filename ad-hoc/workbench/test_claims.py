@@ -899,6 +899,33 @@ class ReviewFindingsTrial5(unittest.TestCase):
         self.assertNotIn("PERCENT_UNMATCHED", codes(verdict("2025年12月31日应付甲公司60.0万元，占应付账款余额的80.0%", c, cites, [P2])))
         self.assertIn("PERCENT_UNMATCHED", codes(verdict("2025年12月31日应付甲公司60.0万元，占应付账款余额的85.0%", c, cites, [P2])))
 
+
+class ReviewFindingsTrial6(unittest.TestCase):
+    """Wrong sentences the sixth trial's review found unmarked, each one recurring across trials (2026-11-10)."""
+
+    def test_every_line_after_qizhong_is_a_make_up_and_must_say_its_basis(self):
+        rows = [("利润分配-未分配利润", "detail", {P1: -500000, P2: -600000}), ("本年利润", "detail", {P1: 0, P2: -90000}),
+                ("Total", "total", {P1: -500000, P2: -680000})]                 # the deck's (adjusted) total; the tab's is -690,000
+        authority = {P2: {"tab": -690000.0, "financials": -680000.0}}
+        c = build(rows=rows, notes=[], authority=authority, financials={P1: -500000, P2: -680000}, account="未分配利润")
+        cites = [ref(c, P2, "利润分配-未分配利润"), ref(c, P2, "本年利润")]
+        v = verdict("其中利润分配-未分配利润-60.0万元，本年利润-9.0万元", c, cites, [P2])
+        self.assertIn("COMPOSITION_BASIS", codes(v), v["findings"])
+        v = verdict("其中利润分配-未分配利润-60.0万元，本年利润-9.0万元（未经调整）", c, cites, [P2])
+        self.assertNotIn("COMPOSITION_BASIS", codes(v), v["findings"])
+
+    def test_gai_gong_si_is_sent_back_for_a_named_subject(self):
+        c = build()
+        v = verdict("2025年12月31日余额130.0万元，该公司为主要客户", c, [ref(c, P2)], [P2])
+        self.assertIn("AMBIGUOUS_SUBJECT", {f["code"] for f in v["findings"]})
+        self.assertNotEqual(v["verdict"], "verified")
+
+    def test_a_spread_keeps_the_notes_sign(self):
+        c = build(notes=["一期是5年期LPR减5BP，二期是20BP，每6个月调整一次"])
+        n = c.notes[0]["ref"]
+        self.assertEqual(codes(verdict("一期利率为5年期LPR减5BP，二期为20BP", c, [n], [P2], kind="note")), set())
+        self.assertIn("TERM_NOT_IN_NOTE", codes(verdict("一期利率为5年期LPR减5BP，二期为LPR减20BP", c, [n], [P2], kind="note")))
+
 class DeckDelivery20261109(unittest.TestCase):
     """What reaches the slide: the marks a person must see, and figures rounded once from the exact value."""
 

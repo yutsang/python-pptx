@@ -781,6 +781,49 @@ class PreparedWrite(unittest.TestCase):
 
     NOTE = "应收甲公司的租金按直线法确认，尚未开票"
 
+    def test_a_draft_whose_sentences_all_verify_but_never_finished_still_goes_into_the_first_generation(self):
+        # 2026-11-10: two paragraphs, every sentence right, were left out because a MUST ADDRESS note was never answered
+        from fdd_utils.agent import tools as T
+        from fdd_utils.agent.export import merged_results, session_delivery
+        writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}}
+                        if n == 1 else {"fix": [], "unresolved": []})
+        work = self._noted(writer, [self.NOTE])
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertFalse(turn.ok, turn.report)
+        self.assertTrue(work.source.candidates[ACCOUNT].validated)
+        self.assertEqual(T.drafts_to_mark(work.source), [ACCOUNT])
+        results = merged_results(work.source, [ACCOUNT], first_generation=True)
+        delivery = session_delivery(work.source, results, edited=[ACCOUNT], first_generation=True)
+        self.assertIn(("ACCOUNT_NOT_ACCEPTED", ACCOUNT), [(f.code, f.account) for f in delivery.findings])
+        self.assertNotIn(ACCOUNT, [f.account for f in delivery.findings if f.code == "ACCOUNT_NOT_DRAFTED"])
+
+    def test_a_marks_only_review_colours_the_sentence_it_objects_to_and_keeps_the_paragraph(self):
+        # 2026-11-10: every wrong sentence the review found was a meaning error, and every one was black in the deck
+        from fdd_utils.agent.export import merged_results, review_findings
+        writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)],
+                                                           "unresolved": ["N1：直线法租金的金额未单独列示，需人工确认"]}})
+        reviewer = Writer(lambda system, user, n: {"objections": [{"index": 0, "why": "该余额是调整前的明细合计，不是调整后余额"}], "missing": []}
+                          if "Judge meaning only" in system else {"draft": {"claims": [], "unresolved": []}})
+        tmp = tempfile.mkdtemp(prefix="prep_mark_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        source = session_on(book, notes=[self.NOTE])
+        source.load_params = {"workbook": book}
+        work = W.WorkSession(source, model=writer, escalation=reviewer, model_name="m", policy=R.Policy(mode="escalate", escalate_after=99),
+                             budget=C.Budget(max_steps=8), prepare=True, config={"agent": {"review_meaning": "mark"}})
+        turn = work.edit("撰写应收账款的段落", ACCOUNT, accept=True)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual((len(writer.users), len(reviewer.users)), (1, 1), "read once, nothing sent back to the writer")
+        candidate = work.source.candidates[ACCOUNT]
+        self.assertEqual(candidate.review["status"], "marked")
+        self.assertIn(("review_objection", 0), [(f["kind"], f.get("claim")) for f in candidate.flags])
+        review = merged_results(work.source, [ACCOUNT], first_generation=True)[ACCOUNT]["agent_4_validation"]["clause_reviews"][0]
+        self.assertEqual(review["category"], "reasoning")
+        self.assertIn("调整前", review["reason"])
+        codes = [f.code for f in review_findings(work.source, [ACCOUNT])]
+        self.assertNotIn("SEMANTIC_OBJECTION", codes)
+        self.assertIn("HUMAN_CHECK", codes)
+
     def test_a_material_note_is_stated_or_deferred_by_ref_and_a_deferral_is_flagged_for_a_person(self):
         def defer(system, user, n):
             view = writer_view(user)
@@ -1131,6 +1174,13 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertEqual(got["reviewed"]["escalation"]["model"], "pro-id", "the reviewer is the stronger model")
         cfg = E.arm_config(self.CFG, got["reviewed"])
         self.assertEqual((cfg["agent"]["seed_facts"], cfg["agent"]["review_meaning"]), (True, True))
+        # checked: the cheaper writes alone, the stronger only marks (never takes over a write)
+        from fdd_utils.agent import flag as F
+        self.assertEqual((got["checked"]["primary"]["model"], got["checked"]["escalation"]["model"], got["checked"]["escalate_after"]),
+                         ("flash-id", "pro-id", 99))
+        cfg = E.arm_config(self.CFG, got["checked"])
+        self.assertEqual((cfg["agent"]["review_meaning"], F.review_meaning(cfg), F.review_marks_only(cfg)), ("mark", True, True))
+        self.assertFalse(F.review_marks_only(E.arm_config(self.CFG, got["reviewed"])))
         self.assertTrue(all(s["primary"]["max_output"] == 4000 for s in got.values()))
         cfg = E.arm_config(self.CFG, got["pro"])
         self.assertEqual((cfg["agent"]["models"]["primary"]["model"], cfg["agent"]["prepared_write"], cfg["agent"]["routing"]), ("pro-id", True, "single"))

@@ -846,6 +846,30 @@ accounts accepted, cost, the accounts not accepted and every marked sentence wit
 its reason, so the run's output is what is pasted back instead of the review
 file.
 
+**Sixth trial (2026-11-10, 232eae1).** flash 0.22 yuan, 25 of 26 accepted, 53%
+of the team's figures, 1.0 times their length; routed 2.19 yuan, 23 accepted,
+45%. The sentence review found 5 problems in 105 sentences for flash and 5 in
+113 for routed, so on this file the cheaper model alone now writes as well as
+the stronger one does for ten times the cost. Only two sentences were marked,
+both right; all ten problems were black. They were meaning errors: a
+shareholder given the target's capital, the tab's lines before adjustment
+given as the adjusted balance's make-up, a gross loan called the long-term
+part, a note's broad period repeated against its own detail, a cause that
+cannot carry the movement, a rate term the note does not give. Three recur in
+every trial and are now checked: a make-up after 其中 naming every line, on the
+tab's basis when the balance is adjusted, must say it is before adjustment
+(`COMPOSITION_BASIS`, and a sentence that says 未经调整 is no longer refused);
+该公司 is sent back for a named subject (`AMBIGUOUS_SUBJECT`); and a spread's
+加/减 must be the note's (`TERM_NOT_IN_NOTE`). The writer is told the same. The
+rest need a reader: `agent.review_meaning: mark` has the stronger model read
+each verified paragraph once and mark the sentences it objects to, orange with
+its reason, changing nothing and leaving nothing out (the repair mode sends
+objections back and drops a paragraph whose objection stands); trial arm
+`checked` is the cheaper writer with that review. A draft whose every sentence
+verified but whose write ended unaccepted (a material note left unanswered) is
+now carried into the first-generation deck as `ACCOUNT_NOT_ACCEPTED`: routed
+had left two such paragraphs out.
+
 **What a person is shown, and why (2026-11-09).** A sentence-level review of the
 client file's first trial (621 sentences across three arms, every figure and
 name read against the visible sheets) found 33 to 55 marks per arm on sentences

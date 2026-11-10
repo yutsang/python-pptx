@@ -222,11 +222,14 @@ def numerical_summary(session: SourceSession, accounts: Optional[List[str]] = No
 
 def drafts_to_mark(session: SourceSession) -> List[str]:
     """Drafts the gate did not accept that a first-generation deck still carries, rejected sentences marked: written against the
-    current sources (not invalidated by a change to them) and with at least one verified sentence."""
+    current sources (not invalidated by a change to them) and with at least one verified sentence. That includes a draft whose
+    every sentence verified but whose write ended unaccepted (a material note or the latest balance left unaddressed): two
+    such paragraphs, all their sentences right, were left out of a deck (client file, 2026-11-10 review)."""
     out = []
     for account, c in session.candidates.items():
         verdicts = (c.outcome or {}).get("verdicts") or []
-        if (not c.validated and c.claims and c.source_version == session.source_version and not getattr(c, "invalid_reason", "")
+        if ((not c.validated or not c.accepted) and c.claims and c.source_version == session.source_version
+                and not getattr(c, "invalid_reason", "")
                 and any(v.get("verdict") in ("verified", "verified_inference") for v in verdicts)):
             out.append(account)
     return out

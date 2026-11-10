@@ -100,6 +100,15 @@ def review_meaning(config: Optional[Dict[str, Any]] = None) -> bool:
     return bool(_agent_block(config).get("review_meaning"))
 
 
+def review_marks_only(config: Optional[Dict[str, Any]] = None) -> bool:
+    """agent.review_meaning: mark -- the review marks what it objects to and changes nothing: each objection colours its sentence
+    orange in the deck with the reviewer's reason, the paragraph stays in. The repair mode (true) sends objections back to the
+    writer and leaves an unsettled paragraph out of the deck. On the client file (2026-11-10) all ten wrong sentences a review
+    found were meaning errors Python cannot see (a shareholder's capital, raw lines as the adjusted make-up, a gross loan as the
+    long-term part, a note's broad period against its detail, a cause that cannot carry the movement), and every one was black."""
+    return str(_agent_block(config).get("review_meaning") or "").strip().lower() == "mark"
+
+
 def _number(value: Any, kind=int) -> Optional[Any]:
     """0, '' and None mean 'no cap'; anything else must be a number."""
     if value in (None, "", 0, 0.0, False):
