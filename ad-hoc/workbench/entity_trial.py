@@ -215,7 +215,8 @@ def sources_for_review(source: Any, key: str, candidate: Any) -> Dict[str, Any]:
 
 def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str, workdir: Path, limits: Any, *,
             select: Callable[[Any], List[str]], scripted: Optional[Dict[str, Any]] = None, stamp: str = "", deck: bool = True,
-            checkpoint: Optional[Callable[[Dict[str, Any]], None]] = None, overview: str = "both") -> Dict[str, Any]:
+            checkpoint: Optional[Callable[[Dict[str, Any]], None]] = None, overview: str = "both",
+            financials: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """One arm on its own copy and session. Every account's row is checkpointed as it finishes; an exception ends the arm with
     what it spent so far recorded (it is never lost, and never counted as a success)."""
     from fdd_utils.agent import routing as R
@@ -239,7 +240,8 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                               "accounts": 0, "done": 0, "ok": 0, "per_account": [], "_texts": {}}
     work = None
     try:
-        work = WorkSession.open(str(copy_path), **kwargs)
+        # an entity file whose Financials sheet is in its portfolio's roll-up (主表): read from there, as the UI does
+        work = WorkSession.open(str(copy_path), **{k: v for k, v in (financials or {}).items() if v}, **kwargs)
         if scripted is not None and scripted.get("holder") is not None:
             scripted["holder"]["source"] = work.source
         books = work.shared
@@ -842,6 +844,14 @@ def selector(args: argparse.Namespace) -> Callable[[Any], List[str]]:
     return select
 
 
+def _financials(args: argparse.Namespace) -> Dict[str, str]:
+    """{financials_from, financials_sheet} for SourceSession.load / WorkSession.open, or {} for the workbook's own sheet."""
+    src, sheet = getattr(args, "financials_from", "") or "", getattr(args, "financials_sheet", "") or ""
+    if bool(src) != bool(sheet):
+        raise SystemExit("--financials-from and --financials-sheet go together")
+    return {"financials_from": src, "financials_sheet": sheet} if src else {}
+
+
 def _sha_problem(args: argparse.Namespace, sha: str) -> str:
     want = str(args.expect_sha or "").strip().lower()
     return "" if not want or sha.lower().startswith(want) else f"the workbook's sha256 is {sha[:12]}..., not {want}...: not the same bytes"
@@ -853,7 +863,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     sha = _sha(args.databook)
     fp = code_fingerprint()
     print(f"TRIAL PLAN (nothing sent)  code {fp['short']}  workbook {sha[:12]}")
-    source = SourceSession.load(args.databook)
+    source = SourceSession.load(args.databook, **_financials(args))
     cases = _cases(args)
     if cases:
         ranked = sorted(source.contracts)
@@ -929,7 +939,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     deck = not args.no_deck and not _cases(args)
     report: Dict[str, Any] = {"stamp": stamp, "scripted": bool(args.scripted), "databook_sha256": sha, "limit": args.limit,
                               "cases": _cases(args) or None, "legacy_run": args.legacy_run or None, "arms": {}, "caps": caps,
-                              "code_fingerprint": code_fingerprint(), "deck": deck}
+                              "code_fingerprint": code_fingerprint(), "deck": deck,
+                              "financials_from": Path(args.financials_from).name if args.financials_from else None,
+                              "financials_sheet": args.financials_sheet or None}
     workdir = Path(tempfile.mkdtemp(prefix="entity_trial_"))
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     progress_file = OUT_DIR / f"trial_{stamp}.progress.jsonl"
@@ -952,7 +964,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             setup = arm_setup(cfg, name, args)
             res = run_arm(name, setup, cfg, args.databook, workdir, Limits(**share), select=selector(args),
                           scripted=scripted_for(name) if args.scripted else None, stamp=stamp, deck=deck, checkpoint=checkpoint,
-                          overview="none" if args.cases else args.overview)
+                          overview="none" if args.cases else args.overview, financials=_financials(args))
             allowance.charge(res.get("books"))
             report["arms"][name] = res
             report["accounts_in_scope"] = report.get("accounts_in_scope") or res.get("accounts")
@@ -1010,6 +1022,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         p.add_argument("--arms", default=DEFAULT_ARMS, help=f"comma list of {', '.join(ARMS)} (default {DEFAULT_ARMS})")
         p.add_argument("--cases", default="", help="comma list of indices into the sorted contract list (the ten-case study); no deck")
         p.add_argument("--expect-sha", default="", help="refuse to start unless the workbook's sha256 starts with this")
+        p.add_argument("--financials-from", default="", help="the portfolio roll-up (主表) holding this entity's Financials sheet")
+        p.add_argument("--financials-sheet", default="", help="that sheet's name (both or neither)")
         p.add_argument("--no-deck", action="store_true", help="do not export a deck (always off with --cases)")
         p.add_argument("--overview", default="both", choices=("both", "pro", "flash", "none"),
                        help="the executive summary from the finished paragraphs: both = the cheaper and the stronger model each write one "

@@ -1273,15 +1273,21 @@ class WholeDatabookTrial(unittest.TestCase):
         write_book(book)
         source = session_on(book)
         source.load_params = {"workbook": book}
-        opened = lambda path, **kw: W.WorkSession(source, **{k: v for k, v in kw.items() if k != "config"},
-                                                  config={"agent": {"review_meaning": "mark"}})
+        seen_open = []
+
+        def opened(path, **kw):
+            seen_open.append({k: kw.get(k) for k in ("financials_from", "financials_sheet")})
+            return W.WorkSession(source, **{k: v for k, v in kw.items() if k not in ("config", "financials_from", "financials_sheet")},
+                                 config={"agent": {"review_meaning": "mark"}})
         reviewer = Writer(lambda system, user, n: {"objections": [{"index": 0, "why": "余额口径是调整前，需写明"}], "missing": []}
                           if "Judge meaning only" in system else {})
         setup = E.arm_setup(self.CFG, "checked", self.args())
         with mock.patch.object(W.WorkSession, "open", side_effect=opened), mock.patch.object(E, "OUT_DIR", Path(tmp)):
             res = E.run_arm("checked", setup, self.CFG, book, Path(tmp), R.Limits(), select=lambda work: [ACCOUNT],
-                            scripted={"primary": E.ScriptedWriter("x"), "escalation": reviewer}, stamp="t", deck=False, overview="none")
+                            scripted={"primary": E.ScriptedWriter("x"), "escalation": reviewer}, stamp="t", deck=False, overview="none",
+                            financials={"financials_from": "rollup.xlsx", "financials_sheet": "甲Financials"})
         self.assertFalse(res.get("error"), res.get("error"))
+        self.assertEqual(seen_open, [{"financials_from": "rollup.xlsx", "financials_sheet": "甲Financials"}], "the roll-up's sheet is read")
         row = res["per_account"][0]
         self.assertEqual((row["review_status"], row["review_calls"], row["calls"]), ("marked", 1, 2), "the review call is the account's")
         marks = res["_texts"][ACCOUNT]["deck_marks"]
@@ -1329,6 +1335,39 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertEqual((row["before"], [(m["claim"], m["colour"]) for m in row["after"]]), ([], [(0, "orange")]))
         self.assertIn("AMBIGUOUS_SUBJECT", row["codes"])
         self.assertIn("new 1, gone 0", RS.report(result)[0])
+
+    def test_a_portfolio_folder_runs_one_entity_per_portfolio_against_its_roll_up_sheet_with_one_gate(self):
+        import portfolio_trial as PT
+        from openpyxl import Workbook
+        tmp = Path(tempfile.mkdtemp(prefix="portfolio_"))
+
+        def book(name, sheets, hidden=()):
+            wb = Workbook()
+            wb.active.title = sheets[0]
+            for s_ in sheets[1:]:
+                wb.create_sheet(s_)
+            for s_ in hidden:
+                wb.create_sheet(s_).sheet_state = "hidden"
+            wb.save(tmp / name)
+        book("Project T.Portfolio I.databook. 主表.xlsx", ["南湖Financials", "北湖Financials", "Summary"])
+        book("Project T.Portfolio I.南湖.xlsx", ["BS", "IS", "AR"], hidden=["H1", "H2", "H3", "H4"])   # hidden tabs are not counted
+        book("Project T.Portfolio I.北湖.xlsx", ["BS", "IS", "AR", "AP"])
+        book("Project T.Portfolio II.databook. 主表.xlsx", ["东湖Financials"])
+        book("Project T.Portfolio II.东湖.xlsx", ["BS", "IS"])
+        found = PT.survey(str(tmp))
+        self.assertEqual([(g["portfolio"], [r["entity"] for r in g["pick"]]) for g in found], [("I", ["北湖"]), ("II", ["东湖"])])
+        self.assertIn("will run 2 book(s): 北湖, 东湖", "\n".join(PT.show(found)))
+        calls, gates = [], []
+        from types import SimpleNamespace
+        args = SimpleNamespace(arms="checked,pro", max_cost_per_book=12.0, overview="none", flash="f::x", pro="p::y")
+        code = PT.run(found, args, trial=lambda argv: calls.append(argv) or 0, gate=lambda: gates.append(1) or "")
+        self.assertEqual((code, len(gates), len(calls)), (0, 1, 2), "the gate once, then every book")
+        first = calls[0]
+        self.assertEqual(first[first.index("--financials-sheet") + 1], "北湖Financials")
+        self.assertTrue(first[first.index("--financials-from") + 1].endswith("主表.xlsx"))
+        self.assertIn("--skip-gate", first)
+        self.assertEqual(len(first[first.index("--expect-sha") + 1]), 8)
+        self.assertEqual([c[c.index("--max-cost") + 1] for c in calls], ["12.0", "12.0"])
 
     def test_the_scripted_writer_writes_the_latest_balance_it_is_shown(self):
         import entity_trial as E
