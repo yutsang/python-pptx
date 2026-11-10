@@ -56,7 +56,9 @@ def digest(text: str, width: int = 60) -> List[str]:
     for arm in names:
         row = per[arm]
         red = sum(1 for x in row["marks"] if x[0] == "R")
+        by_review = sum(1 for x in row["marks"] if x[4].startswith("review_objection"))
         out.append(f"{arm}: {row['done']}/{row['cases']} accepted, {row['cost']:.2f} yuan, marks {red} red {len(row['marks']) - red} orange"
+                   + (f" ({by_review} by the reviewer)" if by_review else "")
                    + (f" | not accepted: {', '.join(row['open'])}" if row["open"] else ""))
         for colour, account, n, sentence, why in row["marks"][:MAX_MARKS]:
             cut = sentence if len(sentence) <= width else sentence[:width] + "…"

@@ -813,8 +813,12 @@ class PreparedWrite(unittest.TestCase):
                              budget=C.Budget(max_steps=8), prepare=True, config={"agent": {"review_meaning": "mark"}})
         turn = work.edit("撰写应收账款的段落", ACCOUNT, accept=True)
         self.assertTrue(turn.ok, turn.report)
+        self.assertEqual(len(reviewer.users), 0, "mark mode never reviews inside a write")
+        before = list(work.source.candidates[ACCOUNT].claims)
+        self.assertEqual(work.review_pass([ACCOUNT]), {ACCOUNT: "marked"})
         self.assertEqual((len(writer.users), len(reviewer.users)), (1, 1), "read once, nothing sent back to the writer")
         candidate = work.source.candidates[ACCOUNT]
+        self.assertEqual(candidate.claims, before, "the reviewed text is the text the verifier judged")
         self.assertEqual(candidate.review["status"], "marked")
         self.assertIn(("review_objection", 0), [(f["kind"], f.get("claim")) for f in candidate.flags])
         review = merged_results(work.source, [ACCOUNT], first_generation=True)[ACCOUNT]["agent_4_validation"]["clause_reviews"][0]
@@ -823,6 +827,26 @@ class PreparedWrite(unittest.TestCase):
         codes = [f.code for f in review_findings(work.source, [ACCOUNT])]
         self.assertNotIn("SEMANTIC_OBJECTION", codes)
         self.assertIn("HUMAN_CHECK", codes)
+
+    def test_a_whole_entity_in_mark_mode_reviews_every_draft_the_deck_carries_after_writing(self):
+        # the same drafts are read: an accepted one and one the gate did not accept, each once, after all are written
+        def fn(system, user, n):
+            view = writer_view(user)
+            if view["account"] == ACCOUNT:
+                return {"draft": {"claims": [amount_claim(view, P2, GOOD)], "unresolved": []}}
+            bad = amount_claim(view, P2, "2025年12月31日其他应收款余额999.0万元")
+            if "REJECTED" in user:
+                return {"fix": [{"index": 1, "claim": bad}]}
+            return {"draft": {"claims": [amount_claim(view, P2, "2025年12月31日其他应收款余额130.0万元"), bad], "unresolved": []}}
+        reviewer = Writer(lambda system, user, n: {"objections": [], "missing": []} if "Judge meaning only" in system else {})
+        work = self._work(Writer(fn), escalation=reviewer, mode="escalate", extra_account=True,
+                          config={"agent": {"review_meaning": "mark"}})
+        work.policy = R.Policy(mode="escalate", escalate_after=99)
+        seen = []
+        done = work.draft_entity(on_review=lambda key, review: seen.append((key, review.get("status"))))
+        self.assertEqual(done["ok"], [ACCOUNT])
+        self.assertEqual(sorted(k for k, _s in seen), sorted([ACCOUNT, OTHER]), "the unaccepted draft is read too")
+        self.assertEqual(done["review"], {ACCOUNT: "passed", OTHER: "passed"})
 
     def test_a_material_note_is_stated_or_deferred_by_ref_and_a_deferral_is_flagged_for_a_person(self):
         def defer(system, user, n):

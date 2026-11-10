@@ -290,11 +290,29 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                 checkpoint(dict(row, arm=name))
             bar.step(ok=result["ok"], tokens=f"{books.charged_tokens:,}", cost=f"{books.cost or 0:.3f}")
 
+        review_bar: List[Any] = []
+
+        def on_review(key: str, review: Dict[str, Any]) -> None:   # the marks-only pass after the drafts (agent.review_meaning: mark)
+            if not review_bar:
+                bar.close()
+                review_bar.append(_Bar(len(accounts), f"{name} review"))
+            review_bar[0].step(status=review.get("status"), cost=f"{books.cost or 0:.3f}")
+
         try:
-            done = work.draft_entity(accounts, on_account=on_account)
+            done = work.draft_entity(accounts, on_account=on_account, on_review=on_review)
             result["stopped"] = next((r.get("error") or "" for r in done["rows"] if r.get("stop_reason") == "budget_session"), "")
         finally:
             bar.close()
+            for b in review_bar:
+                b.close()
+        if done.get("review"):
+            # the review ran after every draft was written: its state is read now, not when each account finished
+            for row in per:
+                c = work.source.candidates.get(accounts[row["case"] - 1])
+                review = dict((c.review if c is not None else {}) or {})
+                row.update(review_status=review.get("status"),
+                           review_objections=len(review.get("objections") or []) + len(review.get("missing") or []),
+                           flags=_flag_counts((c.flags if c is not None else []) or []))
         if overview != "none" and not result.get("stopped"):
             # the summary band from the finished paragraphs; with two models, the cheaper one's is written too, for comparison,
             # and the stronger one's (written last) is what the deck carries

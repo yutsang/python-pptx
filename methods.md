@@ -835,7 +835,25 @@ meaning errors Python cannot see (a shareholder given the target's facts, a
 gross amount called the net one, a note's broad statement repeated against its
 own detail, a cause that cannot carry the movement), and they were unmarked.
 That is the stronger model's remaining role on trial: `agent.review_meaning:
-mark`, see below.
+mark`.
+
+**Marks-only review (`agent.review_meaning: mark`, trial arm `checked`).** After
+every draft of the entity is written, the stronger model reads each draft the
+deck will carry (accepted ones and ones carried with rejected sentences marked)
+once, against the evidence the writer had, and names the sentences it objects
+to (`AgentController.review_draft`, `WorkSession.review_pass`). Each objection
+colours its sentence orange with the reviewer's reason (`review_objection`); a
+material fact it says is missing goes to the person's list (`review_missing`).
+Nothing is rewritten and nothing is left out, and in this mode no review runs
+inside a write. The review prompt names the meaning errors the verifier cannot
+see: a cause the notes do not state, a balance read as a flow, a parent and its
+children both counted, the subject confused, one basis presented as another, a
+note's broad statement repeated against its detail, a cause that cannot carry
+the movement, a term the notes do not give, a material fact left out. Because
+the reviewer's marks and the verifier's lie on one text, one sentence-level
+review of that text measures both: what the verifier marked, and what the
+reviewer added, right or needless. Paragraphs the reviewer did not read count
+against it. The repair mode (`review_meaning: true`) is unchanged.
 
 **The trial harness.** Each arm gets a fresh copy and session, drafts every in-scope account, and
 exports a first-generation deck. `plan` sends nothing; `run --scripted` runs the

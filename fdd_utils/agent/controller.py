@@ -1095,6 +1095,36 @@ class AgentController:
                    if isinstance(m, dict) and (m.get("ref") or m.get("why"))]
         return {"status": "objected" if objections or missing else "passed", "objections": objections, "missing": missing}
 
+    def review_draft(self, account: str) -> Dict[str, Any]:
+        """The escalation model reads one finished draft once, against the same evidence the writer had, and marks the sentences
+        it objects to (agent.review_meaning: mark). Nothing is rewritten and nothing is left out: each objection becomes a
+        `review_objection` flag, which colours its sentence orange with the reviewer's reason; a material fact it misses is a
+        `review_missing` flag for a person. Accepted drafts and drafts the gate did not accept are read alike, so the marks lie
+        on the very text the verifier judged (the measurement of 2026-11-10 compares the two layers on one draft)."""
+        candidate = self.session.candidates.get(account)
+        if candidate is None or not candidate.claims:
+            return {"status": "not_needed", "why": "no draft"}
+        if self.router is None or R.ROLE_ESCALATION not in self.router.roles:
+            return {"status": "unavailable", "why": "no escalation model configured"}
+        view = self._prepare_evidence(account)
+        if view is None:
+            return {"status": "unavailable", "why": "the account's evidence could not be read"}
+        run = AgentRun(request="review", mode="review")
+        usage: Dict[str, Any] = {"model_calls": 0, "prompt_tokens_est": 0, "completion_tokens_est": 0, "provider_prompt_tokens": 0,
+                                 "provider_completion_tokens": 0, "provider_reported": False, "by_role": {}}
+        review = self._review_meaning(run, account, view, candidate.claims, usage)
+        if review["status"] == "objected":
+            review["status"] = "marked"
+        candidate.review = dict(review, mode="mark")
+        candidate.flags = [f for f in candidate.flags or [] if f.get("kind") not in ("review_objection", "review_missing")]
+        for o in review.get("objections") or []:
+            if 0 <= o["index"] < len(candidate.claims):
+                candidate.flags.append({"kind": "review_objection", "claim": o["index"], "why": o["why"],
+                                        "text": str(candidate.claims[o["index"]].get("text"))[:160]})
+        for m in review.get("missing") or []:
+            candidate.flags.append({"kind": "review_missing", "ref": m["ref"], "why": m["why"]})
+        return review
+
     @staticmethod
     def _objection_lines(review: Dict[str, Any]) -> List[str]:
         return ([f"REVIEW: [{o['index']}] {o['why']}" for o in review.get("objections") or []]
@@ -1370,13 +1400,6 @@ class AgentController:
         if candidate is not None and getattr(self, "_view", None) is not None:
             candidate.flags = self._flags(account, self._view, self._must, candidate.claims, candidate.outcome, unresolved,
                                           escalated=self._repaired_by_stronger())
-            if review is not None and review.get("status") == "marked":
-                for o in review.get("objections") or []:
-                    if 0 <= o["index"] < len(candidate.claims):
-                        candidate.flags.append({"kind": "review_objection", "claim": o["index"], "why": o["why"],
-                                                "text": str(candidate.claims[o["index"]].get("text"))[:160]})
-                for m in review.get("missing") or []:
-                    candidate.flags.append({"kind": "review_missing", "ref": m["ref"], "why": m["why"]})
             run.report["flags"] = list(candidate.flags)
         if review is not None:
             run.report["review"] = dict(review, outcome=review.get("status"))
@@ -1424,7 +1447,8 @@ class AgentController:
         if self.seed:
             claims = self._seed_claims(account, view)
             run.report["prepared"]["seeded"] = len(claims)
-        can_review = self.review and self.router is not None and R.ROLE_ESCALATION in self.router.roles
+        # mark mode reviews the finished drafts afterwards (review_draft, called by WorkSession.review_pass), never inside a write
+        can_review = self.review and not self.review_mark and self.router is not None and R.ROLE_ESCALATION in self.router.roles
         pre_review: Optional[List[Dict[str, Any]]] = None          # the verified paragraph the review objected to
         review: Optional[Dict[str, Any]] = None                     # this turn's review: status, reasons, objections
         while len(run.steps) < self.budget.max_steps:
@@ -1504,11 +1528,6 @@ class AgentController:
                                 review = {"status": "not_needed", "reasons": []}
                             else:
                                 review = dict(self._review_meaning(run, account, view, claims, usage), reasons=reasons)
-                                if self.review_mark:
-                                    # marks only: the objections colour their sentences, the paragraph stands as verified
-                                    if review["status"] == "objected":
-                                        review["status"] = "marked"
-                                    return self._end_with_review(run, account, claims, review, unresolved, record, STOP_DONE, export=export)
                                 if review["status"] == "objected":
                                     pre_review = list(claims)
                                     review["text_reviewed"] = cl.render_claims(claims)      # what the reviewer read, kept for the record

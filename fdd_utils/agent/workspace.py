@@ -325,7 +325,8 @@ class WorkSession:
                             "sections": {s: {"dropped": e["dropped"], "calls": e["calls"], "error": e["error"]} for s, e in result.items()}})
         return result
 
-    def draft_entity(self, accounts: Optional[List[str]] = None, instruction: str = "", on_account: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+    def draft_entity(self, accounts: Optional[List[str]] = None, instruction: str = "", on_account: Optional[Callable[..., Any]] = None,
+                     on_review: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
         """Every in-scope account written from its own evidence, one edit turn each, accepted when the verifier passes it.
 
         The state decides the order and the scope; each account is an independent task, so each turn starts with a fresh memory
@@ -357,9 +358,37 @@ class WorkSession:
                          "unresolved": list(turn.unresolved), "prepared_fallback": (turn.report or {}).get("prepared_fallback")})
             if on_account is not None:
                 on_account(key, turn)
+        out = {"accounts": keys, "rows": rows, "ok": [r["account"] for r in rows if r["ok"]],
+               "not_finished": [r["account"] for r in rows if not r["ok"]] + [k for k in keys[len(rows):]]}
+        from . import flag as F
+        if F.review_marks_only(self.config):
+            out["review"] = self.review_pass(keys, on_account=on_review)
         self._autosave()
-        return {"accounts": keys, "rows": rows, "ok": [r["account"] for r in rows if r["ok"]],
-                "not_finished": [r["account"] for r in rows if not r["ok"]] + [k for k in keys[len(rows):]]}
+        return out
+
+    def review_pass(self, accounts: Optional[List[str]] = None, on_account: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+        """agent.review_meaning: mark -- after the drafts are written, the escalation model reads each one the deck will carry
+        (accepted, or carried with its rejected sentences marked) once and marks what it objects to; see
+        AgentController.review_draft. Returns {account: status}."""
+        markable = set(T.drafts_to_mark(self.source))
+        keys = [k for k in (accounts or list(self.source.candidates)) if k in self.source.candidates
+                and (k in markable or (self.source.candidates[k].accepted and self.source.candidates[k].validated))]
+        controller = AgentController(self.source, self._router(), budget=self.budget or _default_budget(),
+                                     language=self.source.language, memory=Memory(), prepare=True)
+        statuses: Dict[str, str] = {}
+        for key in keys:
+            try:
+                review = controller.review_draft(key)
+            except R.BudgetExhausted as exc:
+                statuses[key] = "budget_session"
+                self.events.append({"at": _now(), "type": "review", "account": key, "status": "budget_session", "error": str(exc)})
+                break
+            statuses[key] = review.get("status", "")
+            self.events.append({"at": _now(), "type": "review", "account": key, "status": statuses[key],
+                                "objections": len(review.get("objections") or []), "missing": len(review.get("missing") or [])})
+            if on_account is not None:
+                on_account(key, review)
+        return statuses
 
     def edit(self, instruction: str, account: str = "", *, accept: bool = False, export: bool = False, out_path: str = "") -> Turn:
         """The model rewrites one account's paragraph from the evidence already gathered. `account` defaults to the
