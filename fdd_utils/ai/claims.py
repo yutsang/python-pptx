@@ -362,6 +362,38 @@ _CAUSE_RE = re.compile(
     r"由于|因为|主要系|主要由于|所致|导致|归因于|得益于|受[^，。；]{1,12}影响|系因|源于|源自|"
     r"以致|致使|使得|鉴于|(?<![原起])因(?![素此子])|since |on account of|result of", re.IGNORECASE)
 _FORWARD_RE = re.compile(r"预计|预期|有望|expected to|is expected|forecast", re.IGNORECASE)
+#: "较上年末减少50.0万元，系正常摊销": a movement explained with a bare 系 is a cause like 主要系. Kept out of _CAUSE_RE, which
+#: also finds the why-marker inside one clause for direction binding; this one spans the comma.
+_MOVEMENT_CAUSE_RE = re.compile(r"(?:增加|减少|上升|下降|增长|下滑|回落|回升|变动)[^，。；]{0,24}[，,]\s*(?:主要)?系(?!统|列)")
+#: the adjusted figure said to equal the book, or no adjustment said to exist
+_ADJUSTMENT_DENIED_RE = re.compile(
+    r"调整后[^，。；]{0,24}(?:与|和|同)[^，。；]{0,10}(?:账面|调整前|未经?调整|报表|管理层)[^，。；]{0,8}(?:一致|相同|相等|无差异|没有差异)|"
+    r"(?:无|未作|未发现|不存在|没有)(?:需|须|任何)?(?:示意性|审计)?调整(?:事项)?(?![前后])")
+#: an item put in a period range: "为应收2025年10-12月的水电费"
+_ITEM_PERIOD_RE = re.compile(r"(?:为|系|均为|全部为|属于)\s*(?:应收|应付|预收|预付)?\s*(\d{4})年\s*(\d{1,2})(?:\s*[-－—至~]\s*(\d{1,2}))?\s*月(?:份)?\s*的?\s*([\u4e00-\u9fff]{2,4})")
+#: a threshold in years on an ageing or a maturity: "账龄超1年", "到期时间为1年以上"
+_TERM_SPAN_RE = re.compile(r"(账龄|到期(?:时间|期限|日)?|剩余期限|期限)\s*(?:为|在|均)?\s*(超过|超出|超|大于|多于|长于|小于|少于|短于|不足|未满|未超过)?"
+                           r"\s*(一|二|两|三|1|2|3)\s*年\s*(以上|以内|以下|之内)?")
+_YEARS = {"一": 1, "二": 2, "两": 2, "三": 3, "1": 1, "2": 2, "3": 3}
+
+
+def _plain_number(written: str) -> Optional[float]:
+    try:
+        return float(re.sub(r"[,\s]", "", written).replace("−", "-").replace("－", "-"))
+    except ValueError:
+        return None
+
+
+def _term_spans(text: str) -> set:
+    """(ageing or maturity, more or less than, years) for each threshold a text states; one with no direction is skipped."""
+    out = set()
+    for m in _TERM_SPAN_RE.finditer(text or ""):
+        word, tail = m.group(2) or "", m.group(4) or ""
+        more = word in ("超过", "超出", "超", "大于", "多于", "长于") or (not word and tail == "以上")
+        less = word in ("小于", "少于", "短于", "不足", "未满", "未超过") or (not word and tail in ("以内", "以下", "之内"))
+        if more or less:
+            out.add(("age" if m.group(1) == "账龄" else "due", ">" if more else "<", _YEARS[m.group(3)]))
+    return out
 _ANNUAL_WORD = ("年化", "annualis", "annualiz")
 _FORECAST_WORD = ("预计全年", "全年预测", "全年预计", "预计全年度", "full-year forecast", "expected full-year", "forecast")
 _ANNUAL_ANY = _ANNUAL_WORD + _FORECAST_WORD + ("全年", "full year", "full-year")
@@ -1472,8 +1504,57 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             fail("TERM_NOT_IN_NOTE", "citations", f"'{m.group(0)}': the notes give {m.group(2)}BP without "
                  f"{'加' if sign == '+' else '减'}; write the spread as the note does")
 
+    # Five unmarked major errors in one frozen draft of the client file (Phase A, 2026-11-10), each confirmed against the team's
+    # finished report. Each check is written for the kind of error, not the sentence; the draft the writer produced is the
+    # test that it fires, and other books are the test that it does not fire where nothing is wrong.
+    # (1) ageing and maturity: "账龄超1年的保证金" where the note says 到期时间为1年以上 (and 账龄小于1年 of the other part).
+    every_note = " ".join(str(n.get("text") or "") for n in contract.notes)
+    noted_terms = _term_spans(every_note + " " + " ".join(str(f.get("line") or "") for f in contract.facts))
+    for term, sign, years in sorted(_term_spans(text) - noted_terms):
+        if any(t != term and s_ == sign and y == years for t, s_, y in noted_terms):
+            said, noted = ("账龄", "到期") if term == "age" else ("到期", "账龄")
+            fail("TERM_NOT_IN_NOTE", "citations", f"'{said}{'超过' if sign == '>' else '小于'}{years}年': the notes put {years}年 "
+                 f"on {noted}, not on {said}; write the term the note uses")
+
+    # (2) cost lines as the make-up of a net balance: "其中，房屋-原值-一期账面余额为5.00亿元" after the net book value.
+    marker = re.search(r"其中|构成|组成|consist|made up of|comprise|of which", text, re.IGNORECASE)
+    gross = [f for f in cited_facts if f["role"] == ROLE_COMPONENT and re.search(r"原值|cost", str(f.get("line") or ""), re.IGNORECASE)]
+    if marker and gross and not re.search(r"原值|cost", text[:marker.start()], re.IGNORECASE) and \
+            not _has(text, ("累计折旧", "累计摊销", "减值准备", "accumulated depreciation", "accumulated amortisation")):
+        fail("GROSS_AS_MAKE_UP", "binding",
+             f"{', '.join(str(f['line']) for f in gross[:3])} {'is' if len(gross) == 1 else 'are'} at cost (原值); the balance is net "
+             "of depreciation and amortisation, so cost lines are not its make-up: give the net amounts, or say these are cost "
+             "and give the accumulated depreciation")
+
+    # (3) no adjustment where the databook records one: "示意性调整后营业收入与账面一致" with an ADJ of +3.0万元 in the period.
+    denied = _ADJUSTMENT_DENIED_RE.search(text)
+    if denied:
+        periods_said = claim_periods or set(contract.periods)
+        recorded = [n for n in contract.notes if n.get("kind") == "adjustment" and (not n.get("period") or n["period"] in periods_said)
+                    and any(abs(v) > 0 for v in (_plain_number(x) for x in re.findall(r"[+\-−－]?\s*\d[\d,]*(?:\.\d+)?(?=\s*(?:万元|亿元|元))",
+                                                                                       str(n.get("text") or ""))) if v is not None)]
+        moved = [p for p in sorted(periods_said) if contract.total(p, BASIS_RAW) is not None and contract.total(p, BASIS_ADJUSTED) is not None
+                 and abs(contract.total(p, BASIS_RAW) - contract.total(p, BASIS_ADJUSTED)) > 1.0]
+        if recorded or moved:
+            where = f"{recorded[0]['ref']} records {str(recorded[0].get('text') or '')[:60]}" if recorded else \
+                f"the tab's total and the adjusted total differ at {moved[0]}"
+            fail("ADJUSTMENT_DENIED", "binding", f"'{denied.group(0)}', but {where}: state the adjustment, or leave the comparison out")
+
+    # (4) an item put in one period range when the account's notes list it in another: "为应收2025年10-12月的水电费" while a
+    # note says 应收2024年3月的水电费.
+    for m in _ITEM_PERIOD_RE.finditer(text):
+        year, first, last, item = int(m.group(1)), int(m.group(2)), int(m.group(3) or m.group(2)), m.group(4)
+        for n in contract.notes:
+            other = next(((int(y), int(mo)) for y, mo in re.findall(r"(\d{4})年\s*(\d{1,2})\s*月(?:份)?\s*的?\s*" + re.escape(item[:2]),
+                                                                  str(n.get("text") or ""))
+                          if not (int(y) == year and first <= int(mo) <= last)), None)
+            if other is not None:
+                review("NOTE_SCOPE", "binding", f"'{m.group(0).lstrip('为系均全部属于 ')}': {n['ref']} lists {item[:2]} for {other[0]}年{other[1]}月; "
+                       "say which part is which period, or do not put all of it in one")
+                break
+
     # -- cause --------------------------------------------------------------------------------------
-    if claim["cause_cites"] or _CAUSE_RE.search(text) or _FORWARD_RE.search(text):
+    if claim["cause_cites"] or _CAUSE_RE.search(text) or _FORWARD_RE.search(text) or _MOVEMENT_CAUSE_RE.search(text):
         checked.add("causal")
         notes = []
         for ref in claim["cause_cites"]:
@@ -1482,6 +1563,10 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                 fail("UNKNOWN_REF", "citations", f"cited note '{ref}' does not exist")
             else:
                 notes.append(note)
+        if not claim["cause_cites"] and not _CAUSE_RE.search(text) and not _FORWARD_RE.search(text):
+            # only the bare 系 made it a cause: "审计调整减少50.0万元，系应收借款利息重分类" gives the cited note's own
+            # account of the adjustment, and the notes it cites are what it rests on
+            notes = list(cited_notes)
         related = [n for n in notes if len(_bigrams(text) & _bigrams(n["text"])) >= 2]
         conflicts = [(n, c) for n in related for c in cause_conflicts(text, n["text"], contract)]
         if len(related) > 1:

@@ -1296,6 +1296,40 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertIn("1 orange (1 by the reviewer)", head)
         self.assertIn("'marked': 1", head)
 
+    def test_a_saved_draft_is_rechecked_by_the_verifier_as_it_is_now_without_a_model_call(self):
+        # Phase A froze one draft; a check added afterwards is measured on that same text, and the saved file is left alone
+        import recheck_session as RS
+        tmp = tempfile.mkdtemp(prefix="recheck_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        path = os.path.join(W.DEFAULT_DIR, f"test-recheck-{os.getpid()}.agent-session.json")
+
+        def load(**kw):
+            fresh = session_on(book)
+            fresh.load_params = {"workbook": book}
+            return fresh
+        try:
+            with mock.patch.object(W.SourceSession, "load", side_effect=load):
+                work = W.WorkSession.open(book, session_path=path, model=answer_policy(), budget=C.Budget(max_steps=6))
+            work.ask("应收账款期末余额是多少？")
+            work.report("把这段放入报告")
+            work.save(path)
+            saved = json.loads(Path(path).read_text(encoding="utf-8"))
+            claim = saved["candidates"][ACCOUNT]["claims"][0]
+            claim["text"] = claim["text"].rstrip("。") + "，该公司为主要客户"     # verified when saved; the verifier now sends it to a person
+            Path(path).write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+            before = Path(path).read_bytes()
+            with mock.patch.object(W.SourceSession, "load", side_effect=load):
+                result = RS.recheck(book, path)
+            self.assertEqual(Path(path).read_bytes(), before, "the saved session is read, never written")
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+        row = result["accounts"][ACCOUNT]
+        self.assertEqual((row["before"], [(m["claim"], m["colour"]) for m in row["after"]]), ([], [(0, "orange")]))
+        self.assertIn("AMBIGUOUS_SUBJECT", row["codes"])
+        self.assertIn("new 1, gone 0", RS.report(result)[0])
+
     def test_the_scripted_writer_writes_the_latest_balance_it_is_shown(self):
         import entity_trial as E
         tmp = tempfile.mkdtemp(prefix="trial_w_")

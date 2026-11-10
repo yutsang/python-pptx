@@ -926,6 +926,63 @@ class ReviewFindingsTrial6(unittest.TestCase):
         self.assertEqual(codes(verdict("一期利率为5年期LPR减5BP，二期为20BP", c, [n], [P2], kind="note")), set())
         self.assertIn("TERM_NOT_IN_NOTE", codes(verdict("一期利率为5年期LPR减5BP，二期为LPR减20BP", c, [n], [P2], kind="note")))
 
+class MajorErrorsPhaseA(unittest.TestCase):
+    """Five major errors a frozen draft carried unmarked (Phase A, 2026-11-10), each confirmed against the team's finished
+    report. Each check is for the kind of error; each test also holds a sentence of the same shape that is right."""
+
+    def test_ageing_is_not_written_where_the_note_puts_the_years_on_maturity(self):
+        c = build(notes=["系到期时间为1年以上的租户保证金，与其他应付款中账龄小于1年的保证金合计200万元"], account="长期应付款")
+        v = verdict("2025年12月31日余额130.0万元，系账龄超1年的保证金", c, [ref(c, P2)], [P2])
+        self.assertIn("TERM_NOT_IN_NOTE", codes(v), v["findings"])
+        v = verdict("2025年12月31日余额130.0万元，系到期时间超过1年的保证金", c, [ref(c, P2)], [P2])
+        self.assertNotIn("TERM_NOT_IN_NOTE", codes(v), v["findings"])
+        c = build(notes=["账龄超过1年的保证金已重分类至长期应付款，金额来自账龄分析表"], account="长期应付款")
+        v = verdict("2025年12月31日余额130.0万元，系账龄超1年的保证金", c, [ref(c, P2)], [P2])
+        self.assertNotIn("TERM_NOT_IN_NOTE", codes(v), "the note itself states the ageing")
+
+    def test_cost_lines_are_not_the_make_up_of_a_net_balance(self):
+        rows = [("房屋-原值", "detail", {P1: 5000000, P2: 5000000}), ("房屋-累计折旧", "detail", {P1: -500000, P2: -1000000}),
+                ("Total", "total", {P1: 4500000, P2: 4000000})]
+        c = build(rows=rows, notes=[], account="固定资产")
+        cost = ref(c, P2, "房屋-原值")
+        self.assertIn("GROSS_AS_MAKE_UP", codes(verdict("其中，房屋-原值账面余额为500.0万元", c, [cost], [P2])))
+        right = verdict("其中，房屋-原值账面余额为500.0万元，累计折旧-100.0万元", c, [cost, ref(c, P2, "房屋-累计折旧")], [P2])
+        self.assertNotIn("GROSS_AS_MAKE_UP", codes(right), right["findings"])
+        self.assertNotIn("GROSS_AS_MAKE_UP", codes(verdict("房屋-原值账面余额为500.0万元", c, [cost], [P2])), "no make-up is claimed")
+
+    def test_no_adjustment_is_not_said_where_the_databook_records_one(self):
+        def with_adjustment(amount):
+            c = build(notes=[])
+            c.notes.append({"id": "adj", "kind": "adjustment", "period": P2, "sheet": None, "ref": f"N{len(c.notes) + 1}",
+                            "text": f"「2025」ADJ#1：{amount}万元（对方科目：毛利）；调整说明：收入截止性调整"})
+            return c
+        said = "示意性调整后余额与账面一致，2025年12月31日余额130.0万元"
+        c = with_adjustment("+3.0")
+        self.assertIn("ADJUSTMENT_DENIED", codes(verdict(said, c, [ref(c, P2)], [P2])))
+        c = with_adjustment("0.0")
+        self.assertNotIn("ADJUSTMENT_DENIED", codes(verdict(said, c, [ref(c, P2)], [P2])), "a nil adjustment changes nothing")
+        c = build(notes=[])
+        self.assertNotIn("ADJUSTMENT_DENIED", codes(verdict(said, c, [ref(c, P2)], [P2])), "nothing recorded")
+
+    def test_an_item_is_not_put_in_one_period_when_a_note_lists_it_in_another(self):
+        said = "2025年12月31日余额130.0万元，为应收2025年10-12月的水电费"
+        c = build(notes=["应收2024年3月的水电费，账龄较长，可能存在减值风险"])
+        v = verdict(said, c, [ref(c, P2)], [P2])
+        self.assertIn("NOTE_SCOPE", {f["code"] for f in v["findings"]}, v["findings"])
+        self.assertNotEqual(v["verdict"], "verified")
+        c = build(notes=["应收2025年11月的水电费，已于次月开票"])
+        v = verdict(said, c, [ref(c, P2)], [P2])
+        self.assertNotIn("NOTE_SCOPE", {f["code"] for f in v["findings"]}, "the note's month is inside the range")
+
+    def test_a_movement_explained_with_xi_is_a_cause(self):
+        c = build(notes=[])
+        mv = cl.derive_movement(c, P1, P2)
+        v = verdict("2025年12月31日余额较2024年末增加30.0万元，系新增客户", c, [ref(c, P2), mv], [P1, P2], kind="movement")
+        self.assertIn("CAUSE_UNSUPPORTED", {f["code"] for f in v["findings"]}, v["findings"])
+        v = verdict("2025年12月31日余额130.0万元，系应收租金", c, [ref(c, P2)], [P2])
+        self.assertFalse([f for f in v["findings"] if f["dimension"] == "causal"], "a balance said to be rent is no cause")
+
+
 class DeckDelivery20261109(unittest.TestCase):
     """What reaches the slide: the marks a person must see, and figures rounded once from the exact value."""
 
