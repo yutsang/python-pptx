@@ -159,17 +159,75 @@ def supported(label: str, seen: Iterable[Token]) -> bool:
     return (year, month) in seen or (year, None) in seen
 
 
+def pipeline_read(frame: Any) -> Dict[str, str]:
+    """{date the extractor gave a column: the header text it read there}, from the frame's normalized_columns."""
+    read: Dict[str, str] = {}
+    for col in (getattr(frame, "attrs", None) or {}).get("normalized_columns") or []:
+        read.setdefault(str(col.get("date")), str(col.get("label") or ""))
+    return read
+
+
+def probe(path: str, sheet: str, rows: int = 40, cols: int = 40, limit: int = 70) -> List[str]:
+    """Every cell in the top rows of a sheet that holds a date, a year-sized number or a time word: where it is, what Excel stores
+    (type and number format) and what the pipeline's own parse_date makes of it."""
+    import openpyxl
+    from fdd_utils.workbook.statements import parse_date
+    book = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    out = [f"PROBE {sheet}: cell, stored type, value, number format, pipeline parse_date"]
+    try:
+        for row in book[sheet].iter_rows(min_row=1, max_row=rows, max_col=cols):
+            for cell in row:
+                v = cell.value
+                if v is None:
+                    continue
+                yearish = isinstance(v, (int, float)) and not isinstance(v, bool) and 1900 <= v <= 2100
+                if not (isinstance(v, (datetime, date)) or yearish or (isinstance(v, str) and tokens(v))):
+                    continue
+                try:
+                    parsed = parse_date(v)
+                except Exception:
+                    parsed = None
+                out.append(f"  {cell.coordinate:>6} {type(v).__name__:8} {str(v)[:26]!r:30} fmt {str(cell.number_format)[:14]!r:17} -> "
+                           f"{parsed.strftime('%Y-%m-%d') if parsed else None}")
+                if len(out) > limit:
+                    out.append("  ... (more cells; raise --probe-rows to see further down)")
+                    return out
+    finally:
+        book.close()
+    return out
+
+
+def extractor_columns(session: Any, sheet: str, limit: int = 24) -> List[str]:
+    """What the extractor took as the date of each column of a sheet: Excel column, stage, date it gave, header text it read."""
+    from openpyxl.utils import get_column_letter
+    out = [f"EXTRACTOR on {sheet}: column, stage, date given <- header text read"]
+    for key, frame in session.dfs.items():
+        if str((frame.attrs or {}).get("source_sheet_name") or "") != sheet:
+            continue
+        for col in (frame.attrs.get("normalized_columns") or [])[:limit]:
+            out.append(f"  {get_column_letter(int(col['col_idx']) + 1):>3} {str(col.get('stage'))[:14]:14} {col.get('date')} <- {str(col.get('label'))[:30]!r}")
+        break
+    return out
+
+
 def audit(session: Any, params: Dict[str, Any], width: int = 8, verbose: bool = False) -> List[str]:
     from fdd_utils.ai import evidence_contract as ec
     out = [f"PERIOD AUDIT  workbook {Path(params['workbook']).name}  accounts {len(session.contracts)}"
            + (f"  Financials {Path(params['financials_from']).name}!{params.get('financials_sheet')}" if params.get("financials_from") else "")]
     by_sheet: Dict[str, Dict[str, Any]] = {}
+    unlabelled = []
     for key, contract in session.contracts.items():
+        if not contract.periods:
+            unlabelled.append(key)
+            continue
         sheet = str((session.dfs[key].attrs or {}).get("source_sheet_name") or "")
-        slot = by_sheet.setdefault(sheet, {"accounts": [], "labels": Counter()})
+        slot = by_sheet.setdefault(sheet, {"accounts": [], "labels": Counter(), "read": {}})
         slot["accounts"].append(key)
         slot["labels"].update(contract.periods)
-    flagged, clean = 0, Counter()
+        slot["read"].update(pipeline_read(session.dfs[key]))
+    groups: Dict[Any, Dict[str, Any]] = {}
+    clean: Counter = Counter()
+    clean_names: Dict[Any, List[str]] = {}
     for sheet, slot in sorted(by_sheet.items(), key=lambda kv: kv[0]):
         if not sheet:
             out.append(f"(no source sheet recorded for {', '.join(slot['accounts'][:4])})")
@@ -182,20 +240,34 @@ def audit(session: Any, params: Dict[str, Any], width: int = 8, verbose: bool = 
         labels = sorted(slot["labels"])
         used = {label_token(lab) for lab in labels}
         unsupported = [lab for lab in labels if not supported(lab, seen)]
-        unused = [t for t, c in found["header"].most_common() if c >= 2 and t[1] and t not in used][:width]    # month-level only
+        unused = [show(t) for t, c in found["header"].most_common() if c >= 2 and t[1] and t not in used][:width]    # month-level only
         if not (unsupported or unused):
             clean[tuple(labels)] += 1
+            clean_names.setdefault(tuple(labels), []).append(sheet)
             if not verbose:
                 continue
-        flagged += bool(unsupported or unused)
-        out.append(f"SHEET {sheet} ({len(slot['accounts'])} acct): labels {labels}" + ("  <-- CHECK" if unsupported or unused else ""))
-        out.append(f"    time cells in header rows: {top(found['header'], width)} | in single-time rows: {top(found['single'], 4)}")
+        read = sorted((d, h) for d, h in slot["read"].items() if d in labels)
+        sig = (tuple(labels), tuple(unsupported), tuple(unused), tuple(read))
+        group = groups.setdefault(sig, {"sheets": [], "header": top(found["header"], width), "single": top(found["single"], 4)})
+        group["sheets"].append(sheet)
+    flagged = sum(len(g["sheets"]) for g in groups.values())
+    for (labels, unsupported, unused, read), group in groups.items():
+        names = group["sheets"]
+        out.append(f"{len(names)} sheet(s) to check: {', '.join(names[:6])}" + (f" (+{len(names) - 6} more)" if len(names) > 6 else ""))
+        out.append(f"    labels {list(labels)}")
+        if read:
+            out.append("    the extractor read: " + " | ".join(f"{d} <- {h!r}" for d, h in read[:8]))
+        out.append(f"    time cells in header rows (first sheet): {group['header']} | in single-time rows: {group['single']}")
         if unsupported:
-            out.append(f"    labels no cell supports: {unsupported}")
+            out.append(f"    labels no cell supports: {list(unsupported)}")
         if unused:
-            out.append(f"    months written 2+ times in header rows that no account uses: {[show(t) for t in unused]}")
+            out.append(f"    months written 2+ times in header rows that no account uses: {list(unused)}")
+    params["_clean_sheets"] = [name for names in clean_names.values() for name in names]
     for labels, n in clean.most_common():
-        out.append(f"{n} sheet(s) agree with their labels {list(labels)}" + ("" if not verbose else " (listed above)"))
+        names = clean_names.get(labels, [])
+        out.append(f"{n} sheet(s) agree with their labels {list(labels)}" + (f": {', '.join(names)}" if n <= 12 else f": {', '.join(names[:12])} ..."))
+    if unlabelled:
+        out.append(f"{len(unlabelled)} account(s) have no period labels at all and were not checked (out of scope, or no usable columns)")
     out.append(f"sheets to check (a label no cell supports, or a month written often that no account uses): {flagged} of {len(by_sheet)}")
     if params.get("financials_from"):
         fin = sheet_dates(params["financials_from"], str(params.get("financials_sheet") or ""))
@@ -232,6 +304,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     ap.add_argument("--financials-from", default="")
     ap.add_argument("--financials-sheet", default="")
     ap.add_argument("--verbose", action="store_true", help="also list the sheets that agree")
+    ap.add_argument("--probe", default="", help="a sheet name: list the date-like cells in its top rows with their stored type, number format and what parse_date makes of them")
+    ap.add_argument("--probe-rows", type=int, default=40)
     args = ap.parse_args(list(argv) if argv is not None else None)
     if not args.session and not args.databook:
         ap.error("pass --session or --databook")
@@ -241,6 +315,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         pass
     session, params = load_session(args)
     print("\n".join(audit(session, params, verbose=args.verbose)))
+    if args.probe:
+        for name in [args.probe] + params.get("_clean_sheets", [])[:1]:
+            print(("" if name == args.probe else "CONTRAST, a sheet whose labels agree:\n") + "\n".join(extractor_columns(session, name)))
+            print("\n".join(probe(params["workbook"], name, rows=args.probe_rows)))
     return 0
 
 
