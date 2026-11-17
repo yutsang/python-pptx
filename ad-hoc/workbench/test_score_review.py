@@ -126,6 +126,67 @@ class CombinedFile(unittest.TestCase):
         self.assertEqual(SR.split_books("noise\nBOOK|s1\na\nBOOK|s2\nb"), {"s1": "a", "s2": "b"})
 
 
+class RepairPack(unittest.TestCase):
+    """repair_pack.py: what each refused round said, and what became of the account."""
+    import repair_pack as RP
+
+    SESSION = {"id": "s", "candidates": {
+        "甲": {"accepted": True, "claims": [{"text": "a"}], "outcome": {"verdicts": [verdict("verified")]}},
+        "乙": {"accepted": False, "claims": [{"text": "乙的错句"}, {"text": "乙的推测"}],
+              "outcome": {"verdicts": [verdict("failed", "SUM_STATED", "arithmetic", "X is given as the total of A, B"),
+                                       verdict("verified_inference", "CAUSE_INFERENCE")]}},
+        "丙": {"accepted": True, "claims": [{"text": "c"}], "outcome": {"verdicts": [verdict("verified")]}}},
+        "turns": [
+            {"accounts": ["甲"], "ok": True, "stop_reason": "done", "report": {"repairs": [
+                {"step": 1, "feedback": "WRONG_PERIOD: x | AMOUNT_UNMATCHED: y"}, {"step": 2, "feedback": "NOT_JSON"}]}},
+            {"accounts": ["乙"], "ok": False, "stop_reason": "rejected", "report": {"repairs": [
+                {"step": 1, "feedback": "SUM_STATED: z", "refused": [{"n": 0, "text": "乙的错句", "codes": ["SUM_STATED"]}]},
+                {"step": 2, "feedback": "SUM_STATED: z"},
+                {"step": 3, "feedback": "CAUSE_NOT_SUPPORTED: ...", "inference_repair": [1]}],
+                "rewrites": [{"step": 2, "rewrote": ["乙改写后的句子"], "dropped": ["乙的错句"]}]}},
+            {"accounts": ["丙"], "ok": True, "stop_reason": "done", "report": {}}]}
+
+    def test_a_code_is_counted_by_the_accounts_it_came_up_in_and_how_they_ended(self):
+        text = "\n".join(self.RP.pack(self.SESSION))
+        self.assertIn("accepted 2, refused at least once 2, ended not accepted 1", text)
+        self.assertRegex(text, r"SUM_STATED\s+1 /\s+0 /\s+1")
+        self.assertRegex(text, r"WRONG_PERIOD\s+1 /\s+1 /\s+0")
+        self.assertNotIn("CAUSE_NOT_SUPPORTED   ", text.split("NOT ACCEPTED")[0], "the one request about a reason is not a refusal")
+
+    def test_an_account_that_was_not_accepted_shows_its_rounds_and_the_sentence_still_refused(self):
+        lines = self.RP.pack(self.SESSION)
+        text = "\n".join(lines)
+        self.assertIn("乙: 2 round(s) SUM_STATED -> SUM_STATED; stopped: rejected", text)
+        self.assertIn("[0] 乙的错句", text)
+        self.assertIn("SUM_STATED: X is given as the total of A, B", text)
+        self.assertIn("the writer's rewrite: 乙改写后的句子", text)
+
+    def test_the_accounts_repaired_and_the_reasons_still_orange_are_listed(self):
+        text = "\n".join(self.RP.pack(self.SESSION))
+        self.assertIn("REPAIRED", text)
+        self.assertIn("甲: AMOUNT_UNMATCHED+WRONG_PERIOD -> ?", text)           # the round whose message carries no code reads as '?'
+        self.assertIn("INFERENCE: reasons no note supports, sent back once: 1 sentence(s) in 1 account(s); still orange after: 1 sentence(s)", text)
+        self.assertIn("乙[1] 乙的推测", text)
+
+    def test_the_learn_output_has_the_recheck_and_the_pack_of_every_book(self):
+        import portfolio_trial as PT
+        tmp = Path(tempfile.mkdtemp(prefix="learn_"))
+        found = [{"portfolio": "I", "rollup": Path("r.xlsx"), "pick": [{"entity": "北湖", "path": Path("a.xlsx"), "sheet": None, "sha": "abcd1234"},
+                                                                      {"entity": "东湖", "path": Path("b.xlsx"), "sheet": None, "sha": "ffff0000"}]}]
+        (tmp / "trial_20260101_000000.json").write_text(json.dumps({"databook_sha256": "abcd1234" + "0" * 56, "scripted": False,
+                                                                    "arms": {"flash": {}}}), encoding="utf-8")
+        (tmp / "trial_flash_20260101_000000.agent-session.json").write_text("{}", encoding="utf-8")
+        seen = []
+        lines = PT.learn_all(found, out_dir=tmp, check=lambda book, session: seen.append(book) or {"id": "s", "notice": "", "accounts": {}},
+                             pack=lambda session: ["REPAIR PACK stub"])
+        self.assertEqual(seen, ["a.xlsx"])
+        text = "\n".join(lines)
+        self.assertIn("===== 北湖 flash (trial 20260101_000000)", text)
+        self.assertIn("RECHECK s: 0 accounts", text)
+        self.assertIn("REPAIR PACK stub", text)
+        self.assertIn("no paid trial of this workbook", text)
+
+
 class BlindInstructions(unittest.TestCase):
     def test_the_instructions_ask_for_exactly_the_lines_the_scorer_reads(self):
         text = BR.INSTRUCTIONS

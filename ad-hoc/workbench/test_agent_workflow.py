@@ -596,8 +596,8 @@ class PreparedWrite(unittest.TestCase):
         return W.WorkSession(source, model=model, escalation=escalation, model_name="m", policy=R.Policy(mode=mode),
                              budget=C.Budget(max_steps=8), prepare=True, config=config or {"agent": {}})
 
-    SEEDED = {"agent": {"seed_facts": True}}
-    REVIEWED = {"agent": {"seed_facts": True, "review_meaning": True}}
+    SEEDED = {"agent": {"seed_facts": True, "repair_inference": False}}          # these tests script the writer's replies one by one
+    REVIEWED = {"agent": {"seed_facts": True, "review_meaning": True, "repair_inference": False}}
     BALANCE, MOVE = "截至2025年12月31日，余额为130.0万元。", "较2024年12月31日增加30.0万元。"
     CAUSE = {"kind": "cause", "periods": [P2], "cites": [], "inference": True, "text": "增加主要系回款节奏变化所致"}
 
@@ -648,6 +648,55 @@ class PreparedWrite(unittest.TestCase):
         self.assertIn(self.BALANCE, writer.users[0])
         self.assertEqual([c["text"] for c in work.source.candidates[ACCOUNT].claims], [self.BALANCE, self.MOVE])
         self.assertEqual((work.shared.calls, turn.report["prepared"]["seeded"]), (1, 2))
+
+    def _inferred(self, after, config):
+        """A seeded write that adds a reason no note supports (verified only as an inference); `after(view)` is the reply to the one
+        request to repair it."""
+        def fn(system, user, n):
+            if "CAUSE_NOT_SUPPORTED" in user:
+                return after(writer_view(user))
+            return {"add": [dict(self.CAUSE)]}
+        writer = Writer(fn)
+        work = self._work(writer, config=config)
+        return work, writer, work.edit("撰写应收账款的段落", ACCOUNT)
+
+    def test_a_reason_no_note_supports_goes_back_once_before_the_deck_colours_it(self):
+        work, writer, turn = self._inferred(lambda view: {"fix": [{"index": 2, "drop": "原因未在底稿中说明"}]},
+                                            {"agent": {"seed_facts": True}})
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual([c["text"] for c in work.source.candidates[ACCOUNT].claims], [self.BALANCE, self.MOVE])
+        self.assertEqual(turn.report["inference_repair"], {"asked": 1})
+        self.assertEqual(work.shared.calls, 2, "the paragraph, then the one request about the reason")
+        self.assertIn("no note in EVIDENCE states", writer.users[1])
+        self.assertIn("原因未在底稿中说明", turn.unresolved)
+        trace = turn.report["repairs"][0]
+        self.assertEqual(trace["inference_repair"], [2])
+
+    def test_a_reason_the_writer_keeps_after_the_request_is_taken_as_it_is_and_asked_about_no_more(self):
+        work, _writer, turn = self._inferred(lambda view: {"fix": [{"index": 2, "claim": dict(self.CAUSE)}]},
+                                             {"agent": {"seed_facts": True}})
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual(len(work.source.candidates[ACCOUNT].claims), 3)
+        self.assertEqual(work.shared.calls, 2, "asked once, not again")
+
+    def test_with_the_switch_off_the_reason_goes_to_the_deck_without_the_extra_call(self):
+        work, _writer, turn = self._inferred(lambda view: {"fix": [{"index": 2, "drop": "x"}]}, self.SEEDED)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual((work.shared.calls, len(work.source.candidates[ACCOUNT].claims)), (1, 3))
+        self.assertNotIn("inference_repair", turn.report)
+
+    def test_a_failed_draft_leaves_a_trace_of_what_was_refused_and_what_the_rewrite_did(self):
+        def fn(system, user, n):
+            view = writer_view(user)
+            if n == 1:
+                return {"add": [amount_claim(view, P1, "2024年12月31日应收账款余额150.0万元")]}
+            return {"fix": [{"index": 2, "drop": "数字不符"}]}
+        work = self._work(Writer(fn), config=self.SEEDED)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        trace = turn.report["repairs"][0]
+        self.assertEqual([(r["n"], "AMOUNT" in " ".join(r["codes"]) or bool(r["codes"])) for r in trace["refused"]], [(2, True)])
+        self.assertIn("150.0万元", trace["refused"][0]["text"])
+        self.assertIn("150.0万元", turn.report["rewrites"][0]["dropped"][0], "the sentence the rewrite removed, from the step that removed it")
 
     def test_an_addition_that_fails_is_repaired_and_the_python_sentences_stay(self):
         def fn(system, user, n):

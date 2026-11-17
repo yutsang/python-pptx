@@ -307,6 +307,10 @@ WRITER_PROTOCOL = (
     '  {"draft": {"claims": [...], "unresolved": ["..."]}}       the paragraph, as claims\n'
     '  {"need_evidence": "<what is missing and why>"}           only if the evidence below cannot support a paragraph at all\n'
 )
+INFERENCE_REPAIR = ("CAUSE_NOT_SUPPORTED: this sentence gives a reason that no note in EVIDENCE states, so the deck will colour it orange for a "
+                    "person to check. Rewrite it without the reason: keep the figures and the change, and if the reason matters put it in "
+                    "'unresolved' as '原因未在底稿中说明'. Keep the reason only if a note in EVIDENCE states it (cite that note in cause_cites).")
+
 LOOK_PROTOCOL = (
     '  {"look": [{"tool": "<name>", "args": {...}}, ...]}       look in the workbook, ONCE, only for what NOT IN EVIDENCE lists\n'
     "Lookups (read-only, at most {n} in all): search_notes(query = ONE word, account), get_account_components(account, period, offset),\n"
@@ -501,8 +505,11 @@ class AgentController:
     def __init__(self, session: SourceSession, model: Model, *, budget: Optional[Budget] = None, language: Optional[str] = None,
                  memory: Optional[Memory] = None, prepare: bool = False, seed: bool = False, review: bool = False,
                  lead: bool = False, plan: bool = False, tool_loop_on_repeat: bool = False, review_mark: bool = False,
-                 research: bool = False, research_lookups: int = 3):
+                 research: bool = False, research_lookups: int = 3, repair_inference: bool = False):
         self.session = session
+        #: prepared write only (agent.repair_inference): a draft the verifier passes but only as an inference ("主要因X所致" with no note
+        #: behind X) goes back to the writer once before the deck colours it, to cite the note or drop the reason
+        self.repair_inference = repair_inference
         #: prepared write only (agent.research): the writer is told what its evidence lacks and may look once, within a cap
         self.research = research
         self.research_lookups = max(0, int(research_lookups))
@@ -1487,6 +1494,7 @@ class AgentController:
         rejected: Dict[int, List[str]] = {}
         unresolved: List[str] = []
         bad_replies, last_failed = 0, None
+        inference_asked = False
         run.report["prepared"] = {"required": required, "evidence_chars": len(_compact(view))}
         if self.seed:
             claims = self._seed_claims(account, view)
@@ -1556,6 +1564,11 @@ class AgentController:
                     new, ignored = self._merge_fix(claims, rejected, turn, unresolved)
                 if ignored:
                     record["ignored"] = ignored
+                if rejected:                              # what this reply did to the sentences it was asked about, for the trial's repair trace
+                    before = [str(c.get("text") or "") for c in claims]
+                    after = [str(c.get("text") or "") for c in new]
+                    record["rewrote"] = [t[:200] for t in after if t not in before]
+                    record["dropped"] = [t[:200] for t in before if t not in after]
                 claims = new
                 if not claims:
                     codes = ["EMPTY_ANSWER"]
@@ -1574,6 +1587,17 @@ class AgentController:
                         return self._settle_review(run, account, view, claims, pre_review, result.ok and not missing and not unaddressed, review,
                                                    unresolved, usage, export, record)
                     if result.ok and not missing and not unaddressed:
+                        silent = [n for n, v in enumerate(outcome.get("verdicts") or []) if v.get("verdict") == "verified_inference"]
+                        if self.repair_inference and silent and not inference_asked:
+                            # the sentence passes only as an inference and the deck would colour it: ask once, before it does, whether the
+                            # reason can be cited or left out. What comes back is taken as it is (a kept reason stays orange).
+                            inference_asked = True
+                            rejected = {n: [INFERENCE_REPAIR] for n in silent}
+                            record["feedback"] = INFERENCE_REPAIR[:300]
+                            record["inference_repair"] = silent
+                            run.report["inference_repair"] = {"asked": len(silent)}
+                            run.steps.append(record)
+                            continue
                         if can_review:
                             reasons = self._review_reasons(view, claims)
                             if not reasons:
@@ -1611,6 +1635,9 @@ class AgentController:
                         codes = sorted(outcome.get("by_code") or {}) + (["REQUIRED_NOT_STATED"] if missing else []) + \
                             (["NOTE_UNADDRESSED"] if unaddressed else [])
                         record["feedback"] = " | ".join(o for objs in rejected.values() for o in objs)[:900]
+                        record["refused"] = [{"n": n, "text": str(claims[n].get("text") or "")[:200],
+                                              "codes": sorted({str(o).split(":")[0] for o in rejected[n]})}
+                                             for n in sorted(rejected) if n < len(claims)]
                 if codes:
                     self.rejections += 1
                     if router is not None:
@@ -2067,7 +2094,13 @@ class AgentController:
                     {"kind": "tool_loop", "text": f"written in the tool loop: {self._fallback_reason}"[:200]}]
                 run.report["flags"] = list(candidate.flags)
         # what each repair round was told, kept with the run: a trial can then say whether a refusal's hint was shown and what came of it
-        repairs = [{"step": st.get("step"), "feedback": str(st["feedback"])[:600]} for st in run.steps if st.get("feedback")]
+        repairs = [{"step": st.get("step"), "feedback": str(st["feedback"])[:600],
+                    **{k: st[k] for k in ("refused", "inference_repair") if st.get(k)}}
+                   for st in run.steps if st.get("feedback")]
+        rewrites = [{"step": st.get("step"), **{k: st[k] for k in ("rewrote", "dropped") if st.get(k)}}
+                    for st in run.steps if st.get("rewrote") or st.get("dropped")]
+        if rewrites:
+            run.report["rewrites"] = rewrites
         if repairs:
             run.report["repairs"] = repairs
         run.usage = usage

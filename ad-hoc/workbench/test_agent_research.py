@@ -216,7 +216,7 @@ class RepairRecord(unittest.TestCase):
         self.assertEqual(len(repairs), 1)
         self.assertIn("the nearest figure in EVIDENCE is", repairs[0]["feedback"])
         import entity_trial as E
-        self.assertEqual(E._repair_counts(repairs), {"rounds": 1, "nearest figure": 1, "unnamed lines": 0, "line ref": 0})
+        self.assertEqual(E._repair_counts(repairs), {"rounds": 1, "inference asked": 0, "nearest figure": 1, "unnamed lines": 0, "line ref": 0})
 
     def test_a_first_draft_that_passes_has_no_repairs(self):
         writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})

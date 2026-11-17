@@ -275,6 +275,10 @@ agent:
   # 'researched' is compared with arm 'flash' on books neither was tuned on.
   research: false
   research_lookups: 3
+  # repair_inference: a draft that passes only as an inference (a reason such as "主要因X所致" with no note behind it) goes back to the
+  # writer ONCE, before the deck colours the sentence orange, to cite the note or leave the reason out; what comes back is taken as
+  # it is. On (the verifier colours only what the writer could not settle); false restores the colour without the extra call.
+  repair_inference: true
   models:                  # provider "" = agent.models decides nothing; then --model / the app's selection, else local
     primary:    {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Flash model id
     escalation: {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Pro model id

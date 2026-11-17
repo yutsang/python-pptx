@@ -337,6 +337,88 @@ class ThreeLinesThreePeriodsOneSentence(unittest.TestCase):
         self.assertNotEqual(swapped["verdict"], "verified")
 
 
+class TheRestAndTheMakeUp(unittest.TestCase):
+    """2026-11-17, four books, 78 accounts. Three right sentences refused as SUM_STATED ("其余2项合计1.7万元" read as the total of the lines
+    before it), one wrong one whose rest was a line the total already includes, and three unmarked sentences whose named lines were
+    larger than the balance."""
+    ROWS = [("甲", "detail", {P1: 5000000, P2: 5000000}), ("乙", "detail", {P1: 3000000, P2: 3000000}),
+            ("丙", "detail", {P1: 1500000, P2: 1500000}), ("Total", "total", {P1: 9500000, P2: 9500000})]
+
+    def setUp(self):
+        self.c = build(self.ROWS, notes=[])
+        self.cites = [ref(self.c, P2, "甲"), ref(self.c, P2, "乙"), ref(self.c, P2, "丙")]
+
+    def check(self, text, c=None, cites=None):
+        return verdict(text, c or self.c, cites if cites is not None else self.cites, [P2])
+
+    def test_the_rest_is_what_is_left_of_the_total_after_the_lines_named(self):
+        v = self.check("2025年12月31日其中甲500.0万元、乙300.0万元，其余合计150.0万元")
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+
+    def test_a_rest_that_is_not_the_remainder_is_refused_with_the_figure_it_should_be(self):
+        v = self.check("2025年12月31日其中甲500.0万元、乙300.0万元，其余合计100.0万元")
+        self.assertTrue(codes(v) & {"REST_NOT_REMAINDER", "AMOUNT_UNMATCHED", "AMOUNT_ELSEWHERE"}, v["findings"])
+        v = verdict("2025年12月31日其中甲500.0万元、乙300.0万元，其余合计300.0万元", self.c, self.cites, [P2])
+        self.assertIn("REST_NOT_REMAINDER", codes(v), v["findings"])
+        message = next(f["message"] for f in v["findings"] if f["code"] == "REST_NOT_REMAINDER")
+        self.assertIn("150.00万元", message)
+
+    def test_lines_in_a_bracket_are_parts_of_a_line_already_named(self):
+        # the sentence of the trial: a parent, its parts in a bracket, then the rest
+        rows = [("折旧", "detail", {P2: 8000000}), ("物管", "detail", {P2: 700000}), ("物业费", "detail", {P2: 500000}),
+                ("保险费", "detail", {P2: 150000}), ("仓储", "detail", {P2: 20000}), ("Total", "total", {P2: 8720000})]
+        c = build(rows, notes=[], periods=(P2,))
+        cites = [ref(c, P2, x) for x in ("折旧", "物管", "物业费", "保险费", "仓储")]
+        v = verdict("2025年12月31日折旧800.0万元，物管70.0万元（其中物业费50.0万元、保险费15.0万元），其余合计2.0万元", c, cites, [P2])
+        self.assertNotIn("REST_NOT_REMAINDER", codes(v), v["findings"])
+        self.assertNotIn("SUM_STATED", codes(v), v["findings"])
+
+    def test_a_rest_given_as_a_line_the_total_already_includes_is_refused(self):
+        # the tab's total is the three lines; an accumulated-depreciation line beside them is inside one of them, not a rest
+        rows = [("房屋建筑物", "detail", {P2: 157064800}), ("室外工程", "detail", {P2: 5918000}), ("机械设备", "detail", {P2: 9240900}),
+                ("累计折旧-室外工程", "detail", {P2: -1073600}), ("Total", "total", {P2: 172223700})]
+        c = build(rows, notes=[], periods=(P2,), account="固定资产")
+        cites = [ref(c, P2, x) for x in ("房屋建筑物", "室外工程", "机械设备", "累计折旧-室外工程")]
+        v = verdict("2025年12月31日其中房屋建筑物1.57亿元、室外工程591.8万元、机械设备924.1万元，其余合计-107.4万元", c, cites, [P2])
+        self.assertIn("REST_NOT_REMAINDER", codes(v), v["findings"])
+        self.assertNotIn("SUM_STATED", codes(v), "the rest is not the total of the lines before it")
+
+    def test_a_sentence_that_still_gives_a_total_of_the_lines_before_it_is_checked_as_before(self):
+        v = self.check("2025年12月31日甲500.0万元，乙300.0万元，合计900.0万元")
+        self.assertIn("SUM_STATED", codes(v), v["findings"])
+
+    def test_named_lines_larger_than_the_balance_are_not_its_make_up(self):
+        rows = [("仓库建造成本", "detail", {P2: 248662100}), ("土地价款", "detail", {P2: 58501600}), ("预提成本", "detail", {P2: 48600}),
+                ("Total", "total", {P2: 48600})]            # the deck's balance; the tab's own total, before the adjustment, is 307,212,300
+        c = build(rows, notes=[], periods=(P2,), account="在建工程", financials={P2: 48600.0},
+                  authority={P2: {"tab": 307212300.0, "financials": 48600.0}})
+        cites = [ref(c, P2, x) for x in ("仓库建造成本", "土地价款", "预提成本")]
+        v = verdict("2025年12月31日余额4.9万元，主要为仓库建造成本24,866.2万元及土地价款5,850.2万元，另有预提成本4.9万元", c, cites + [ref(c, P2)], [P2])
+        self.assertIn("COMPOSITION_EXCEEDS_BALANCE", codes(v), v["findings"])
+
+    def test_naming_the_lines_that_offset_them_makes_the_sum_right(self):
+        rows = [("正", "detail", {P2: 5700000}), ("负", "detail", {P2: -5300000}), ("小", "detail", {P2: 20000}), ("Total", "total", {P2: 420000})]
+        c = build(rows, notes=[], periods=(P2,), account="应付账款")
+        cites = [ref(c, P2, x) for x in ("正", "负", "小")]
+        wrong = verdict("2025年12月31日余额42.0万元，主要为正570.0万元、小2.0万元", c, [cites[0], cites[2], ref(c, P2)], [P2])
+        self.assertIn("COMPOSITION_EXCEEDS_BALANCE", codes(wrong), wrong["findings"])
+        right = verdict("2025年12月31日余额42.0万元，主要为正570.0万元、小2.0万元，被负-530.0万元抵销", c, cites + [ref(c, P2)], [P2])
+        self.assertNotIn("COMPOSITION_EXCEEDS_BALANCE", codes(right), right["findings"])
+
+    def test_a_parent_and_the_lines_nested_in_it_are_not_counted_twice(self):
+        rows = [("父项", "detail", {P2: 1000000}), ("子一", "detail", {P2: 600000}), ("子二", "detail", {P2: 400000}),
+                ("乙", "detail", {P2: 500000}), ("Total", "total", {P2: 1500000})]
+        c = build(rows, notes=[], periods=(P2,))
+        cites = [ref(c, P2, x) for x in ("父项", "子一", "子二", "乙")]
+        v = verdict("2025年12月31日余额150.0万元，主要为父项100.0万元（其中子一60.0万元、子二40.0万元）及乙50.0万元", c, cites + [ref(c, P2)], [P2])
+        self.assertNotIn("COMPOSITION_EXCEEDS_BALANCE", codes(v), v["findings"])
+
+    def test_lines_that_add_up_to_less_than_the_balance_are_not_refused(self):
+        v = self.check("2025年12月31日主要为甲500.0万元、乙300.0万元", cites=self.cites[:2])
+        self.assertNotIn("COMPOSITION_EXCEEDS_BALANCE", codes(v), v["findings"])
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+
+
 class NestedDetail(unittest.TestCase):
     """甲 includes 乙 (a nested layout): the flat sum misses the total and nothing says why."""
 

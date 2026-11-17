@@ -98,6 +98,13 @@ def research(config: Optional[Dict[str, Any]] = None) -> bool:
     return bool(_agent_block(config).get("research"))
 
 
+def repair_inference(config: Optional[Dict[str, Any]] = None) -> bool:
+    """agent.repair_inference (default on): a draft that passes only as an inference, a reason with no note behind it, goes back to
+    the writer once to cite the note or drop the reason, before the deck colours the sentence."""
+    value = _agent_block(config).get("repair_inference")
+    return True if value is None else bool(value)
+
+
 def research_lookups(config: Optional[Dict[str, Any]] = None) -> int:
     """agent.research_lookups (default 3, at most 6): the lookups one account's writer may ask for, in all."""
     value = _agent_block(config).get("research_lookups")

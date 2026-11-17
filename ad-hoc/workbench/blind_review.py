@@ -104,8 +104,11 @@ def _cite(contract: object, ref: str) -> str:
         value = fact.get("value")
         shown = f"{value / 10000:,.2f}万" if isinstance(value, (int, float)) and not isinstance(value, bool) else str(value)
         where = f"{fact.get('sheet') or ''}!{fact.get('row') or ''}".strip("!")
-        return (f"{ref} {_ROLE.get(fact.get('role'), '?')} {str(fact.get('period') or '')[2:]} {fact.get('line') or '(合计)'} {shown} "
-                f"[{_BASIS.get(fact.get('basis'), fact.get('basis'))}] @{where}")
+        formula = f" = {fact['formula']}" if fact.get("formula") else ""
+        kind = f" {fact['kind']}" if fact.get("kind") else ""
+        return (f"{ref} {_ROLE.get(fact.get('role'), 'D' if fact.get('basis') == 'derived' else '?')}{kind} "
+                f"{str(fact.get('period') or '')[2:]} {fact.get('line') or '(合计)'} {shown} "
+                f"[{_BASIS.get(fact.get('basis'), fact.get('basis'))}] @{where}{formula}")
     derived = next((d for d in contract.derived if d.get("ref") == ref), None)
     if derived:
         pct = derived.get("pct")

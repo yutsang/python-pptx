@@ -990,6 +990,66 @@ def _tab_detail_total(contract: EvidenceContract, period: str) -> Optional[float
     return raw if any(abs(x - raw) <= tie_tolerance(x, raw) for x in (flat, top)) else None
 
 
+#: "…，其余8项小额项目合计14.6万元": the words before 合计 that make the amount after it the rest of a total, not the sum of what was listed
+_REST_BEFORE_TOTAL_RE = re.compile(r"(?:其余|剩余|余下|其他|其它|另外)[^，。；,;（()）]{0,14}$")
+
+
+def _bracket_spans(text: str) -> List[Tuple[int, int]]:
+    return [(m.start(), m.end()) for m in re.finditer(r"（[^（）]*）|\([^()]*\)", text)]
+
+
+def _signed(text: str, span: Dict[str, Any]) -> float:
+    before = text[max(0, span["start"] - 1):span["start"]]
+    return -span["value"] if before in ("-", "−", "－", "负") else span["value"]
+
+
+def _stated_rest_problem(text: str, amounts: List[Dict[str, Any]], total_word: "re.Match[str]", rest_word: "re.Match[str]",
+                         contract: EvidenceContract, claim_periods: Iterable[str], nested_starts: set) -> Optional[str]:
+    """"主要包括A、B，其余8项合计X": X is what is left of the period's total after the lines named before 其余. The lines inside a bracket
+    ("物管成本73.9万元（其中物业费47.6万元…）") and lines the contract found nested in another are parts of a line already named. Returns
+    the refusal, or None when X is that remainder within the rounding of the figures written, or when it cannot be tested (no period,
+    the lines belong to more than one period, no total)."""
+    spans = sorted(amounts, key=lambda a: a["start"])
+    after = [a for a in spans if a["start"] >= total_word.end()]
+    if not after:
+        return None
+    stated, rest_at = after[0], rest_word.start()
+    boundary = max([m.end() for m in re.finditer(r"[。；;]", text[:rest_at])] or [0])
+    brackets = _bracket_spans(text)
+    inside = lambda pos: any(b0 <= pos < b1 for b0, b1 in brackets)               # noqa: E731
+    # the lines are the ones after "其中" / "主要为" / "包括" (outside a bracket): an amount before it is the balance, not a part of it
+    opener = next((m for m in re.finditer(r"其中|主要为|主要包括|主要由|包括", text[boundary:rest_at]) if not inside(boundary + m.start())), None)
+    first = boundary + opener.end() if opener else boundary
+    claimed = list(claim_periods)
+    mentions = period_mentions(text)
+
+    def period_of(a: Dict[str, Any]) -> Optional[str]:
+        mention = attached_period(text, a["start"], a["end"], mentions)
+        if mention is not None:
+            return next((p for p in sorted(contract.periods) if mention_matches(mention, p)), None)
+        return claimed[0] if len(claimed) == 1 else None
+    period = period_of(stated)
+    if period is None:
+        return None
+    base = contract.total(period, BASIS_RAW) if _has(text, _BEFORE_ADJUSTMENT) else None
+    if base is None:
+        base = contract.total(period)
+    if base is None:
+        return None
+    parts = [a for a in spans if first <= a["start"] and a["end"] <= rest_at and a["start"] not in nested_starts and not inside(a["start"])
+             and abs(a["value"] - abs(base)) > a["tolerance"] + 1.0]               # an amount equal to the total is the balance
+    if not parts or any(period_of(a) != period for a in parts):
+        return None
+    named = sum(_signed(text, a) for a in parts)
+    expected, given = base - named, _signed(text, stated)
+    slack = sum(a["tolerance"] for a in parts) + stated["tolerance"] + max(1.0, 0.0005 * abs(base))
+    if abs(given - expected) <= slack:
+        return None
+    return (f"'{stated['written']}' is given as what is left of {period}'s total of {base / 1e4:,.2f}万元 after the {len(parts)} lines "
+            f"named ({named / 1e4:,.2f}万元), but the total less those lines is {expected / 1e4:,.2f}万元: write that figure for the rest "
+            "(cite the D ref that sums the lines not named, if there is one), or name the lines that make the difference")
+
+
 def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContract], *, default_account: str = "",
                  index: int = 0) -> Dict[str, Any]:
     claim = normalize_claim(raw_claim, default_account, index)
@@ -1435,6 +1495,33 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                      f"{_fmt(adjusted)} (a difference of {_fmt(gap)}, the adjustments): say they are before the adjustments, or do not "
                      "call them its make-up")
 
+    # A make-up cannot be larger than what it makes up. "余额主要为仓库建造成本及土地成本，另有预提成本" over a balance of 4.86万 named lines of
+    # 24,866万 and 5,850万: the lines were the tab's, before an adjustment that took most of the account away (a trial on four books,
+    # 2026-11-17, found two such sentences unmarked). Lines nested in another are parts of it and are not counted; credit balances and
+    # accumulated depreciation count with their sign, so naming them as well makes the sum right.
+    if _has(text, ("主要为", "主要由", "主要构成", "构成", "组成", "其中", "包括")) and not re.search(r"其余|剩余|余下", text):
+        named_lines: Dict[str, List[Dict[str, Any]]] = {}
+        for _span, src, _how in matched_sources:
+            if src.get("role") == ROLE_COMPONENT and src.get("basis") != BASIS_DERIVED and not src.get("nested_in") and src.get("period"):
+                bucket = named_lines.setdefault(src["period"], [])
+                if all((src.get("id") or src.get("ref")) != (x.get("id") or x.get("ref")) for x in bucket):
+                    bucket.append(src)
+        for period, parts in sorted(named_lines.items()):
+            if len(parts) < 2:
+                continue
+            base = (_total_fact(contract, period, BASIS_RAW) or {}).get("value") if _has(text, _BEFORE_ADJUSTMENT) else None
+            if base is None:
+                base = contract.total(period)
+            if base is None or base <= 0:
+                continue
+            made = sum(f["value"] for f in parts)
+            if made > base + max(0.10 * base, 10000.0):
+                fail("COMPOSITION_EXCEEDS_BALANCE", "binding",
+                     f"{period}: the {len(parts)} lines named add up to {made / 1e4:,.2f}万元, more than the balance of {base / 1e4:,.2f}万元, "
+                     "so they cannot be what it is made of. Lines that offset them are not named (credit balances, accumulated depreciation, "
+                     "an adjustment), or they are the tab's own before an adjustment: name the offsetting lines too, say they are the tab's "
+                     "own (工作簿明细（未经调整）), or name fewer lines and do not call them its make-up")
+
     # -- binding: basis, line, permissions ----------------------------------------------------
     # A sentence may quote a total the deck did not adopt only when it is describing the gap itself: it states the
     # difference Python computed. Calling the claim a "difference" does not do that.
@@ -1644,7 +1731,16 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
 
     # (6) a stated total that the parts listed before it do not make: "房屋建筑物为500.0万元，机械设备为100.0万元，合计700.0万元"
     total_word = re.search(r"合计|共计|总计|合共", text)
-    if total_word and not _has(text, ("等", "主要")):
+    rest_word = _REST_BEFORE_TOTAL_RE.search(text[:total_word.start()]) if total_word else None
+    if total_word and rest_word:
+        # "…，其余8项小额项目合计14.6万元" gives the total of the rest, not of the lines before it (a trial on four books refused three
+        # right sentences of that kind as SUM_STATED, 2026-11-17, and a wrong one, whose rest was a line the total already includes, was
+        # only refused for that reason): it is checked as the remainder of the period's total
+        nested_starts = {span["start"] for span, src, _h in matched_sources if src.get("nested_in")}
+        problem = _stated_rest_problem(text, amounts, total_word, rest_word, contract, claim_periods, nested_starts)
+        if problem:
+            fail("REST_NOT_REMAINDER", "arithmetic", problem)
+    elif total_word and not _has(text, ("等", "主要")):
         spans = sorted(amounts, key=lambda a: a["start"])
         after = [a for a in spans if a["start"] >= total_word.end()]
         parts = [a for a in spans if a["end"] <= total_word.start()]

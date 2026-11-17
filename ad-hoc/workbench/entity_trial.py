@@ -155,9 +155,10 @@ _HINTS = {"nearest figure": "nearest figure in EVIDENCE", "unnamed lines": "Line
 
 def _repair_counts(repairs: List[Dict[str, Any]]) -> Dict[str, int]:
     """{'rounds': n, 'nearest figure': k, ...}: how many repair rounds an account had and how many carried each hint. No text."""
-    out = {"rounds": len(repairs)}
+    rounds = [r for r in repairs if not r.get("inference_repair")]          # the one request about an unsupported reason is not a refusal
+    out = {"rounds": len(rounds), "inference asked": sum(len(r.get("inference_repair") or []) for r in repairs)}
     for name, needle in _HINTS.items():
-        out[name] = sum(1 for r in repairs if needle in str(r.get("feedback") or ""))
+        out[name] = sum(1 for r in rounds if needle in str(r.get("feedback") or ""))
     return out
 
 
@@ -674,12 +675,16 @@ def summary_text(report: Dict[str, Any]) -> str:
         gap_accounts = sum(1 for p in per_acc if (p.get("flags") or {}).get("source_gap"))
         gap_stops = sum(1 for p in per_acc if p.get("stop_reason") == "source_gap")
         stale_labels = sum(1 for p in per_acc if (p.get("flags") or {}).get("period_label_suspect"))
-        repaired = [p for p in per_acc if (p.get("repairs") or {}).get("rounds")]
+        repaired = [p for p in per_acc if (p.get("repairs") or {}).get("rounds")]       # accounts with a refusal to repair
         if repaired:
             hints = {k: sum((p["repairs"].get(k) or 0) for p in repaired) for k in _HINTS}
             lines.append(f"           repair rounds: {len(repaired)} account(s), {sum(p['repairs']['rounds'] for p in repaired)} round(s); "
                          f"accepted after repair {sum(1 for p in repaired if p.get('ok'))}; rounds that carried a hint: "
                          + ", ".join(f"{k} {v}" for k, v in hints.items()))
+        asked = [p for p in per_acc if (p.get("repairs") or {}).get("inference asked")]
+        if asked:
+            lines.append(f"           reasons no note supports, sent back once before the deck colours them: {len(asked)} account(s), "
+                         f"{sum(p['repairs']['inference asked'] for p in asked)} sentence(s)")
         if looked or gap_accounts or gap_stops or stale_labels:
             lookups = sum(len(p["research"]) for p in looked)
             hits = sum(int(x.get("hits") or 0) for p in looked for x in p["research"])
