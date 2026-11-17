@@ -205,6 +205,18 @@ class Shapes:
                 if rest > 10000:
                     out.append(self.out("make_up_and_rest", f"{lab}{c.account}余额主要为{named(a, money(va))}、{named(b, money(vb))}，其余项目合计{money(rest)}", [p],
                                         [self.lines[a][p]["ref"], self.lines[b][p]["ref"]], kind="composition"))
+            if (self.c.permissions.get(p) or {}).get("detail_basis") == "tied":
+                # "其余各项（保险费、设施保养费、检测费）合计X": the rest names its own lines in a bracket, with no figure in it
+                members = [n for n in self.lines if p in self.lines[n] and n not in (a, b) and a not in n and b not in n
+                           and len(re.split(r"[-－]", n)[-1]) >= 2][:4]
+                made = sum(self.lines[n][p]["value"] for n in members)
+                rest = self.total[p]["value"] - va - vb
+                if len(members) >= 2 and rest > 10000 and abs(rest - made) <= 1.0 and va + vb < self.total[p]["value"]:
+                    out.append(self.out("make_up_and_rest_with_names",
+                                        f"{lab}{c.account}余额主要为{named(a, money(va))}、{named(b, money(vb))}，其余各项（"
+                                        + "、".join(re.split(r"[-－]", n)[-1] for n in members) + f"）合计{money(rest)}", [p],
+                                        [self.lines[a][p]["ref"], self.lines[b][p]["ref"]] + [self.lines[n][p]["ref"] for n in members],
+                                        kind="composition"))
             out.append(self.out("total_with_bracket", f"{lab}{a}、{b}合计{money(va + vb)}（{named(a, money(va))}、{named(b, money(vb))}）", [p],
                                 [self.lines[a][p]["ref"], self.lines[b][p]["ref"]], kind="composition"))
         orgs = [n for n in self.lines if p in self.lines[n] and re.search(r"有限公司|公司", n) and len(self.short(n)) >= 3]

@@ -1163,7 +1163,9 @@ def _tab_detail_total(contract: EvidenceContract, period: str) -> Optional[float
 
 
 #: "…，其余8项小额项目合计14.6万元": the words before 合计 that make the amount after it the rest of a total, not the sum of what was listed
-_REST_BEFORE_TOTAL_RE = re.compile(r"(?:其余|剩余|余下|其他|其它|另外)[^，。；,;（()）]{0,14}$")
+#: "其余各项（保险费、设施保养费、检测费、维修费）合计23.8万元": a bracket of names, with no figure in it, between the rest word and its total is
+#: the rest's own list of lines, not a total of the figures before it (refused as SUM_STATED, 2026-11-17, one book of six)
+_REST_BEFORE_TOTAL_RE = re.compile(r"(?:其余|剩余|余下|其他|其它|另外)[^，。；,;（()）]{0,14}(?:[（(][^）)\d]{0,60}[）)][^，。；,;（()）]{0,6})?$")
 
 
 _COMPANY_FORM = re.compile(r"股份有限公司|有限责任公司|有限公司|分公司|集团|公司")

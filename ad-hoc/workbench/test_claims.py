@@ -169,6 +169,32 @@ class AReasonThatIsTheMovementOfALine(unittest.TestCase):
         self.assertIn("CAUSE_UNSUPPORTED", codes(v), v["findings"])
 
 
+class ARestThatNamesItsLinesInABracket(unittest.TestCase):
+    """2026-11-17, fourth paid run: 其余各项（保险费、设施保养费、检测费、维修费）合计23.8万元 is the rest, whose lines the bracket names. It was read as
+    the total of the three figures before it (SUM_STATED, AMOUNT_UNMATCHED) and marked red on a right sentence."""
+
+    def setUp(self):
+        rows = [("营业成本-折旧成本", "detail", {P2: 5037800}), ("营业成本-物管-能耗费", "detail", {P2: 1234200}),
+                ("营业成本-物管-物业费", "detail", {P2: 497900}), ("营业成本-物管-保险费", "detail", {P2: 106200}),
+                ("营业成本-物管-设施年度保养费", "detail", {P2: 102700}), ("营业成本-物管-设施年度检测费", "detail", {P2: 4900}),
+                ("营业成本-物管-常温仓维修费", "detail", {P2: 24100}), ("Total", "total", {P2: 7007800})]
+        self.c = build(rows=rows, notes=[], account="营业成本", periods=(P2,))
+        cl.standard_derived(self.c)
+        self.cites = [ref(self.c, P2, r[0]) for r in rows[:-1]]
+
+    def check(self, rest):
+        return verdict(f"2025年12月31日营业成本其中折旧成本503.8万元，能耗费123.4万元，物业费49.8万元，其余各项（保险费、设施保养费、检测费、"
+                       f"维修费）合计{rest}万元。", self.c, self.cites, [P2], kind="composition")
+
+    def test_the_rest_is_the_remainder_of_the_total(self):
+        v = self.check("23.8")
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+
+    def test_a_rest_that_is_not_the_remainder_is_still_refused(self):
+        v = self.check("30.8")
+        self.assertIn("REST_NOT_REMAINDER", codes(v), v["findings"])
+
+
 class ReviewFindings20261109(unittest.TestCase):
     """Three kinds of wrong sentence a sentence-level review of the client file found accepted with no mark (2026-11-09)."""
 
