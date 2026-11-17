@@ -186,9 +186,10 @@ def _read(path: Path) -> Optional[str]:
         return None
     raw = path.read_bytes()
     try:
-        return raw.decode("utf-8-sig")
+        text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
-        return raw.decode("gbk", errors="replace")
+        text = raw.decode("gbk", errors="replace")
+    return text.replace("\r\n", "\n")                    # a file saved on Windows
 
 
 def score_all(stamps: List[str], folder: Path = TRIAL_DIR) -> List[str]:

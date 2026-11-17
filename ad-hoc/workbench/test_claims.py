@@ -419,6 +419,61 @@ class TheRestAndTheMakeUp(unittest.TestCase):
         self.assertEqual(v["verdict"], "verified", v["findings"])
 
 
+class RefusalsOfRightSentencesInFourBooks(unittest.TestCase):
+    """2026-11-17, the recheck of 78 accounts: sentences refused three rounds running that no rewrite could settle, because the
+    verifier was wrong."""
+
+    def test_a_currency_word_of_the_next_clause_is_not_this_amounts_currency(self):
+        rows = [("银行存款-人民币户", "detail", {P2: 18203448}), ("银行存款-美元户", "detail", {P2: 0}), ("Total", "total", {P2: 18203448})]
+        c = build(rows, notes=[], periods=(P2,), account="货币资金")
+        cites = [ref(c, P2, "银行存款-人民币户"), ref(c, P2, "银行存款-美元户")]
+        v = verdict("2025年12月31日其中银行存款-人民币户1,820.3万元，美元户无余额。", c, cites, [P2])
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+        self.assertEqual(cl._currency_at("余额1,000万美元", 2, 8), "USD")
+        self.assertEqual(cl._currency_at("折合美元1,000万元", 4, 11), "USD", "a currency word right before the amount is its own")
+        self.assertEqual(cl._currency_at("美元户余额，1,000万元", 7, 13), "CNY")
+
+    def test_a_note_figure_far_from_the_tabs_figure_is_not_a_rounding_of_it(self):
+        # the note says the adjustment was 1,528.5万; the tab's line holds 1,521.5万 (0.46% away): two different amounts
+        rows = [("待认证进项税额", "detail", {P1: -15215348, P2: -15215348}), ("Total", "total", {P1: -15215348, P2: -15215348})]
+        notes = ["「2025」Audit ADJ#1：+1,528.5万元（调增）；调整说明：待抵扣进项税重分类；应交税金"]
+        c = build(rows, notes=notes, account="应交税费")
+        note_ref = next(n["ref"] for n in c.notes)
+        v = verdict("2024年及2025年审计调整均涉及待抵扣进项税重分类调增应交税费1,528.5万元", c, [note_ref], [P1, P2])
+        self.assertNotIn("NOTE_FIGURE_ROUNDED", codes(v), v["findings"])
+
+    def test_a_note_that_rounded_the_tabs_figure_down_by_one_digit_is_still_caught(self):
+        rows = [("在建工程明细", "detail", {P2: 187654321}), ("Total", "total", {P2: 187654321})]
+        notes = ["「2025」在建工程余额1.87亿元，其中土地成本较多"]
+        c = build(rows, notes=notes, periods=(P2,), account="在建工程")
+        note_ref = next(n["ref"] for n in c.notes)
+        v = verdict("2025年12月31日在建工程余额1.87亿元", c, [note_ref], [P2])
+        self.assertIn("NOTE_FIGURE_ROUNDED", codes(v), v["findings"])
+
+    def test_a_line_named_without_the_prefix_the_tab_gives_it_is_cited_by_its_figure(self):
+        rows = [("无形资产-土地使用权-自用资产", "detail", {P2: 14502400}), ("累计摊销-土地使用权-自用资产", "detail", {P2: -1498600}),
+                ("土地使用权-自用资产", "detail", {P2: 13003800}), ("Total", "total", {P2: 13003800})]
+        c = build(rows, notes=[], periods=(P2,), account="无形资产")
+        cites = [ref(c, P2, "无形资产-土地使用权-自用资产"), ref(c, P2, "累计摊销-土地使用权-自用资产")]
+        v = verdict("2025年12月31日其中土地使用权-自用资产原值1,450.2万元，累计摊销149.9万元。", c, cites, [P2])
+        self.assertNotIn("LINE_NOT_CITED", codes(v), v["findings"])
+
+    def test_a_line_named_with_a_figure_and_not_cited_at_all_is_still_refused(self):
+        rows = [("甲", "detail", {P2: 5000000}), ("乙", "detail", {P2: 3000000}), ("Total", "total", {P2: 8000000})]
+        c = build(rows, notes=[], periods=(P2,))
+        v = verdict("2025年12月31日其中乙300.0万元，甲500.0万元", c, [ref(c, P2, "甲")], [P2])
+        self.assertTrue(codes(v), v["findings"])
+
+    def test_lines_the_sentence_names_without_a_figure_count_when_it_cites_them(self):
+        rows = [("仓库建造成本", "detail", {P2: 248662100}), ("土地价款", "detail", {P2: 58501600}), ("预提成本", "detail", {P2: 48600}),
+                ("Total", "total", {P2: 48600})]
+        c = build(rows, notes=[], periods=(P2,), account="在建工程", financials={P2: 48600.0},
+                  authority={P2: {"tab": 307212300.0, "financials": 48600.0}})
+        cites = [ref(c, P2, x) for x in ("仓库建造成本", "土地价款", "预提成本")] + [ref(c, P2)]
+        v = verdict("2025年12月31日余额4.9万元，主要为仓库建造成本及土地相关成本，另有预提成本4.9万元", c, cites, [P2])
+        self.assertIn("COMPOSITION_EXCEEDS_BALANCE", codes(v), v["findings"])
+
+
 class NestedDetail(unittest.TestCase):
     """甲 includes 乙 (a nested layout): the flat sum misses the total and nothing says why."""
 

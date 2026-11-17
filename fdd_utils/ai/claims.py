@@ -481,7 +481,11 @@ _CURRENCY_WORDS = (("USD", re.compile(r"美元|美金|USD|US\$", re.I)), ("HKD",
 
 def _currency_at(text: str, start: int, end: int) -> str:
     """The currency an amount at [start, end) is written in: a currency word inside it, right after it, or right before it."""
-    window = text[max(0, start - 4):min(len(text), end + 4)]
+    # a currency word of the next or the last clause is not this amount's: "银行存款-人民币户1,820.3万元，美元户无余额" read the figure
+    # as US dollars and found no cited fact for it (a book of the 2026-11-17 trials, refused three rounds running)
+    before = re.split(r"[，,。；;、]", text[max(0, start - 4):start])[-1]
+    after = re.split(r"[，,。；;、]", text[end:end + 4])[0]
+    window = before + text[start:end] + after
     for code, pattern in _CURRENCY_WORDS:
         if pattern.search(window):
             return code
@@ -1234,7 +1238,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         if mention is None:
             continue
         exact = next((f for f in contract.facts if f.get("value") and mention_matches(mention, f["period"])
-                      and abs(abs(f["value"]) - span["value"]) <= 0.01 * abs(f["value"])
+                      and abs(abs(f["value"]) - span["value"]) <= max(2 * span["tolerance"], 1.0)      # one unit of the last digit written
                       and abs(abs(f["value"]) - span["value"]) > span["tolerance"]), None)
         if exact is not None and not any(abs(abs(f["value"]) - span["value"]) <= span["tolerance"] for f in contract.facts
                                          if f.get("value") and mention_matches(mention, f["period"])):
@@ -1501,7 +1505,9 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     # accumulated depreciation count with their sign, so naming them as well makes the sum right.
     if _has(text, ("主要为", "主要由", "主要构成", "构成", "组成", "其中", "包括")) and not re.search(r"其余|剩余|余下", text):
         named_lines: Dict[str, List[Dict[str, Any]]] = {}
-        for _span, src, _how in matched_sources:
+        # the lines the sentence writes a figure for, and the lines it cites: "余额主要为仓库建造成本及土地相关成本，另有预提成本4.9万元"
+        # writes one figure and cites three lines of 24,866万, 5,850万 and 4.86万 over a balance of 4.86万
+        for _span, src, _how in [(None, f, "cited") for f in cited_facts] + list(matched_sources):
             if src.get("role") == ROLE_COMPONENT and src.get("basis") != BASIS_DERIVED and not src.get("nested_in") and src.get("period"):
                 bucket = named_lines.setdefault(src["period"], [])
                 if all((src.get("id") or src.get("ref")) != (x.get("id") or x.get("ref")) for x in bucket):
@@ -1600,7 +1606,8 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             attached = any(0 <= start - (position + len(label)) <= 14 for start in figure_starts)
             as_cause = _name_on_cause_side(text, position, position + len(label))
             about_note = any(label in str(n.get("text") or "") for n in source_notes)
-            if label not in cited_lines and not about_note and (attached or (line_level and not as_cause)):
+            has_figure = label in cited_lines or any(l.endswith("-" + label) or l.endswith("－" + label) for l in cited_lines)
+            if not has_figure and not about_note and (attached or (line_level and not as_cause)):
                 fail("LINE_NOT_CITED", "binding", f"the sentence names '{label}' but cites none of its figures")
     if _has(text, _NIL):
         for p in claim_periods or contract.periods:

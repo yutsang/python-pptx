@@ -296,7 +296,8 @@ PROTOCOL = (
     "A claim is {\"account\", \"kind\": amount|movement|composition|share|difference|annualized|cause|descriptive,\n"
     '  "text", "periods": [ISO dates], "cites": [F/D refs], "cause_cites": [N refs], "inference": false}.\n'
     "Every number in a claim's text must be one a cited fact or derived fact carries, in the period the claim declares.\n"
-    "Cite only refs that tools returned in THIS conversation. A cause needs a cited note (N ref) or inference=true.\n"
+    "Cite only refs that tools returned in THIS conversation. A cause needs a cited note (N ref): where no note states one, write none\n"
+    "(give the figures and the change, and name the question in 'unresolved'); inference=true is only for a reading of the figures themselves.\n"
     "\"kind\" is a label. Every sentence is checked for everything its text states (amounts, periods, direction words, signs,\n"
     "percentages, causes); inference=true only waives the note behind a cause, never a figure, period, unit or sign."
 )
@@ -402,8 +403,11 @@ CLAIM_SCHEMA = (
     "A claim is {\"kind\": amount|movement|composition|share|difference|annualized|cause|descriptive, \"text\",\n"
     '  "periods": [ISO dates], "cites": [F/D refs], "cause_cites": [N refs], "inference": false}.\n'
     "Every number in a claim's text must be one a cited F or D ref carries, in the period the claim declares. Cite only refs shown\n"
-    "in EVIDENCE. A cause needs a cited note (N ref) or inference=true; inference=true waives only the note, never a figure, period,\n"
-    "unit or sign. Every sentence is checked for everything its text states (amounts, periods, direction words, signs, percentages, causes)."
+    "in EVIDENCE. A cause needs a cited note (N ref). Where no note in EVIDENCE states a cause, do not write one: state the figures and\n"
+    "the change, and name the question in 'unresolved' (原因未在底稿中说明). inference=true is for a reading of the figures themselves that\n"
+    "needs no note (a change one named line accounts for); the deck colours it orange for a person, and it waives only the note, never\n"
+    "a figure, period, unit or sign. Every sentence is checked for everything its text states (amounts, periods, direction words, signs,\n"
+    "percentages, causes)."
 )
 
 

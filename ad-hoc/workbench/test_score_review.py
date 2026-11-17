@@ -131,20 +131,20 @@ class RepairPack(unittest.TestCase):
     import repair_pack as RP
 
     SESSION = {"id": "s", "candidates": {
-        "甲": {"accepted": True, "claims": [{"text": "a"}], "outcome": {"verdicts": [verdict("verified")]}},
-        "乙": {"accepted": False, "claims": [{"text": "乙的错句"}, {"text": "乙的推测"}],
+        "甲": {"accepted": True, "turn": 1, "claims": [{"text": "a"}], "outcome": {"verdicts": [verdict("verified")]}},
+        "乙": {"accepted": False, "turn": 2, "claims": [{"text": "乙的错句"}, {"text": "乙的推测"}],
               "outcome": {"verdicts": [verdict("failed", "SUM_STATED", "arithmetic", "X is given as the total of A, B"),
                                        verdict("verified_inference", "CAUSE_INFERENCE")]}},
-        "丙": {"accepted": True, "claims": [{"text": "c"}], "outcome": {"verdicts": [verdict("verified")]}}},
+        "丙": {"accepted": True, "turn": 3, "claims": [{"text": "c"}], "outcome": {"verdicts": [verdict("verified")]}}},
         "turns": [
-            {"accounts": ["甲"], "ok": True, "stop_reason": "done", "report": {"repairs": [
+            {"n": 1, "accounts": ["甲"], "ok": True, "stop_reason": "done", "report": {"repairs": [
                 {"step": 1, "feedback": "WRONG_PERIOD: x | AMOUNT_UNMATCHED: y"}, {"step": 2, "feedback": "NOT_JSON"}]}},
-            {"accounts": ["乙"], "ok": False, "stop_reason": "rejected", "report": {"repairs": [
+            {"n": 2, "accounts": [], "ok": False, "stop_reason": "rejected", "report": {"repairs": [
                 {"step": 1, "feedback": "SUM_STATED: z", "refused": [{"n": 0, "text": "乙的错句", "codes": ["SUM_STATED"]}]},
                 {"step": 2, "feedback": "SUM_STATED: z"},
                 {"step": 3, "feedback": "CAUSE_NOT_SUPPORTED: ...", "inference_repair": [1]}],
                 "rewrites": [{"step": 2, "rewrote": ["乙改写后的句子"], "dropped": ["乙的错句"]}]}},
-            {"accounts": ["丙"], "ok": True, "stop_reason": "done", "report": {}}]}
+            {"n": 3, "accounts": ["丙"], "ok": True, "stop_reason": "done", "report": {}}]}
 
     def test_a_code_is_counted_by_the_accounts_it_came_up_in_and_how_they_ended(self):
         text = "\n".join(self.RP.pack(self.SESSION))
@@ -185,6 +185,15 @@ class RepairPack(unittest.TestCase):
         self.assertIn("RECHECK s: 0 accounts", text)
         self.assertIn("REPAIR PACK stub", text)
         self.assertIn("no paid trial of this workbook", text)
+
+
+class WindowsFiles(unittest.TestCase):
+    def test_a_review_file_saved_with_windows_line_ends_reads_the_same(self):
+        tmp = Path(tempfile.mkdtemp(prefix="crlf_"))
+        (tmp / "review_claude_s1.txt").write_bytes("REVIEWED|乙\r\nFINDING|乙|0|数字|重大|确定|x\r\n".encode("utf-8"))
+        text = SR.reply_for("claude", "s1", tmp)
+        self.assertEqual(text, "REVIEWED|乙\nFINDING|乙|0|数字|重大|确定|x\n")
+        self.assertEqual(len(SR.parse(text)["findings"]), 1)
 
 
 class BlindInstructions(unittest.TestCase):

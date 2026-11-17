@@ -39,17 +39,25 @@ def round_codes(repair: Dict[str, Any]) -> List[str]:
 
 
 def by_account(session: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
-    """{account: {'repairs': [...], 'rewrites': [...], 'ok': bool, 'stop': str}} from the turns that wrote one account."""
+    """{account: {'repairs': [...], 'rewrites': [...], 'ok': bool, 'stop': str}}. A turn that did not end accepted lists no account, so
+    the turn is found from the candidate's own turn number; a turn that names exactly one account is taken as that account's."""
+    turns = {t.get("n"): t for t in session.get("turns") or []}
     out: Dict[str, Dict[str, Any]] = {}
-    for turn in session.get("turns") or []:
-        accounts = turn.get("accounts") or []
+
+    def take(account: str, turn: Dict[str, Any]) -> None:
         report = turn.get("report") or {}
-        if len(accounts) != 1:
-            continue
-        slot = out.setdefault(accounts[0], {"repairs": [], "rewrites": [], "ok": False, "stop": ""})
+        slot = out.setdefault(account, {"repairs": [], "rewrites": [], "ok": False, "stop": ""})
         slot["repairs"].extend(report.get("repairs") or [])
         slot["rewrites"].extend(report.get("rewrites") or [])
         slot["ok"], slot["stop"] = bool(turn.get("ok")), str(turn.get("stop_reason") or "")
+    for account, cand in (session.get("candidates") or {}).items():
+        turn = turns.get(cand.get("turn"))
+        if turn is not None:
+            take(account, turn)
+    for turn in session.get("turns") or []:
+        accounts = turn.get("accounts") or []
+        if len(accounts) == 1 and accounts[0] not in out:
+            take(accounts[0], turn)
     return out
 
 

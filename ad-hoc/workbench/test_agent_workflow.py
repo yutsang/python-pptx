@@ -984,8 +984,9 @@ class PreparedWrite(unittest.TestCase):
         writer = C.writer_system_prompt("Chi")
         self.assertNotIn(T.describe_tools()[:300], writer)
         # 2x until 2026-11-09; the writer's rules then grew by the detail rows, the tab's other tables and the house style
-        # (about 450 characters), which the tool menu does not carry either
-        self.assertGreater(len(loop_system), 1.5 * len(writer))
+        # (about 450 characters), which the tool menu does not carry either; 2026-11-17 by the rule that a cause with no note is
+        # not written (about 250 characters, in the loop's protocol too)
+        self.assertGreater(len(loop_system), 1.4 * len(writer))
 
     def test_a_rejected_claim_is_repaired_alone_and_the_verified_one_stays_byte_for_byte(self):
         def fn(system, user, n):
