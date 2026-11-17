@@ -300,6 +300,7 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                    "fallback": (turn.report or {}).get("prepared_fallback"), "seeded": ((turn.report or {}).get("prepared") or {}).get("seeded"),
                    "research": (turn.report or {}).get("research"),
                    "repairs": _repair_counts((turn.report or {}).get("repairs") or []),
+                   "judged": (turn.report or {}).get("judged"),
                    "seconds": round(time.perf_counter() - clock[-1], 2)}
             per.append(row)
             result["_texts"][key] = {"text": cl.render_claims(c.claims) if c is not None else "", "accepted": bool(c is not None and c.accepted and c.validated),
@@ -685,6 +686,12 @@ def summary_text(report: Dict[str, Any]) -> str:
         if asked:
             lines.append(f"           reasons no note supports, sent back once before the deck colours them: {len(asked)} account(s), "
                          f"{sum(p['repairs']['inference asked'] for p in asked)} sentence(s)")
+        judged = [p for p in per_acc if p.get("judged")]
+        if judged:
+            total = {k: sum(int((p["judged"] or {}).get(k) or 0) for p in judged) for k in ("asked", "cleared", "wrong", "not_held")}
+            lines.append(f"           sentences refused only for how the prose was read, read by the agent on the last refusal: {len(judged)} account(s), "
+                         f"{total['asked']} sentence(s); reading held and cleared {total['cleared']}, found wrong {total['wrong']}, "
+                         f"reading did not hold or none {total['not_held']}")
         if looked or gap_accounts or gap_stops or stale_labels:
             lookups = sum(len(p["research"]) for p in looked)
             hits = sum(int(x.get("hits") or 0) for p in looked for x in p["research"])

@@ -345,6 +345,30 @@ REVIEW_PROTOCOL = (
     '  {"objections": [{"index": <n>, "why": "..."}], "missing": [{"ref": "<N ref>", "why": "..."}]}\n'
     "Both lists empty when the paragraph is sound. Do not rewrite the paragraph."
 )
+JUDGE_SYSTEM = (
+    "A rule-based checker refused sentences of a financial due diligence report. It reads Chinese prose with patterns and sometimes\n"
+    "misreads how a sentence is built: a list of figures after a list of periods, a bracket, a range of years, a make-up with lines\n"
+    "under lines, a rest. You READ each sentence the way a careful reader does; Python then holds your reading to the evidence.\n"
+    "For every amount the sentence writes (万元, 亿元, 元), in the order written, give:\n"
+    '  "written": the amount exactly as written (e.g. "142.7万元")\n'
+    '  "ref": the cited fact or derived ref that amount is, matched by value ("rest" for what the sentence gives as what is left of a\n'
+    '         total after lines it named; "movement" for the change between two cited figures; "sum" for the total of cited lines)\n'
+    '  "under_period": the period words the sentence itself writes for it, copied (e.g. "2024年末"); for a list of figures after a list of\n'
+    "         periods, the period at the same position; for a change, the period the change ends in as the sentence writes it;\n"
+    "         empty when the sentence writes none for it\n"
+    '  "under_line": the line or item name the sentence writes it under, copied (e.g. "物业费"); empty for the balance of the account itself\n'
+    '  "role": balance | part (a line the sentence presents as making up the balance) | subpart (a line under another line) |\n'
+    "         rest | total (a total of figures the sentence lists) | change | other\n"
+    '  "of": for a subpart or a part of a total, the "written" of the figure it belongs to; otherwise empty\n'
+    'Then "faithful": true when every figure is under the period and the line of the fact it is, and what the sentence calls a rest, a\n'
+    'total or a make-up follows from those facts; false when a figure is under another period or line than the fact it is, or the sentence\n'
+    'says something its cited facts do not (then "why": one sentence saying what to change, with the figure and the period or line).\n'
+    "Do not judge style, causes or whether the figures matter. Read what is written, not what was meant."
+)
+JUDGE_PROTOCOL = (
+    'Reply with exactly ONE JSON object: {"readings": [{"index": <n>, "figures": [{"written": "...", "ref": "...", "under_period": "...", '
+    '"under_line": "...", "role": "...", "of": "..."}], "faithful": true|false, "why": "..."}]}\n'
+)
 REVIEW_SYSTEM = (
     "You review ONE paragraph of a financial due diligence report against EVIDENCE, which Python read from the workbook. Python has\n"
     "already checked every figure, period, sign and citation in it: do not re-check arithmetic. Judge meaning only:\n"
@@ -410,7 +434,7 @@ CLAIM_SCHEMA = (
     "the change, and name the question in 'unresolved' (原因未在底稿中说明). inference=true is for a reading of the figures themselves that\n"
     "needs no note (a change one named line accounts for); the deck colours it orange for a person, and it waives only the note, never\n"
     "a figure, period, unit or sign. Every sentence is checked for everything its text states (amounts, periods, direction words, signs,\n"
-    "percentages, causes)."
+    "percentages, causes). Keep a sentence to one period or one line and at most six figures; a longer list is two sentences."
 )
 
 
@@ -523,11 +547,15 @@ class AgentController:
     def __init__(self, session: SourceSession, model: Model, *, budget: Optional[Budget] = None, language: Optional[str] = None,
                  memory: Optional[Memory] = None, prepare: bool = False, seed: bool = False, review: bool = False,
                  lead: bool = False, plan: bool = False, tool_loop_on_repeat: bool = False, review_mark: bool = False,
-                 research: bool = False, research_lookups: int = 3, repair_inference: bool = False):
+                 research: bool = False, research_lookups: int = 3, repair_inference: bool = False, judge_binding: bool = False):
         self.session = session
         #: prepared write only (agent.repair_inference): a draft the verifier passes but only as an inference ("主要因X所致" with no note
         #: behind X) goes back to the writer once before the deck colours it, to cite the note or drop the reason
         self.repair_inference = repair_inference
+        #: prepared write only (agent.judge_binding): on the last refusal, the sentences the verifier refused only for how it READ them
+        #: (cl.JUDGEABLE) are read by the agent figure by figure and the reading is checked by Python; cleared, confirmed or untouched
+        self.judge_binding = judge_binding
+        self._bonus_rounds = 0
         #: prepared write only (agent.research): the writer is told what its evidence lacks and may look once, within a cap
         self.research = research
         self.research_lookups = max(0, int(research_lookups))
@@ -1200,6 +1228,96 @@ class AgentController:
         return ([f"REVIEW: [{o['index']}] {o['why']}" for o in review.get("objections") or []]
                 + [f"REVIEW_MISSING {m['ref']}: {m['why']}" for m in review.get("missing") or []])
 
+    def _soft_refused(self, outcome: Dict[str, Any]) -> List[int]:
+        """The sentences refused for how the verifier read the prose and nothing else: every failed or review finding is one the
+        agent may settle by reading (cl.JUDGEABLE)."""
+        out = []
+        for n, v in enumerate(outcome.get("verdicts") or []):
+            if v.get("verdict") in ("failed", "unverified"):
+                codes = {f.get("code") for f in v.get("findings") or [] if f.get("severity") in ("failed", "review")}
+                if codes and codes <= cl.JUDGEABLE:
+                    out.append(n)
+        return out
+
+    @staticmethod
+    def _judge_fact(contract: Any, ref: str) -> str:
+        f = contract.fact(ref)
+        if f is not None and f.get("basis") != "derived":
+            value = f.get("value")
+            nested = f" (a line under {f['nested_in']})" if f.get("nested_in") else ""
+            return (f"{ref}: {f.get('period')} {f.get('line') or '(the account\'s balance)'} {float(value) / 1e4:,.2f}万元 "
+                    f"[{f.get('role')}, {f.get('basis')}]{nested}")
+        d = f or next((x for x in contract.derived if x.get("ref") == ref), None)
+        if d is not None:
+            value = d.get("value")
+            shown = f"{float(value) / 1e4:,.2f}万元" if isinstance(value, (int, float)) else str(d.get("pct"))
+            return f"{ref}: {d.get('kind')} {'/'.join(map(str, d.get('periods') or [d.get('period')]))} {shown} = {d.get('formula') or ''}"
+        return f"{ref}: (not found)"
+
+    def _adjudicate(self, run: AgentRun, account: str, claims: List[Dict[str, Any]], outcome: Dict[str, Any], soft: List[int],
+                    usage: Dict[str, Any], record: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], bool, Dict[int, str]]:
+        """The agent reads the sentences the verifier refused for how it read them, figure by figure; Python holds each reading to the
+        evidence (cl.check_reading). A reading that holds clears the sentence (BINDING_JUDGED); a sentence the agent finds wrong is
+        confirmed (red) and goes back to the writer once with what the agent found; a reading that does not hold clears nothing.
+        Returns (claims, changed, {index: what to tell the writer})."""
+        contract = self.session.contracts.get(account)
+        judge = {"asked": len(soft), "cleared": 0, "wrong": 0, "not_held": 0}
+        if contract is None:
+            return claims, False, {}
+        lines = [f"ACCOUNT: {account}; the account's periods: {', '.join(contract.periods)}"]
+        for n in soft:
+            c, v = claims[n], outcome["verdicts"][n]
+            lines.append(f"[{n}] {c.get('text')}")
+            lines.append(f"    declared periods: {', '.join(c.get('periods') or [])}")
+            lines.append("    the checker's complaints: " + " | ".join(
+                f"{f['code']}: {str(f.get('message') or '')[:240]}" for f in v.get("findings") or [] if f.get("severity") in ("failed", "review")))
+            lines.append("    cited facts:")
+            lines.extend("      " + self._judge_fact(contract, str(r)) for r in c.get("cites") or [])
+        role = R.ROLE_ESCALATION if (self.router is not None and R.ROLE_ESCALATION in self.router.roles) else ""
+        stop_before = run.stop_reason
+        called = self._call_model(run, JUDGE_SYSTEM, "\n".join(lines) + "\n\n" + JUDGE_PROTOCOL + "Your JSON object:", 2500, usage,
+                                  role=role or (R.ROLE_PRIMARY if self.router is not None else ""), purpose="judge")
+        if called is None:
+            if run.stop_reason not in (STOP_SESSION, STOP_TOKENS):
+                run.stop_reason = stop_before
+            judge["unavailable"] = True
+            run.report["judged"] = judge
+            return claims, False, {}
+        turn, _error = parse_turn(called[0])
+        readings = {}
+        for item in (turn or {}).get("readings") or []:
+            if isinstance(item, dict):
+                try:
+                    readings[int(item.get("index"))] = item
+                except (TypeError, ValueError):
+                    continue
+        out, feedback, changed = list(claims), {}, False
+        for n in soft:
+            item = readings.get(n)
+            if item is None:
+                judge["not_held"] += 1
+                continue
+            why = str(item.get("why") or "")[:300]
+            if item.get("faithful") is True:
+                ok, reason = cl.check_reading(dict(claims[n], account=account), item.get("figures") or [], self.session.contracts)
+                if ok:
+                    out[n] = dict(claims[n], judged={"verdict": "faithful", "by": called[1] or "model", "why": why})
+                    judge["cleared"] += 1
+                    changed = True
+                else:
+                    judge["not_held"] += 1
+                    feedback[n] = f"a reading of the sentence figure by figure does not hold against the evidence: {reason}"
+            elif item.get("faithful") is False and why:
+                out[n] = dict(claims[n], judged={"verdict": "wrong", "by": called[1] or "model", "why": why})
+                judge["wrong"] += 1
+                changed = True
+                feedback[n] = why
+            else:
+                judge["not_held"] += 1
+        run.report["judged"] = judge
+        record["judge"] = judge
+        return out, changed, feedback
+
     def _required_unstated(self, required: List[str], claims: List[Dict[str, Any]], outcome: Dict[str, Any],
                            view: Dict[str, Any], account: Optional[str] = None) -> List[str]:
         """The required refs no verified claim STATES: it cites the ref and its text carries that figure at its printed precision
@@ -1535,6 +1653,10 @@ class AgentController:
         unresolved: List[str] = []
         bad_replies, last_failed = 0, None
         inference_asked = False
+        judged_once = False
+        judge_feedback: Dict[int, str] = {}
+        judged_texts: Dict[str, Dict[str, Any]] = {}          # what the agent found of a sentence stays with its words
+        self._bonus_rounds = 0
         run.report["prepared"] = {"required": required, "evidence_chars": len(_compact(view))}
         if self.seed:
             claims = self._seed_claims(account, view)
@@ -1615,6 +1737,8 @@ class AgentController:
                     rejected = {}
                 else:
                     claims = [self._with_cited_periods(account, c) for c in claims]
+                    claims = [dict(c, judged=judged_texts[str(c.get("text"))]) if str(c.get("text")) in judged_texts and not c.get("judged") else c
+                              for c in claims]
                     result = T.call_tool(self.session, "validate_candidate", {"account": account, "claims": claims})
                     self._absorb("validate_candidate", {"account": account, "claims": claims}, result)
                     outcome = (result.data or {}).get("outcome") or {}
@@ -1622,6 +1746,22 @@ class AgentController:
                     unaddressed = self._unaddressed(self._must, claims, outcome, unresolved)
                     record.update(claims=len(claims), verified=outcome.get("verified"), failed=outcome.get("failed"),
                                   unverified=outcome.get("unverified"))
+                    if (self.judge_binding and not result.ok and not judged_once and self.rejections + 1 >= self.budget.max_rejections
+                            and not (review is not None and review["status"] == "objected")):
+                        soft = self._soft_refused(outcome)
+                        if soft:
+                            judged_once = True
+                            claims, changed, judge_feedback = self._adjudicate(run, account, claims, outcome, soft, usage, record)
+                            judged_texts.update({str(c.get("text")): c["judged"] for c in claims if c.get("judged")})
+                            if changed:
+                                result = T.call_tool(self.session, "validate_candidate", {"account": account, "claims": claims})
+                                self._absorb("validate_candidate", {"account": account, "claims": claims}, result)
+                                outcome = (result.data or {}).get("outcome") or {}
+                                missing = self._required_unstated(required, claims, outcome, view, account)
+                                unaddressed = self._unaddressed(self._must, claims, outcome, unresolved)
+                                record.update(verified=outcome.get("verified"), failed=outcome.get("failed"), unverified=outcome.get("unverified"))
+                            if judge_feedback:
+                                self._bonus_rounds = 1          # the writer answers what the reading found, once, beyond the usual rounds
                     if review is not None and review["status"] == "objected" and pre_review is not None:
                         # this draft answers the reviewer: settled only by a change the reviewer accepts, never by a repeat
                         return self._settle_review(run, account, view, claims, pre_review, result.ok and not missing and not unaddressed, review,
@@ -1665,6 +1805,8 @@ class AgentController:
                             if v.get("verdict") not in ("verified", "verified_inference"):
                                 bad = [f for f in v.get("findings") or [] if f.get("severity") in ("failed", "review")]
                                 rejected[n] = [f"{f['code']}: {f.get('message', '')}" for f in bad] or ["not verified"]
+                                if n in judge_feedback:
+                                    rejected[n].insert(0, f"READING: {judge_feedback[n]}")
                         if missing:
                             rejected[len(claims)] = [f"REQUIRED_NOT_STATED: no verified claim cites {', '.join(missing)} AND writes its figure "
                                                      f"({required_figures(missing, view)}); add one ('add'), the figure written as it is, in 元 "
@@ -1683,7 +1825,7 @@ class AgentController:
                     self.rejections += 1
                     if router is not None:
                         router.note_rejection()
-                    if self.rejections >= self.budget.max_rejections:
+                    if self.rejections >= self.budget.max_rejections + self._bonus_rounds:
                         self._step_log.append((step, codes))
                         run.stop_reason = STOP_REJECTED
                         run.steps.append(record)

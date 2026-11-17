@@ -19,6 +19,7 @@ import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fdd_utils.ai import claims as cl  # noqa: E402
 from fdd_utils.ai import evidence_contract as ec  # noqa: E402
@@ -708,6 +709,130 @@ class FourthRoundOfTheSixBooks(unittest.TestCase):
         v = verdict("较2024年末的2.59亿元增加0.15亿元", c, [ref(c, P1), d["ref"]], [P1, P2])
         message = next(f["message"] for f in v["findings"] if f["code"] == "AMOUNT_UNMATCHED")
         self.assertIn(d["ref"], message)
+
+
+class WriterShapes(unittest.TestCase):
+    """A book's own figures written in the shapes writers use (claim_shapes.py): every correct sentence must be verified and its twin
+    with the figures under the wrong period must not. A new book runs the same generator over its accounts (claim_shapes.py <book>)."""
+    Y = ("2022-12-31", "2023-12-31", "2024-12-31", "2025-12-31")
+    Q = ("2024-12-31", "2025-12-31", "2026-06-30")
+
+    def contracts(self):
+        Y, Q = self.Y, self.Q
+        out = {}
+        rows = [("银行存款", "detail", dict(zip(Q, (5000000, 5600000, 6100000)))), ("甲行0123账户", "detail", dict(zip(Q, (3000000, 3300000, 3500000)))),
+                ("乙行0456账户", "detail", dict(zip(Q, (2000000, 2300000, 2600000)))), ("其他货币资金", "detail", dict(zip(Q, (800000, 900000, 1500000)))),
+                ("Total", "total", dict(zip(Q, (5800000, 6500000, 7600000))))]
+        out["nested"] = build(rows, notes=[], periods=Q, account="货币资金")
+        rows = [("甲", "detail", dict(zip(Q, (4100000, 4300000, 4700000)))), ("乙", "detail", dict(zip(Q, (2200000, 2900000, 2500000)))),
+                ("丙", "detail", dict(zip(Q, (900000, 700000, 1100000)))), ("丁", "detail", dict(zip(Q, (300000, 450000, 120000)))),
+                ("Total", "total", dict(zip(Q, (7500000, 8350000, 8420000))))]
+        out["flat"] = build(rows, notes=[], periods=Q, account="应付账款")
+        rows = [("租赁费", "detail", dict(zip(Y, (6400000, 6900000, 7700000, 8100000)))), ("物业费", "detail", dict(zip(Y, (2700000, 2800000, 3400000, 3600000)))),
+                ("Total", "total", dict(zip(Y, (9100000, 9700000, 11100000, 11700000))))]
+        out["income"] = build(rows, notes=[], periods=Y, account="营业收入", statement="IS")
+        rows = [("甲", "detail", dict(zip(Q, (0, 0, 2810900)))), ("Total", "total", dict(zip(Q, (0, 0, 2810900))))]
+        out["nil_then_not"] = build(rows, notes=[], periods=Q, account="应付账款")
+        rows = [("甲", "detail", dict(zip(Q, (20, 1783, 161)))), ("Total", "total", dict(zip(Q, (20, 1783, 161))))]
+        out["small_yuan"] = build(rows, notes=[], periods=Q, account="其他收益")
+        rows = [("仓储服务", "detail", dict(zip(Q, (503764, 603764, 703764)))), ("C0229华东星河实业有限公司", "detail", dict(zip(Q, (162800, 172800, 182800)))),
+                ("C0301北辰冷链（南方）有限公司", "detail", dict(zip(Q, (189300, 199300, 209300)))), ("Total", "total", dict(zip(Q, (503764, 603764, 703764))))]
+        out["counterparties"] = build(rows, notes=[], periods=Q, account="预收款项")
+        rows = [("银行存款", "detail", dict(zip(Q, (9000000, 9500000, 9900000)))), ("透支账户", "detail", dict(zip(Q, (-1200000, -1300000, -1100000)))),
+                ("Total", "total", dict(zip(Q, (7800000, 8200000, 8800000))))]
+        out["negative"] = build(rows, notes=[], periods=Q, account="货币资金")
+        rows = [("甲", "detail", dict(zip(Q, (500000, 500000, 700000)))), ("乙", "detail", dict(zip(Q, (300000, 300000, 600000)))),
+                ("Total", "total", dict(zip(Q, (800000, 800000, 1300000))))]
+        rows = [("房屋建筑物", "detail", dict(zip(Q, (196751500, 201000000, 205500000)))), ("机械设备", "detail", dict(zip(Q, (6835600, 7100000, 7400000)))),
+                ("Total", "total", dict(zip(Q, (203587100, 208100000, 212900000))))]
+        out["in_yi"] = build(rows, notes=[], periods=Q, account="固定资产")
+        out["replaced"] = build(rows, notes=[], periods=Q, account="其他应收款", financials={Q[0]: 1000000.0, Q[1]: 800000.0, Q[2]: 1300000.0},
+                                authority={Q[0]: {"tab": 800000.0, "financials": 1000000.0}})
+        return out
+
+    def test_every_shape_a_writer_uses_is_verified_when_right_and_refused_when_the_periods_are_swapped(self):
+        import claim_shapes
+        rows = []
+        for key, c in self.contracts().items():
+            rows += [dict(r, account=key) for r in claim_shapes.evaluate(c, cl, {c.account: c})]
+        lines, faults = claim_shapes.summarise(rows, show=20)
+        self.assertGreaterEqual(len({r["shape"] for r in rows}), 9, "the synthetic books must exercise most shapes\n" + "\n".join(lines))
+        self.assertEqual(faults, 0, "\n" + "\n".join(lines) + "\n" + "\n".join(
+            f"{r['account']}: {r['kind']}:{r['shape']} {r['text']} {r['codes']}" for r in rows if (r["kind"] == "CORRECT") == (not r["ok"])))
+
+
+class ReadingChecks(unittest.TestCase):
+    """The agent reads a sentence the verifier refused for how it read the prose; Python holds that reading to the evidence
+    (claims.check_reading) and a reading that holds clears only the refusals about reading (claims.JUDGEABLE)."""
+    Q = ("2024-12-31", "2025-12-31", "2026-06-30")
+
+    def setUp(self):
+        Q = self.Q
+        rows = [("物管", "detail", dict(zip(Q, (1791900, 1552600, 738600)))), ("物管-物业费", "detail", dict(zip(Q, (1081100, 1073900, 475500)))),
+                ("Total", "total", dict(zip(Q, (1791900, 1552600, 738600))))]
+        self.c = build(rows, notes=[], periods=Q, account="营业成本")
+        self.text = "2024年度、2025年度及2026年1-6月物管成本分别为179.2万元、155.3万元和73.9万元，其中物业费为主要项目（108.1万元、107.4万元、47.6万元）"
+        self.cites = [ref(self.c, q, x) for x in ("物管", "物管-物业费") for q in Q]
+        self.claim = {"account": "营业成本", "text": self.text, "periods": list(Q), "cites": self.cites}
+
+    def reading(self, swap_last=False):
+        Q, c = self.Q, self.c
+        labels = ["2024年度", "2025年度", "2026年1-6月"]
+        out = []
+        for i, (written, q) in enumerate(zip(("179.2万元", "155.3万元", "73.9万元"), Q)):
+            out.append({"written": written, "ref": ref(c, q, "物管"), "under_period": labels[i], "under_line": "物管成本", "role": "balance", "of": ""})
+        for i, (written, q) in enumerate(zip(("108.1万元", "107.4万元", "47.6万元"), Q)):
+            out.append({"written": written, "ref": ref(c, q, "物管-物业费"), "under_period": labels[i], "under_line": "物业费", "role": "subpart",
+                        "of": ("179.2万元", "155.3万元", "73.9万元")[i]})
+        if swap_last:
+            out[5]["ref"], out[5]["under_period"] = ref(c, Q[0], "物管-物业费"), labels[0]
+        return out
+
+    def test_a_reading_that_holds_clears_and_the_claim_then_verifies_with_the_refusal_kept_as_information(self):
+        ok, why = cl.check_reading(self.claim, self.reading(), {"营业成本": self.c})
+        self.assertTrue(ok, why)
+
+    def test_a_reading_that_puts_a_figure_on_another_fact_or_period_does_not_hold(self):
+        ok, why = cl.check_reading(self.claim, self.reading(swap_last=True), {"营业成本": self.c})
+        self.assertFalse(ok)
+        wrong_value = self.reading()
+        wrong_value[0]["ref"] = ref(self.c, self.Q[1], "物管")
+        self.assertFalse(cl.check_reading(self.claim, wrong_value, {"营业成本": self.c})[0])
+
+    def test_words_not_in_the_sentence_and_a_figure_nobody_read_do_not_hold(self):
+        invented = self.reading()
+        invented[0]["under_period"] = "2025年末"
+        self.assertFalse(cl.check_reading(self.claim, invented, {"营业成本": self.c})[0])
+        short = self.reading()[:-1]
+        self.assertIn("47.6万元", cl.check_reading(self.claim, short, {"营业成本": self.c})[1])
+
+    def test_the_arithmetic_of_the_roles_is_Pythons(self):
+        Q = self.Q
+        rows = [("甲", "detail", {Q[2]: 5000000}), ("乙", "detail", {Q[2]: 3000000}), ("丙", "detail", {Q[2]: 1500000}), ("Total", "total", {Q[2]: 9500000})]
+        c = build(rows, notes=[], periods=(Q[2],), account="其他应付款")
+        claim = {"account": "其他应付款", "text": "2026年6月30日其中甲500.0万元、乙300.0万元，其余项目合计150.0万元", "periods": [Q[2]],
+                 "cites": [ref(c, Q[2], "甲"), ref(c, Q[2], "乙")]}
+        read = [{"written": "500.0万元", "ref": ref(c, Q[2], "甲"), "under_period": "2026年6月30日", "under_line": "甲", "role": "part", "of": ""},
+                {"written": "300.0万元", "ref": ref(c, Q[2], "乙"), "under_period": "2026年6月30日", "under_line": "乙", "role": "part", "of": ""},
+                {"written": "150.0万元", "ref": "rest", "under_period": "2026年6月30日", "under_line": "", "role": "rest", "of": ""}]
+        self.assertTrue(cl.check_reading(claim, read, {"其他应付款": c})[0])
+        claim_bad = dict(claim, text=claim["text"].replace("150.0万元", "100.0万元"))
+        read_bad = [dict(r, written="100.0万元") if r["role"] == "rest" else r for r in read]
+        self.assertIn("the rest is", cl.check_reading(claim_bad, read_bad, {"其他应付款": c})[1])
+
+    def test_a_faithful_judgement_clears_only_refusals_about_reading_never_a_figure_no_fact_has(self):
+        P = P2
+        c = build(notes=[])
+        text = "2025年12月31日应收账款余额131.0万元"
+        wrong_period = {"account": c.account, "kind": "amount", "text": "2024年12月31日应收账款余额130.0万元", "periods": [P2], "cites": [ref(c, P2)]}
+        self.assertIn("WRONG_PERIOD", codes(cl.verify_claim(wrong_period, {c.account: c})))
+        judged = dict(wrong_period, judged={"verdict": "faithful", "by": "x", "why": ""})
+        cleared = cl.verify_claim(judged, {c.account: c})
+        self.assertNotIn("WRONG_PERIOD", codes(cleared))
+        self.assertIn("BINDING_JUDGED", {f["code"] for f in cleared["findings"]})
+        off = {"account": c.account, "kind": "amount", "text": text, "periods": [P2], "cites": [ref(c, P2)],
+               "judged": {"verdict": "faithful", "by": "x", "why": ""}}
+        self.assertIn("AMOUNT_UNMATCHED", codes(cl.verify_claim(off, {c.account: c})), "a figure no cited fact has is never cleared by a reading")
 
 
 class NestedDetail(unittest.TestCase):

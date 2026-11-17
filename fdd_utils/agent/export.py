@@ -126,7 +126,8 @@ def session_delivery(session: SourceSession, results: Dict[str, Any], edited: It
             if candidate is not None and not candidate.validated:
                 failed = sum(1 for v in (candidate.outcome or {}).get("verdicts") or [] if v.get("verdict") in ("failed", "unverified"))
                 extra.append(Finding("ACCOUNT_NOT_ACCEPTED", "blocked", f"in the draft with {failed} sentence(s) the verifier rejected, "
-                                     "marked (red: a figure the databook contradicts); a person corrects them before delivery", account))
+                                     "marked (red: a figure the databook does not support, or a sentence the agent read and found wrong; orange: refused only for how its "
+                                     "prose was read, which no one has read); a person corrects them before delivery", account))
             elif candidate is not None and not candidate.accepted:
                 extra.append(Finding("ACCOUNT_NOT_ACCEPTED", "blocked", "every sentence verified, but the write ended before the draft "
                                      "was accepted (a material note or the latest balance left unaddressed): a person completes it", account))

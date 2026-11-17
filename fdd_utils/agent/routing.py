@@ -82,7 +82,7 @@ CLASS: Dict[str, str] = {
     "LAYOUT_PROBLEM": REWRITE, "VALIDATION_FAILED": REWRITE,
     "TOOL_EXCEPTION": SYSTEM, "NO_TEMPLATE": SYSTEM,
     # -- recorded, nothing to do ------------------------------------------------------------------------------------------------
-    "DETAIL_NESTING_UNKNOWN": INFO, "DETAIL_BEFORE_ADJUSTMENT": INFO, "CAUSE_NOTE_RELATED_UNCHECKED": INFO, "CAUSE_INFERENCE": INFO, "CAUSE_FROM_NOTE": INFO,
+    "DETAIL_NESTING_UNKNOWN": INFO, "DETAIL_BEFORE_ADJUSTMENT": INFO, "BINDING_JUDGED": INFO, "CAUSE_NOTE_RELATED_UNCHECKED": INFO, "CAUSE_INFERENCE": INFO, "CAUSE_FROM_NOTE": INFO,
 }
 
 #: codes that wrap others: the classes are read from what they carry

@@ -831,6 +831,88 @@ class PreparedWrite(unittest.TestCase):
         self.assertNotIn("LAST REPAIR", writer.users[1])
         self.assertIn("LAST REPAIR", writer.users[2])
 
+    # -- 2026-11-17: the agent reads what the verifier's rules misread; Python holds the reading to the evidence ------------------------
+
+    def _judged_work(self, writer, judge=True):
+        tmp = tempfile.mkdtemp(prefix="judge_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        source = session_on(book)
+        source.load_params = {"workbook": book}
+        return W.WorkSession(source, model=writer, model_name="m", policy=R.Policy(mode="single"), budget=C.Budget(max_steps=8, max_rejections=1),
+                             prepare=True, config={"agent": {"repair_inference": False, "judge_binding": judge}})
+
+    @staticmethod
+    def _reading(user, text_amount, period_words, faithful=True, why="", role="balance"):
+        import re as _re
+        ref = _re.search(r"\n\s+(F\d+): 2025-12-31", user).group(1)
+        return {"readings": [{"index": 0, "faithful": faithful, "why": why, "figures": [
+            {"written": text_amount, "ref": ref, "under_period": period_words, "under_line": "", "role": role, "of": ""}]}]}
+
+    MISREAD = {"kind": "date", "year": 2024, "month": 12, "day": 31, "text": "2024年12月31日", "start": 0, "end": 0}
+
+    def test_a_sentence_the_rules_misread_is_cleared_when_the_agent_reads_it_right_and_the_reading_holds(self):
+        def fn(system, user, n):
+            if "rule-based checker" in system:
+                return self._reading(user, "130.0万元", "2025年12月31日")
+            return {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}}
+        with mock.patch.object(cl, "attached_period", return_value=self.MISREAD):      # the rules put the figure under 2024
+            work = self._judged_work(Writer(fn))
+            turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertTrue(turn.ok, turn.report)
+        self.assertEqual(turn.report["judged"]["cleared"], 1)
+        claim = work.source.candidates[ACCOUNT].claims[0]
+        self.assertEqual(claim["judged"]["verdict"], "faithful")
+        self.assertIn("BINDING_JUDGED", {f["code"] for f in work.source.candidates[ACCOUNT].outcome["verdicts"][0]["findings"]})
+
+    def test_a_reading_that_does_not_hold_against_the_evidence_clears_nothing_and_the_writer_hears_why(self):
+        def fn(system, user, n):
+            if "rule-based checker" in system:
+                return self._reading(user, "130.0万元", "2024年12月31日")           # the agent puts it under the year the fact is not
+            view = writer_view(user)
+            if "READING" in user:
+                return {"fix": [{"index": 0, "claim": amount_claim(view, P2, GOOD)}]}
+            return {"draft": {"claims": [amount_claim(view, P2, "2024年12月31日应收账款余额130.0万元")], "unresolved": []}}
+        writer = Writer(fn)
+        work = self._judged_work(writer)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertEqual(turn.report["judged"]["cleared"], 0)
+        reply = next(u for u in writer.users if "READING" in u)
+        self.assertIn("does not hold against the evidence", reply)
+        self.assertTrue(turn.ok, "the writer was given one more reply and fixed it")
+
+    def test_a_sentence_the_agent_finds_wrong_is_red_and_goes_back_to_the_writer_once_with_what_it_found(self):
+        wrong = "2024年12月31日应收账款余额130.0万元"
+        stays = [True]
+
+        def fn(system, user, n):
+            if "rule-based checker" in system:
+                return self._reading(user, "130.0万元", "2024年12月31日", faithful=False, why="130.0万元是2025年12月31日的余额，句子写在2024年12月31日下")
+            view = writer_view(user)
+            return {"fix": [{"index": 0, "claim": amount_claim(view, P2, wrong)}]} if "REJECTED" in user else \
+                {"draft": {"claims": [amount_claim(view, P2, wrong)], "unresolved": []}}
+        writer = Writer(fn)
+        work = self._judged_work(writer)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertEqual(turn.report["judged"]["wrong"], 1)
+        self.assertIn("READING: 130.0万元是2025年12月31日的余额", writer.users[-1])
+        candidate = work.source.candidates[ACCOUNT]
+        from entity_trial import deck_marks
+        self.assertEqual([m["colour"] for m in deck_marks(ACCOUNT, candidate)], ["red"], "confirmed wrong by the agent: red")
+
+    def test_with_the_judge_off_such_a_sentence_ends_orange_and_nothing_is_asked(self):
+        wrong = "2024年12月31日应收账款余额130.0万元"
+
+        def fn(system, user, n):
+            assert "rule-based checker" not in system
+            view = writer_view(user)
+            return {"fix": [{"index": 0, "claim": amount_claim(view, P2, wrong)}]} if "REJECTED" in user else \
+                {"draft": {"claims": [amount_claim(view, P2, wrong)], "unresolved": []}}
+        work = self._judged_work(Writer(fn), judge=False)
+        work.edit("撰写应收账款的段落", ACCOUNT)
+        from entity_trial import deck_marks
+        self.assertEqual([m["colour"] for m in deck_marks(ACCOUNT, work.source.candidates[ACCOUNT])], ["orange"])
+
     def test_python_sentences_verify_in_english_and_for_an_income_statement_line(self):
         work = self._work(Writer(lambda *a: {}))
         contract = work.source.contracts[ACCOUNT]
@@ -1440,7 +1522,7 @@ class WholeDatabookTrial(unittest.TestCase):
             if os.path.exists(path):
                 os.remove(path)
         row = result["accounts"][ACCOUNT]
-        self.assertEqual([m["colour"] for m in row["after"]], ["red"])
+        self.assertEqual([m["colour"] for m in row["after"]], ["orange"], "a period binding the agent has not read is orange, not red")
         self.assertEqual([d["claim"] for d in row["red"]], [0])
         detail = row["red"][0]
         self.assertTrue(any(f.startswith("WRONG_PERIOD") for f in detail["findings"]), detail["findings"])
@@ -1449,7 +1531,7 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertIn("130.00万", detail["cited"][0])
         self.assertIn("2025-12-31", detail["cited"][0])
         text = "\n".join(RS.report(result))
-        self.assertIn("STILL RED", text)
+        self.assertIn("STILL ORANGE", text)
         self.assertIn("amount read under:  130.0万元 -> 2024年12月31日", text)
 
     def test_a_blind_review_file_has_the_sentences_and_what_they_cite_and_nothing_the_verifier_said(self):
@@ -1592,6 +1674,13 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertIn("--skip-gate", first)
         self.assertEqual(len(first[first.index("--expect-sha") + 1]), 8)
         self.assertEqual([c[c.index("--max-cost") + 1] for c in calls], ["12.0", "12.0"])
+        # one command: the free pre-flight before the paid books and what the verifier and the agent did with the drafts after them
+        order = []
+        with mock.patch.object(PT, "preflight_all", side_effect=lambda f: order.append("preflight") or ["PRE"]), \
+                mock.patch.object(PT, "learn_all", side_effect=lambda f: order.append("learn") or ["LEARN"]):
+            PT.run(found, SimpleNamespace(**dict(vars(args), preflight=True, then_learn=True)),
+                   trial=lambda argv: order.append("trial") or 0, gate=lambda: "")
+        self.assertEqual(order, ["preflight", "trial", "trial", "learn"])
 
         # --recheck: the newest paid trial of each pick (found by the workbook's sha), every arm's saved drafts, no model call
         out = tmp / "out"

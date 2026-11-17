@@ -110,6 +110,17 @@ def pack(session: Dict[str, Any], width: int = 140) -> List[str]:
             for w in s["rewrites"][:3]:
                 if w.get("rewrote"):
                     out.append(f"      step {w.get('step')} the writer's rewrite: " + " | ".join(str(t)[:width] for t in w["rewrote"][:2]))
+    cleared = [(a, n, c["judged"]) for a, cand in cands.items() for n, c in enumerate(cand.get("claims") or []) if (c.get("judged") or {}).get("verdict") == "faithful"]
+    if cleared:
+        out.append(f"READ BY THE AGENT AND CLEARED ({len(cleared)}): refused only for how the prose was read; the reading held against the evidence")
+        for a, n, j in cleared:
+            out.append(f"  {a}[{n}] {str(cands[a]['claims'][n].get('text') or '')[:width]}")
+    confirmed = [(a, n, c["judged"]) for a, cand in cands.items() for n, c in enumerate(cand.get("claims") or []) if (c.get("judged") or {}).get("verdict") == "wrong"]
+    if confirmed:
+        out.append(f"FOUND WRONG BY THE AGENT ({len(confirmed)})")
+        for a, n, j in confirmed:
+            out.append(f"  {a}[{n}] {str(cands[a]['claims'][n].get('text') or '')[:width]}")
+            out.append(f"      {str(j.get('why') or '')[:260]}")
     fixed = [a for a, s in refused.items() if a in accepted]
     if fixed:
         out.append("REPAIRED (refused, then accepted; the codes of each round)")

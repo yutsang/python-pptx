@@ -196,6 +196,29 @@ def kind_sweep(claim, key, contract, cl, inference):
     return {k: cl.verify_claim(dict(claim, kind=k, inference=inference), {key: contract})["verdict"] for k in cl.CLAIM_KINDS}
 
 
+def load_contracts(workbook, sheet=None):
+    """{account: contract} for every account of the workbook, built the way a run builds them."""
+    from fdd_utils.ai import evidence_contract as ec
+    from fdd_utils.ai.facts import build_financials_by_key
+    from fdd_utils.workbook import get_effective_mappings, load_mappings, process_workbook_data
+
+    from fdd_utils.workbook.visibility import find_visible_financials_sheet
+    sheet = sheet or find_visible_financials_sheet(workbook)   # a hidden sheet is never chosen
+    state = process_workbook_data(temp_path=workbook, entity_name="", selected_sheet=sheet)
+    dfs, bs_is = state["dfs"], state.get("bs_is_results") or {}
+    mappings = get_effective_mappings(load_mappings(), state.get("resolution"))
+    fin = {}
+    for statement in ("balance_sheet", "income_statement"):
+        for key, values in build_financials_by_key({statement: bs_is.get(statement)}, dfs, mappings).items():
+            fin.setdefault(key, {}).update(values)
+    digest = (state.get("resolution") or {}).get("workbook_digest")
+    contracts = {}
+    for key, df in dfs.items():
+        contracts[key] = ec.build_contract(key, df, statement_type=str(((df.attrs.get("integrity") or {}).get("statement_type")) or ""),
+                                           financials=fin.get(key), digest=digest)
+    return contracts
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("workbook")
@@ -204,25 +227,7 @@ def main() -> int:
     args = ap.parse_args()
 
     from fdd_utils.ai import claims as cl
-    from fdd_utils.ai import evidence_contract as ec
-    from fdd_utils.ai.facts import build_financials_by_key
-    from fdd_utils.workbook import get_effective_mappings, load_mappings, process_workbook_data
-
-    from fdd_utils.workbook.visibility import find_visible_financials_sheet
-    sheet = args.sheet or find_visible_financials_sheet(args.workbook)   # a hidden sheet is never chosen
-    state = process_workbook_data(temp_path=args.workbook, entity_name="", selected_sheet=sheet)
-    dfs, bs_is = state["dfs"], state.get("bs_is_results") or {}
-    mappings = get_effective_mappings(load_mappings(), state.get("resolution"))
-    fin = {}
-    for statement in ("balance_sheet", "income_statement"):
-        for key, values in build_financials_by_key({statement: bs_is.get(statement)}, dfs, mappings).items():
-            fin.setdefault(key, {}).update(values)
-    digest = (state.get("resolution") or {}).get("workbook_digest")
-
-    contracts = {}
-    for key, df in dfs.items():
-        contracts[key] = ec.build_contract(key, df, statement_type=str(((df.attrs.get("integrity") or {}).get("statement_type")) or ""),
-                                           financials=fin.get(key), digest=digest)
+    contracts = load_contracts(args.workbook, args.sheet)
     stats = collections.defaultdict(lambda: collections.Counter())
     sweep = collections.Counter()
     failures = []

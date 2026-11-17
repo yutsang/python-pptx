@@ -206,7 +206,8 @@ _PERIOD_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("date_en", re.compile(r"(\d{1,2})\s+" + _EN_MONTH + r",?\s+(\d{4})", re.I)),
     # "2026年1-3月" / "2026年1至3月": a part-year flow, named by the month it ends (before "month", which would read "2026年1")
     ("month_range", re.compile(r"(\d{4})\s*年\s*\d{1,2}\s*[-–—~至到]\s*(\d{1,2})\s*月(?:份)?")),
-    ("month", re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月(?!\s*\d)(?:末|底|份)?")),
+    # 月 closes the month: "2026年6月470.0万元" is June 2026 and then the amount; only a day after it ("6月15日") makes it a date
+    ("month", re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月(?!\s*\d{1,2}\s*[日号])(?:末|底|份)?")),
     ("month_en", re.compile(_EN_MONTH + r"\s+(\d{4})", re.I)),
     ("year_end", re.compile(r"(\d{4})\s*年\s*(?:末|底|年末|年底)")),
     # a digit straight after the year is no month unless 月 follows it: "2024年312.2万元" names 2024 (the bracket "（2024年312.2万元、2025年330.7万元、
@@ -415,6 +416,14 @@ def text_amounts(text: str) -> List[Dict[str, Any]]:
     work = _QIAN.sub(qian, work)
     for value, start, end in extract_amount_spans(work):
         spans.append({"value": float(value), "written": work[start:end], "start": start, "end": end})
+    # "差异为73元", "20元、1,783元和161元": an amount under 1万元 is written in 元 (the writer is told to write it so, and the refusal of a
+    # missing required figure said "in 元 when it is under 1万元"), and the extractor reads only grouped figures (1,783元) as money: a figure
+    # written 73元 was no amount, so the required figure was never stated and a series of small amounts was one amount short of its
+    # periods. A price per area or per month (元/平方米) is no amount; a zero is read in a 分别 series only.
+    taken = [(sp["start"], sp["end"]) for sp in spans]
+    for m in re.finditer(r"(?<![\d.,])(\d{1,9}(?:\.\d+)?)\s*元(?![/／每])", work):
+        if float(m.group(1)) != 0 and not any(a < m.end() and m.start() < b for a, b in taken):
+            spans.append({"value": float(m.group(1)), "written": m.group(0), "start": m.start(), "end": m.end()})
     spans.sort(key=lambda s: s["start"])
     plain = str(text or "").replace("，", ",")
     for s in spans:
@@ -549,7 +558,8 @@ def names_not_in_evidence(text: str, contract: Any) -> List[str]:
     out = []
     for m in _ORG.finditer(str(text or "")):
         # the sentence's own words run into the match: "原值系支付给上海甲公司", "（含乙公司": cut at the last of them
-        raw = re.split(r"支付给|付给|支付|应付|应收|预付|预收|系|为|含|包括|其中|主要|向|对|与|和|及|给|自|由|于|在|的|、|，|,|（含|\(含",
+        # "货币资金中银行存款为主要项目": 中 after an account word is the sentence's own, not the start of a bank's name
+        raw = re.split(r"支付给|付给|支付|应付|应收|预付|预收|系|为|含|包括|其中|主要|向|对|与|和|及|给|自|由|于|在|的|、|，|,|（含|\(含|(?<=[金款产债入本用税益项])中",
                        m.group(0))[-1]
         name = _org_core(raw)
         if len(name) < 6 or _ORG_GENERIC.match(name):
@@ -711,6 +721,7 @@ def normalize_claim(raw: Dict[str, Any], default_account: str = "", index: int =
         "inference": _flag(raw.get("inference")),
         "cross_account": _flag(raw.get("cross_account")),
         "source_version": raw.get("source_version"),
+        "judged": raw.get("judged") if isinstance(raw.get("judged"), dict) else None,
     }
 
 
@@ -1107,7 +1118,8 @@ def _short_name_before(own: str, text: str, start: int, named: str) -> bool:
     return False
 
 
-def _lines_put_under_another(text: str, matched: List[Tuple[Dict[str, Any], Dict[str, Any], str]]) -> set:
+def _lines_put_under_another(text: str, matched: List[Tuple[Dict[str, Any], Dict[str, Any], str]],
+                             cited: Optional[List[Dict[str, Any]]] = None) -> set:
     """"其中押金122.3万元，主要为甲41.6万元、乙33.6万元": after a line's figure a marker (其中, 主要为, 包括) and lines that together are no more than
     it put those lines under it. Two right sentences of a trial were refused as a make-up larger than the balance, the parent counted with
     its own children (2026-11-17)."""
@@ -1125,6 +1137,24 @@ def _lines_put_under_another(text: str, matched: List[Tuple[Dict[str, Any], Dict
             group.append((sp, sr))
         if group and sum(abs(sr["value"]) for _sp, sr in group) <= abs(src["value"]) * 1.05 + span["tolerance"] \
                 and all(sr.get("period") == src.get("period") for _sp, sr in group):
+            under |= {(sr.get("id") or sr.get("ref")) for _sp, sr in group}
+    # a line named with no figure of its own ("主要为仓储服务，其中A16.3万元、B18.9万元"): the lines after its marker are under it when they
+    # are no more than it
+    for f in cited or []:
+        if f.get("role") != ROLE_COMPONENT or not f.get("line") or f.get("basis") == BASIS_DERIVED:
+            continue
+        name = _bare(f["line"])
+        at = text.find(name)
+        if at < 0 or any(sp["start"] >= at and sp["end"] <= at + len(name) + 1 for sp, _s in parts):
+            continue
+        tail = text[at + len(name):]
+        marker = re.match(r"[^，,。；;]{0,4}[，,]?\s*(?:其中|包括|主要为|主要是|含)", tail)
+        if not marker:
+            continue
+        stop = re.search(r"[。；;]", tail)
+        end = at + len(name) + (stop.start() if stop else len(tail))
+        group = [(sp, sr) for sp, sr in parts if at + len(name) + marker.end() <= sp["start"] < end and sr.get("period") == f.get("period")]
+        if group and sum(abs(sr["value"]) for _sp, sr in group) <= abs(f["value"]) * 1.05 + 1.0:
             under |= {(sr.get("id") or sr.get("ref")) for _sp, sr in group}
     return under
 
@@ -1260,6 +1290,97 @@ def _prefix_children(sources: List[Dict[str, Any]]) -> set:
     return {i for i, n in names.items() if any(n != m and n.startswith(m + "-") for m in names.values() if m)}
 
 
+def _norm_figure(written: Any) -> str:
+    return re.sub(r"[\s,，]", "", str(written or ""))
+
+
+def _line_overlap(line: str, said: str) -> bool:
+    a, b = _bare(line), _bare(said)
+    if not a or not b:
+        return False
+    if a in b or b in a:
+        return True
+    return any(a[i:i + 3] in b for i in range(max(1, len(a) - 2)) if len(a[i:i + 3]) == 3)
+
+
+def check_reading(claim: Dict[str, Any], reading: List[Dict[str, Any]], contracts: Dict[str, EvidenceContract]) -> Tuple[bool, str]:
+    """The agent read a sentence the verifier refused for how it read the prose: for each figure, which cited fact it is, the period
+    words and the line the sentence writes it under, and what it is (balance, part, subpart, rest, total, change). Python holds that
+    reading to the evidence: every figure is the value of a cited fact (or the rest / a change Python computes), the period the sentence
+    writes is that fact's, the line is that fact's, and the arithmetic of the roles holds (parts no more than the balance, subparts no
+    more than their part, the rest what is left, a total the sum of its parts). (True, '') clears the reading refusals; the figures'
+    own refusals (an amount no fact has, a unit, a sign, a percentage) are never cleared here."""
+    account = str(claim.get("account") or "")
+    contract = contracts.get(account)
+    if contract is None:
+        return False, "no contract"
+    text = str(claim.get("text") or "")
+    spans = text_amounts(text)
+    if not spans:
+        return False, "the sentence writes no amount"
+    by_written = {_norm_figure(r.get("written")): r for r in reading if isinstance(r, dict)}
+    declared = list(claim.get("periods") or [])
+    cites = {str(c) for c in claim.get("cites") or []}
+    parts: Dict[str, List[Tuple[Dict[str, Any], float]]] = {}
+    children: Dict[str, List[float]] = {}
+    values: Dict[str, float] = {}
+    rest = None
+    for sp in spans:
+        key = _norm_figure(sp["written"])
+        r = by_written.get(key)
+        if r is None:
+            return False, f"the reading has no entry for {sp['written']}"
+        ref, role = str(r.get("ref") or ""), str(r.get("role") or "other").lower()
+        item = None
+        if ref not in ("rest", "movement", "sum"):
+            item = contract.fact(ref) or next((d for d in contract.derived if d.get("ref") == ref), None)
+            if item is None or ref not in cites:
+                return False, f"{sp['written']} is read as {ref or '(no ref)'}, which the sentence does not cite"
+            if item.get("value") is None or abs(abs(item["value"]) - sp["value"]) > sp["tolerance"]:
+                return False, f"{sp['written']} is read as {ref}, whose value is {_fmt(item.get('value') or 0)} yuan"
+            fact_periods = [item.get("period")] if item.get("period") and item.get("basis") != BASIS_DERIVED \
+                else ([(item.get("periods") or [None])[-1]] if item.get("kind") == KIND_MOVEMENT else list(item.get("periods") or [item.get("period")]))
+            for words in (r.get("under_period"), r.get("under_line")):
+                if str(words or "").strip() and _norm_figure(words) not in _norm_figure(text):
+                    return False, f"'{words}' is not in the sentence: the words a figure is written under are copied from it"
+            said = period_mentions(str(r.get("under_period") or ""))
+            if said:
+                if not any(mention_matches(said[0], p) for p in fact_periods if p):
+                    return False, (f"{sp['written']} is {ref}, a figure of {', '.join(str(p) for p in fact_periods)}; the sentence writes it under "
+                                   f"{r.get('under_period')}")
+            elif len(declared) > 1:
+                return False, f"the sentence writes no period for {sp['written']} and the claim declares {len(declared)}"
+            if item.get("role") == ROLE_COMPONENT and item.get("line") and item.get("basis") != BASIS_DERIVED:
+                if not _line_overlap(item["line"], str(r.get("under_line") or "")):
+                    return False, f"{sp['written']} is {ref} ({item['line']}); the sentence writes it under '{r.get('under_line') or ''}'"
+        values[key] = sp["value"]
+        period = (fact_periods[0] if item is not None and fact_periods else None) or (declared[-1] if declared else None)
+        if role == "part":
+            if str(r.get("of") or "").strip():
+                children.setdefault(_norm_figure(r.get("of")), []).append(sp["value"])
+            else:
+                parts.setdefault(str(period), []).append((sp, sp["value"]))
+        elif role == "subpart":
+            children.setdefault(_norm_figure(r.get("of")), []).append(sp["value"])
+        elif role == "rest":
+            rest = (sp, str(period))
+    for parent, kids in children.items():
+        if parent in values and sum(kids) > values[parent] * 1.05 + 1.0:
+            return False, f"the figures read as parts of {parent} add up to {_fmt(sum(kids))} yuan, more than it"
+    for period, items in parts.items():
+        base = contract.total(period)
+        if base is None or base <= 0:
+            continue
+        made = sum(v for _sp, v in items)
+        if rest is not None and rest[1] == period:
+            slack = sum(sp["tolerance"] for sp, _v in items) + rest[0]["tolerance"] + max(1.0, 0.0005 * abs(base))
+            if abs(rest[0]["value"] - (base - made)) > slack:
+                return False, f"the rest is {_fmt(rest[0]['value'])} yuan, but the total {_fmt(base)} less the parts {_fmt(made)} is {_fmt(base - made)}"
+        elif made > base + max(0.10 * base, 10000.0):
+            return False, f"the parts add up to {_fmt(made)} yuan, more than the balance of {_fmt(base)}"
+    return True, ""
+
+
 def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContract], *, default_account: str = "",
                  index: int = 0) -> Dict[str, Any]:
     claim = normalize_claim(raw_claim, default_account, index)
@@ -1267,8 +1388,12 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     contract = contracts.get(account)
     findings: List[ClaimFinding] = []
     checked: set = set()
+    cleared = claim["judged"] if (claim.get("judged") or {}).get("verdict") == "faithful" else None
 
     def fail(code: str, dim: str, message: str) -> None:
+        if cleared is not None and code in JUDGEABLE:      # the reading was done by the agent and checked against the evidence (check_reading)
+            findings.append(ClaimFinding("BINDING_JUDGED", dim, "info", f"{code}: {message[:200]} (read by the agent, checked by Python)"))
+            return
         findings.append(ClaimFinding(code, dim, "failed", message))
 
     def info(code: str, dim: str, message: str) -> None:
@@ -1276,6 +1401,9 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
 
     def review(code: str, dim: str, message: str) -> None:
         """Could not be tested. The claim is not failed and not verified: it waits for a person."""
+        if cleared is not None and code in JUDGEABLE:
+            findings.append(ClaimFinding("BINDING_JUDGED", dim, "info", f"{code}: {message[:200]} (read by the agent, checked by Python)"))
+            return
         findings.append(ClaimFinding(code, dim, "review", message))
 
     if contract is None:
@@ -1373,7 +1501,8 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         _ra = _rest_analysis(text, amounts, _tw, _rw, contract, claim_periods, set())
         if _ra is not None:
             allowed.append((abs(_ra["expected"]), {"id": "rest", "ref": "rest", "role": "rest", "account": account, "period": _ra["period"],
-                                                  "line": "", "basis": BASIS_DERIVED, "value": _ra["expected"]}, "implicit_rest"))
+                                                  "line": "", "basis": BASIS_DERIVED, "value": _ra["expected"], "slack": _ra["slack"]},
+                            "implicit_rest"))
     pairs = _consecutive_pairs(cited_facts)
     for a, b in pairs:
         allowed.append((abs(b["value"] - a["value"]), {
@@ -1390,7 +1519,11 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     for span in amounts:
         target = abs(span["value"])
         currency = _currency_at(text, span["start"], span["end"])
-        hits = [(v, s, how) for v, s, how in allowed if abs(v - target) <= span["tolerance"] and (s.get("currency") or "CNY") == currency]
+        # the rest of lines written rounded is the total less their rounded figures, off by what the rounding takes (214.4万 written 21.4万
+        # after 1.9万 and 1,628元 named, the lines being 1.93万 and 1,628元)
+        hits = [(v, s, how) for v, s, how in allowed
+                if abs(v - target) <= max(span["tolerance"], s.get("slack", 0.0) if how == "implicit_rest" else 0.0)
+                and (s.get("currency") or "CNY") == currency]
         hit = None
         if hits:
             # Two lines can carry the same figure (a loan listed by type and by bank).
@@ -1755,6 +1888,8 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             adjusted = contract.total(period, BASIS_ADJUSTED)
             if adjusted is None or len(parts) < len(every):
                 continue
+            if (contract.permissions.get(period) or {}).get("detail_basis") == "ambiguous":
+                continue            # the lines miss the total because some contain others, not because of an adjustment: nothing to say about the basis
             gap = adjusted - sum(f["value"] for f in parts)
             if abs(gap) > max(1.0, 0.0005 * abs(adjusted)):
                 fail("COMPOSITION_BASIS", "binding",
@@ -1774,7 +1909,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         kids = _prefix_children([src for _s, src, _h in every if src.get("role") == ROLE_COMPONENT])
         in_bracket = {(src.get("id") or src.get("ref")) for span, src, _h in matched_sources
                       if span is not None and any(b0 <= span["start"] < b1 for b0, b1 in _bracket_spans(text))}
-        in_bracket |= _lines_put_under_another(text, matched_sources)
+        in_bracket |= _lines_put_under_another(text, matched_sources, cited_facts)
         for _span, src, _how in every:
             ident = src.get("id") or src.get("ref")
             if (src.get("role") == ROLE_COMPONENT and src.get("basis") != BASIS_DERIVED and not src.get("nested_in")
@@ -2287,6 +2422,13 @@ def render_claims(claims: List[Dict[str, Any]]) -> str:
 #: verifier dimensions where a failure means a figure the databook contradicts (wrong amount, period, line, basis, sum, or a
 #: ref that does not exist): red in the deck. A failure elsewhere (a cause with nothing behind it, wording) is orange.
 _RED_DIMENSIONS = ("amounts", "arithmetic", "binding", "citations")
+#: refusals that rest on how the verifier READ the prose (which period, which line, which part of which): a rule can misread a list, a
+#: bracket, a range, a make-up. They go to the agent, which reads the sentence figure by figure, and Python checks that reading against
+#: the evidence (check_reading). A sentence refused for these alone is orange until the agent has confirmed it is wrong (red) or
+#: read it right (cleared). Refusals about the figures themselves (a figure no cited fact has, a unit, a sign, a percentage, the
+#: deck's basis) are never the agent's to clear.
+JUDGEABLE = frozenset({"WRONG_PERIOD", "PERIOD_UNBOUND", "MOVEMENT_END_UNSTATED", "WRONG_LINE", "LINE_NOT_CITED", "COMPOSITION_BASIS",
+                       "COMPOSITION_EXCEEDS_BALANCE", "SUM_STATED", "REST_NOT_REMAINDER", "REST_INCOMPLETE"})
 #: flags on a verified sentence that a person should read: orange in the deck. note_amount, note_wording_unchecked and
 #: detail_caveat were here until 2026-11-09: a sentence-level review of the client file found them on 33 to 55 right
 #: sentences per arm against 9 to 22 real problems, so the orange told a person nothing. They stay on the candidate and in
@@ -2310,7 +2452,8 @@ def to_legacy_result(account: str, claims: List[Dict[str, Any]], outcome: Dict[s
     for n, (claim, verdict) in enumerate(zip(claims, outcome["verdicts"])):
         if verdict["verdict"] in ("failed", "unverified"):
             failed = [f for f in verdict["findings"] if f["severity"] == "failed"]
-            red = next((f for f in failed if f.get("dimension") in _RED_DIMENSIONS), None)
+            confirmed = (claim.get("judged") or {}).get("verdict") == "wrong"
+            red = next((f for f in failed if f.get("dimension") in _RED_DIMENSIONS and (f.get("code") not in JUDGEABLE or confirmed)), None)
             first = red or next((f for f in verdict["findings"] if f["severity"] in ("failed", "review")), {})
             category = "hallucination" if red else "reasoning"
             supported, reason, code = False, first.get("message", ""), first.get("code")

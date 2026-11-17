@@ -102,6 +102,8 @@ def run(found: List[Dict[str, Any]], args: argparse.Namespace, trial: Optional[C
     if problem:
         print("NOT STARTED (nothing was sent):", problem)
         return 2
+    if getattr(args, "preflight", False):
+        print("\n".join(preflight_all(found)), flush=True)
     codes = []
     for g in found:
         for r in g["pick"]:
@@ -115,7 +117,33 @@ def run(found: List[Dict[str, Any]], args: argparse.Namespace, trial: Optional[C
                     argv += [flag, value]
             codes.append(trial(argv))
     print(f"\nPORTFOLIO TRIAL: {len(codes)} book(s), exit codes {codes}")
+    if getattr(args, "then_learn", False):
+        print("\n===== WHAT THE VERIFIER AND THE AGENT DID WITH EACH DRAFT (free; recheck and repair pack of the trials just made) =====", flush=True)
+        print("\n".join(learn_all(found)))
     return 0 if codes and all(c == 0 for c in codes) else 1
+
+
+def preflight_all(found: List[Dict[str, Any]]) -> List[str]:
+    """Free, before anything is paid for: each pick's own figures written in the shapes writers use (claim_shapes.py), through the
+    verifier. A correct sentence it refuses is a misreading of prose that no model call would fix; the agent's reading
+    (agent.judge_binding) is the answer to those, and this says how many there are and what they look like."""
+    import warnings
+    warnings.filterwarnings("ignore")
+    out = ["===== PRE-FLIGHT (free): the verifier on each book's own figures written in the shapes a writer uses ====="]
+    for g in found:
+        for r in g["pick"]:
+            try:
+                import claim_eval
+                import claim_shapes
+                from fdd_utils.ai import claims as cl
+                contracts = claim_eval.load_contracts(str(r["path"]), None)
+                rows = [dict(x, account=key) for key, c in contracts.items() for x in claim_shapes.evaluate(c, cl, {key: c})]
+                lines, faults = claim_shapes.summarise(rows, show=6)
+                out.append(f"{r['entity']}: {len(contracts)} account(s), {len(rows)} sentence(s), {faults} fault(s)")
+                out.extend(l for l in lines if "<- FAULT" in l or l.lstrip().startswith("!"))
+            except Exception as exc:                                                    # noqa: BLE001
+                out.append(f"{r['entity']}: pre-flight skipped ({type(exc).__name__}: {str(exc)[:120]})")
+    return out
 
 
 def recheck_all(found: List[Dict[str, Any]], out_dir: Optional[Path] = None, check: Optional[Callable[..., Any]] = None) -> List[str]:
@@ -292,6 +320,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--all-accounts", action="store_true", help="with --packet: every account")
     ap.add_argument("--where", action="store_true", help="with --audit: for each sheet it flags, the rows that write the months no account uses, with the row's name")
     ap.add_argument("--untried", action="store_true", help="pick only entities no paid trial has run on (acceptance books)")
+    ap.add_argument("--no-preflight", action="store_true", help="paid run: skip the free check of the verifier on each book's own figures")
+    ap.add_argument("--no-learn", action="store_true", help="paid run: do not print the recheck and repair pack of the trials just made")
     args = ap.parse_args(argv)
     import agent_acceptance as A
     A._utf8()
@@ -318,6 +348,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not args.i_accept_paid_calls:
         print("free listing only; add --i-accept-paid-calls to run the books above")
         return 0
+    args.preflight, args.then_learn = not args.no_preflight, not args.no_learn
     return run(found, args)
 
 

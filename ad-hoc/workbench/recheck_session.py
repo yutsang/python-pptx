@@ -45,7 +45,8 @@ def recheck(databook: str, session: str) -> Dict[str, Any]:
             was = {m["claim"] for m in before}
             new_codes = sorted({f["code"] for n, v in enumerate(now.get("verdicts") or []) if n not in was
                                 for f in v.get("findings") or [] if f.get("severity") in ("failed", "review")})
-            red = {m["claim"] for m in after if m["colour"] == "red"}
+            # every sentence the verifier still refuses, red or orange: an orange one is refused for how the prose was read (cl.JUDGEABLE)
+            red = {m["claim"] for m in after if (now.get("verdicts") or [{}] * (m["claim"] + 1))[m["claim"]].get("verdict") in ("failed", "unverified")}
             out["accounts"][key] = {"before": before, "after": after, "codes": new_codes,
                                     "red": [red_detail(n, key, claims[n], (now.get("verdicts") or [])[n], work.source.contracts)
                                             for n in sorted(red) if n < len(claims) and n < len(now.get("verdicts") or [])]}
@@ -118,7 +119,7 @@ def report(result: Dict[str, Any], width: int = 400) -> List[str]:
             if mark is None:
                 continue
             cut = mark["text"] if len(mark["text"]) <= width else mark["text"][:width] + "…"
-            out.append(f"STILL RED {key} [{d['claim']}] (claim declares periods {', '.join(d['declared']) or 'none'})")
+            out.append(f"STILL {mark['colour'].upper()} {key} [{d['claim']}] (claim declares periods {', '.join(d['declared']) or 'none'})")
             out.append(f"      {cut}")
             out.extend(f"    failed  {line}" for line in d["findings"])
             out.append("    amount read under:  " + "; ".join(d["binds"]))

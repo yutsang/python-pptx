@@ -21,8 +21,8 @@ def verdict(kind, code="", dimension="binding", message="m"):
 
 
 SESSION = {"candidates": {
-    "营业收入": {"claims": [{"text": "s0 right"}, {"text": "s1 wrong period"}, {"text": "s2 inference"}, {"text": "s3 unmarked"}],
-              "outcome": {"verdicts": [verdict("verified"), verdict("failed", "WRONG_PERIOD"),
+    "营业收入": {"claims": [{"text": "s0 right"}, {"text": "s1 wrong figure"}, {"text": "s2 inference"}, {"text": "s3 unmarked"}],
+              "outcome": {"verdicts": [verdict("verified"), verdict("failed", "AMOUNT_UNMATCHED", "amounts"),
                                        verdict("verified_inference", "CAUSE_INFERENCE"), verdict("verified")]}, "flags": []},
     "应收账款": {"claims": [{"text": "t0"}, {"text": "t1"}], "outcome": {"verdicts": [verdict("verified"), verdict("verified")]}, "flags": []},
     "无形资产": {"claims": [{"text": "u0"}], "outcome": {"verdicts": [verdict("verified")]}, "flags": []},

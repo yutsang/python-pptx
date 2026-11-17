@@ -105,6 +105,14 @@ def repair_inference(config: Optional[Dict[str, Any]] = None) -> bool:
     return True if value is None else bool(value)
 
 
+def judge_binding(config: Optional[Dict[str, Any]] = None) -> bool:
+    """agent.judge_binding (default on): a sentence the verifier refused only for how it READ the prose (the period or line a figure
+    sits under, a make-up, a rest) is read by the agent on the last refusal, figure by figure, and Python holds the reading to the
+    evidence. The stronger model reads when one is configured, else the writer's. Off, such a sentence ends orange, not cleared."""
+    value = _agent_block(config).get("judge_binding")
+    return True if value is None else bool(value)
+
+
 def research_lookups(config: Optional[Dict[str, Any]] = None) -> int:
     """agent.research_lookups (default 3, at most 6): the lookups one account's writer may ask for, in all."""
     value = _agent_block(config).get("research_lookups")

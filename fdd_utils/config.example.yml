@@ -279,6 +279,11 @@ agent:
   # writer ONCE, before the deck colours the sentence orange, to cite the note or leave the reason out; what comes back is taken as
   # it is. On (the verifier colours only what the writer could not settle); false restores the colour without the extra call.
   repair_inference: true
+  # judge_binding: a sentence the verifier refused only for how it READ the prose (the period or line a figure sits under, a make-up, a
+  # rest) is read by the agent on the last refusal, figure by figure (the stronger model when one is configured, else the writer's), and
+  # Python holds that reading to the evidence: cleared when it holds, red when the agent finds the sentence wrong (the writer then gets
+  # one more reply with what was found), orange when nothing was read. false: such a sentence ends orange, never cleared.
+  judge_binding: true
   models:                  # provider "" = agent.models decides nothing; then --model / the app's selection, else local
     primary:    {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Flash model id
     escalation: {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Pro model id
