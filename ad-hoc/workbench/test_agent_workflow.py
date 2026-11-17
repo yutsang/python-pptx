@@ -1453,6 +1453,32 @@ class WholeDatabookTrial(unittest.TestCase):
                                      "GAP PROBE 3 account(s) with something their evidence does not say; 2 of them ...", "===== 东湖 (Portfolio I)"])
         self.assertIn("could not be read: ValueError: no such sheet", lines[4], "one unreadable book does not stop the others")
 
+    def test_the_months_the_audit_flags_are_looked_up_row_by_row_with_the_name_of_each_row(self):
+        import portfolio_trial as PT
+        import period_audit as PA
+        from openpyxl import Workbook
+        tmp = Path(tempfile.mkdtemp(prefix="where_"))
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "在建工程"
+        ws.append(["项目", "2023年12月31日", "2024年12月31日"])
+        ws.append(["甲工程", 100, 200])
+        ws.append(["开工日期", "2021-12", "预计完工", "2022-12"])      # attributes of one project, not periods
+        ws.append(["乙工程", 300, 400])
+        wb.save(tmp / "w.xlsx")
+        lines = PA.where_months(str(tmp / "w.xlsx"), "在建工程", ["2021-12", "2022-12"])
+        self.assertEqual(lines[0], "WHERE 在建工程: 2021-12, 2022-12")
+        self.assertEqual(len(lines), 2)
+        self.assertIn("row    3 '开工日期'", lines[1])
+        self.assertIn("B3='2021-12'", lines[1])
+        self.assertIn("D3='2022-12'", lines[1])
+        self.assertEqual(PA.where_months(str(tmp / "w.xlsx"), "没有", ["2021-12"])[-1], "  sheet not found")
+        audit_lines = ["1 sheet(s) to check: 固定资产, 在建工程 (+3 more)", "    labels ['2023-12-31']",
+                       "    months written 2+ times in header rows that no account uses: ['2021-12', '2022-12']",
+                       "17 sheet(s) agree with their labels ['2023-12-31']: 其他应付款"]
+        self.assertEqual(PT.flagged_months(audit_lines), [(["固定资产", "在建工程"], ["2021-12", "2022-12"])])
+        self.assertEqual(PT.flagged_months(["sheets to check: 0 of 18"]), [])
+
     def test_the_scripted_writer_writes_the_latest_balance_it_is_shown(self):
         import entity_trial as E
         tmp = tempfile.mkdtemp(prefix="trial_w_")

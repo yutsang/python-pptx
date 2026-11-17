@@ -197,6 +197,39 @@ def probe(path: str, sheet: str, rows: int = 40, cols: int = 40, limit: int = 70
     return out
 
 
+def where_months(path: str, sheet: str, months: Iterable[str], limit: int = 10, max_rows: int = 4000, max_cols: int = 80) -> List[str]:
+    """For months the audit says a sheet writes often and no account uses ('2022-12'): each row that holds one, with the row's own
+    name (its first text cell) and the cells that hold it. A start or completion date written on an asset's row is not a period
+    column; a column of balances headed by that month is."""
+    import openpyxl
+    from openpyxl.utils import get_column_letter
+    wanted = {(int(m[:4]), int(m[5:7])) for m in months}
+    out = [f"WHERE {sheet}: {', '.join(sorted(months))}"]
+    book = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    try:
+        if sheet not in book.sheetnames:
+            return out + ["  sheet not found"]
+        shown = 0
+        for n, row in enumerate(book[sheet].iter_rows(values_only=True, max_col=max_cols), 1):
+            if n > max_rows:
+                break
+            hits = [(i, cell) for i, cell in enumerate(row) if cell is not None and wanted & set(tokens(cell))]
+            if not hits:
+                continue
+            name = next((str(c).strip() for c in row if isinstance(c, str) and c.strip() and not tokens(c)), "")
+            out.append(f"  row {n:>4} '{re.sub(chr(10), ' ', name)[:18]}': " + "; ".join(
+                f"{get_column_letter(i + 1)}{n}={re.sub(chr(10), ' ', str(c))[:20]!r}" for i, c in hits[:4]))
+            shown += 1
+            if shown >= limit:
+                out.append("  ... (more rows)")
+                break
+        if not shown:
+            out.append("  no row found")
+    finally:
+        book.close()
+    return out
+
+
 def extractor_columns(session: Any, sheet: str, limit: int = 24) -> List[str]:
     """What the extractor took as the date of each column of a sheet: Excel column, stage, date it gave, header text it read."""
     from openpyxl.utils import get_column_letter

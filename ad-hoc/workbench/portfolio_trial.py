@@ -6,7 +6,8 @@ offline gate runs once for all of them.
     python ad-hoc/workbench/portfolio_trial.py --dir databooks --arms checked,pro --max-cost-per-book 12 \\
         --flash <provider::model> --pro <provider::model> --i-accept-paid-calls                      PAID
 
-    python ad-hoc/workbench/portfolio_trial.py --dir databooks --audit --entities A,B                free: date audit and gap count of each book, read as the trial reads it
+    python ad-hoc/workbench/portfolio_trial.py --dir databooks --audit [--where] --entities A,B     free: date audit and gap count of each book, read as the trial reads it;
+                                                                                                     --where: what the flagged months are (the row's name beside each)
     python ad-hoc/workbench/portfolio_trial.py --dir databooks --recheck                             free: the verifier as it is
                                                                                                      now, over those runs' drafts
 
@@ -19,6 +20,7 @@ Hidden sheets are neither counted nor read. Each book writes its own trial files
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -134,8 +136,21 @@ def recheck_all(found: List[Dict[str, Any]], out_dir: Optional[Path] = None, che
     return out
 
 
+def flagged_months(lines: List[str]) -> List[Any]:
+    """[(sheets, months)] from an audit's lines: the sheets of a 'N sheet(s) to check' group and the months it says are written
+    often there and used by no account."""
+    out, names = [], []
+    for line in lines:
+        head = re.match(r"\d+ sheet\(s\) to check: (.+?)(?: \(\+\d+ more\))?$", line)
+        if head:
+            names = [n.strip() for n in head.group(1).split(", ") if n.strip()]
+        elif "months written 2+ times in header rows that no account uses" in line and names:
+            out.append((names, re.findall(r"\d{4}-\d{2}", line)))
+    return out
+
+
 def audit_all(found: List[Dict[str, Any]], load: Optional[Callable[..., Any]] = None, audit: Optional[Callable[..., List[str]]] = None,
-              gaps: Optional[Callable[..., List[str]]] = None) -> List[str]:
+              gaps: Optional[Callable[..., List[str]]] = None, where: Optional[Callable[..., List[str]]] = None) -> List[str]:
     """Free, no model call: each pick read exactly as the paid trial reads it (same workbook, same Financials sheet), then the
     date audit (period_audit.py: does every account's period label agree with the dates written on its own sheet) and how many
     accounts have something their evidence does not say (gap_probe.py). The paid run on a book whose dates are mislabelled is
@@ -153,8 +168,12 @@ def audit_all(found: List[Dict[str, Any]], load: Optional[Callable[..., Any]] = 
                                       financials_from=str(g["rollup"]) if r["sheet"] else "", financials_sheet=r["sheet"] or "")
             try:
                 session, params = load(args)
-                out.extend(audit(session, params))
+                lines = audit(session, params)
+                out.extend(lines)
                 out.append(gaps(session)[0])
+                for names, months in (flagged_months(lines) if where else []):
+                    for name in names:
+                        out.extend(where(params["workbook"], name, months))
             except Exception as exc:                                              # noqa: BLE001
                 out.append(f"could not be read: {type(exc).__name__}: {exc}")
     return out
@@ -172,6 +191,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--i-accept-paid-calls", action="store_true")
     ap.add_argument("--recheck", action="store_true", help="free: re-verify the newest paid trial of each pick with the code as it is now")
     ap.add_argument("--audit", action="store_true", help="free: before a paid run, the date audit and the gap count of each pick, read as the trial reads it")
+    ap.add_argument("--where", action="store_true", help="with --audit: for each sheet it flags, the rows that write the months no account uses, with the row's name")
     ap.add_argument("--untried", action="store_true", help="pick only entities no paid trial has run on (acceptance books)")
     args = ap.parse_args(argv)
     import agent_acceptance as A
@@ -184,7 +204,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.audit:
         import warnings
         warnings.filterwarnings("ignore")
-        print("\n".join(audit_all(found)))
+        import period_audit as PA
+        print("\n".join(audit_all(found, where=PA.where_months if args.where else None)))
         return 0
     if not args.i_accept_paid_calls:
         print("free listing only; add --i-accept-paid-calls to run the books above")
