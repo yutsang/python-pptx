@@ -246,9 +246,25 @@ def attached_period(text: str, start: int, end: int, mentions: List[Dict[str, An
     before = [m for m in mentions if m["end"] <= start and "。" not in text[m["end"]:start]]
     # "2023年和2024年…分别调减614.5万元和826.9万元": the n-th amount after 分别 is the n-th period before it
     split = text.rfind("分别", 0, start)
-    if split >= 0 and "。" not in text[split:start]:
-        listed = sorted((m for m in before if m["end"] <= split), key=lambda m: m["start"])
-        series = [sp for sp in text_amounts(text) if sp["start"] > split and "。" not in text[split:sp["start"]]]
+    # A clause ends at 。 or ； : 分别 binds the amounts of its own clause to the periods of its own clause, or, where the clause names
+    # none ("…；广告及推广费用分别为0.8万元、1.9万元、3.7万元"), to the list the nearest earlier clause gave. Before 2026-11-17 the amounts
+    # counted ran to the sentence's end and the periods back to its start: a second 分别 clause (six amounts for three periods) switched
+    # the rule off and every amount of the first was read under the last period, and three clauses of one period and three lines each
+    # (a 3x3 table in one sentence) switched it on wrongly, reading the third clause's amounts under the first clause's years.
+    if split >= 0 and not re.search(r"[。；;]", text[split:start]):
+        boundaries = [m.end() for m in re.finditer(r"[。；;]", text[:split])]
+        clause_start = boundaries[-1] if boundaries else 0
+        listed = sorted((m for m in before if clause_start <= m["start"] and m["end"] <= split), key=lambda m: m["start"])
+        if not listed:                 # a clause with no period of its own takes the list of the nearest earlier clause that has one
+            edges = [0] + boundaries
+            for lo, hi in zip(reversed(edges[:-1]), reversed(edges[1:])):
+                own = sorted((m for m in before if lo <= m["start"] and m["end"] <= hi), key=lambda m: m["start"])
+                if len(own) >= 2:
+                    listed = own
+                    break
+        stop = re.search(r"[。；;]|分别", text[split + 2:])
+        limit = split + 2 + stop.start() if stop else len(text)
+        series = [sp for sp in text_amounts(text) if split < sp["start"] < limit]
         index = next((i for i, sp in enumerate(series) if sp["start"] == start), None)
         if len(listed) >= 2 and index is not None and len(series) == len(listed):
             return listed[index]

@@ -1598,6 +1598,51 @@ class ActionableRefusals(unittest.TestCase):
         self.assertIn(f"'乙公司' is {ref(c, P2, '乙公司')} (300,000.00 yuan): cite that", message)
 
 
+class SeveralClausesWithFenbie(unittest.TestCase):
+    """分别 binds the amounts of its own clause to the periods of its own clause (or of the nearest earlier clause that has a list).
+    Two portfolio books (2026-11-17) had correct sentences refused: a second 分别 clause after ； switched the rule off and the first
+    clause was read under its last period; three clauses of one period and three lines each switched it on wrongly."""
+    Q0, Q1, Q2 = "2024-12-31", "2025-12-31", "2026-06-30"
+
+    def check(self, rows, account, text, lines):
+        c = build(rows=rows, notes=[], statement="IS", periods=(self.Q0, self.Q1, self.Q2), account=account)
+        refs = [ref(c, p, line) for line in lines for p in (self.Q0, self.Q1, self.Q2)]
+        return verdict(text, c, refs, [self.Q0, self.Q1, self.Q2])
+
+    SALES = [("代理及佣金", "detail", {"2024-12-31": 217000, "2025-12-31": 128000, "2026-06-30": 94000}),
+             ("广告及推广费用", "detail", {"2024-12-31": 8000, "2025-12-31": 19000, "2026-06-30": 37000}),
+             ("Total", "total", {"2024-12-31": 225000, "2025-12-31": 147000, "2026-06-30": 131000})]
+    INCOME = [("租赁费", "detail", {"2024-12-31": 3631000, "2025-12-31": 2301000, "2026-06-30": 1483000}),
+              ("物业费", "detail", {"2024-12-31": 1600200, "2025-12-31": 1014000, "2026-06-30": 653000}),
+              ("能耗收入", "detail", {"2024-12-31": 674000, "2025-12-31": 192000, "2026-06-30": 286000}),
+              ("Total", "total", {"2024-12-31": 5905200, "2025-12-31": 3507000, "2026-06-30": 2422000})]
+    TWO = "销售费用主要为代理及佣金，2024年度、2025年度、2026年1-6月分别为{a}；广告及推广费用分别为{b}。"
+    MATRIX = ("工作簿中营业收入明细（未含审计调整）显示：2024年度租赁费363.1万元、物业费160.0万元、能耗收入67.4万元；"
+              "2025年度分别为{y25}、101.4万元、19.2万元；2026年1-6月分别为{y26}、65.3万元、28.6万元。")
+
+    def test_two_clauses_each_with_its_own_series_pass_when_right(self):
+        text = self.TWO.format(a="21.7万元、12.8万元、9.4万元", b="0.8万元、1.9万元、3.7万元")
+        v = self.check(self.SALES, "销售费用", text, ["代理及佣金", "广告及推广费用"])
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+
+    def test_the_first_clause_swapped_is_still_caught(self):
+        text = self.TWO.format(a="9.4万元、12.8万元、21.7万元", b="0.8万元、1.9万元、3.7万元")
+        self.assertIn("WRONG_PERIOD", codes(self.check(self.SALES, "销售费用", text, ["代理及佣金", "广告及推广费用"])))
+
+    def test_the_second_clause_inherits_the_first_clauses_periods_and_is_held_to_them(self):
+        text = self.TWO.format(a="21.7万元、12.8万元、9.4万元", b="3.7万元、1.9万元、0.8万元")
+        self.assertIn("WRONG_PERIOD", codes(self.check(self.SALES, "销售费用", text, ["代理及佣金", "广告及推广费用"])))
+
+    def test_a_table_in_one_sentence_one_period_per_clause_passes_when_right(self):
+        v = self.check(self.INCOME, "营业收入", self.MATRIX.format(y25="230.1万元", y26="148.3万元"), ["租赁费", "物业费", "能耗收入"])
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+
+    def test_a_figure_under_the_wrong_clauses_period_is_still_caught(self):
+        for y25, y26 in (("230.1万元", "363.1万元"), ("148.3万元", "148.3万元")):
+            v = self.check(self.INCOME, "营业收入", self.MATRIX.format(y25=y25, y26=y26), ["租赁费", "物业费", "能耗收入"])
+            self.assertIn("WRONG_PERIOD", codes(v), (y25, y26))
+
+
 def self_text():
     return "2025年12月31日应收账款余额130.0万元，主要系租金回款延迟所致"
 
