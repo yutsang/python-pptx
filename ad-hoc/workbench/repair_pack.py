@@ -107,6 +107,13 @@ def pack(session: Dict[str, Any], width: int = 140) -> List[str]:
             out.extend(left)
             if not left and rounds:          # an account-level refusal (a required figure, a note left unaddressed) has no sentence to show
                 out.append(f"      last refusal: {str(rounds[-1].get('feedback') or '')[:600]}")
+                # what the draft that was left says and cites: a note left unaddressed is judged against these
+                for n, c in enumerate(cands[a].get("claims") or []):
+                    out.append(f"      draft [{n}] cites {', '.join(map(str, (c.get('cites') or []) + (c.get('cause_cites') or []))) or '-'}: "
+                               f"{str(c.get('text') or '')[:width]}")
+                kept = [f for f in cands[a].get("flags") or [] if f.get("kind") in ("unresolved", "deferred_note")]
+                if kept:
+                    out.append("      flags: " + " | ".join(f"{f['kind']} {f.get('ref') or ''} {str(f.get('text') or '')[:100]}" for f in kept[:4]))
             for w in s["rewrites"][:3]:
                 if w.get("rewrote"):
                     out.append(f"      step {w.get('step')} the writer's rewrite: " + " | ".join(str(t)[:width] for t in w["rewrote"][:2]))

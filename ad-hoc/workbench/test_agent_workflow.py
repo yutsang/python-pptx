@@ -1023,6 +1023,21 @@ class PreparedWrite(unittest.TestCase):
         # SOURCE_GAP (the tab says nothing on receivables' ageing) is always on and is not what this test is about
         self.assertEqual([f.code for f in review_findings(work.source, [ACCOUNT]) if f.code != "SOURCE_GAP"], ["HUMAN_CHECK"])
 
+    def test_a_verified_sentence_that_writes_the_figure_of_the_note_about_the_same_thing_has_stated_the_note(self):
+        """2026-11-17, one of six books: the adjustment a note gives was written in a verified sentence that did not cite the note,
+        and the writer was told three rounds running to cite it. Writing the figure about the same thing is stating it."""
+        must = [{"ref": "N3", "why": "adjustment of 27% of the balance", "text": "示意性调整 | 2024年及2025年调减应付账款111,000元",
+                 "amounts": [111000.0], "account": "应付账款"}]
+        ok = {"verdicts": [{"verdict": "verified"}]}
+        said = [{"text": "2024年及2025年另有示意性调整，各调减应付账款11.1万元。", "cites": ["D4"]}]
+        self.assertEqual(C.AgentController._unaddressed(must, said, ok, []), [])
+        other = [{"text": "2024年及2025年另有示意性调整，各调减应付账款12.5万元。", "cites": ["D4"]}]
+        self.assertEqual([m["ref"] for m in C.AgentController._unaddressed(must, other, ok, [])], ["N3"], "another figure is not it")
+        elsewhere = [{"text": "应付账款期末余额11.1万元，主要为供应商货款。", "cites": ["F1"]}]
+        self.assertEqual([m["ref"] for m in C.AgentController._unaddressed(must, elsewhere, ok, [])], ["N3"], "the figure of something else")
+        self.assertEqual([m["ref"] for m in C.AgentController._unaddressed(must, said, {"verdicts": [{"verdict": "failed"}]}, [])], ["N3"],
+                         "a sentence the verifier refused states nothing")
+
     def test_a_material_note_stated_with_its_ref_is_not_deferred(self):
         def state(system, user, n):
             view = writer_view(user)

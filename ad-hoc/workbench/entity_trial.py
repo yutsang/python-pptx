@@ -377,7 +377,9 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
             for f in (data.get("delivery") or {}).get("findings") or []:
                 findings[f.get("code")] = findings.get(f.get("code"), 0) + 1
             result.update(deck=_rel(data.get("path") or ""), export_ok=bool(exported.get("ok")), export_error=(exported.get("error") or {}).get("code"),
-                          delivery=(data.get("delivery") or {}).get("status"), findings=findings)
+                          delivery=(data.get("delivery") or {}).get("status"), findings=findings,
+                          blockers=[{"code": f.get("code"), "account": f.get("account") or "", "message": str(f.get("message") or "")[:160]}
+                                    for f in (data.get("delivery") or {}).get("findings") or [] if f.get("severity") == "blocked"])
         # drafts the gate did not accept, carried in the deck with their rejected sentences marked (export.py, ACCOUNT_NOT_ACCEPTED)
         marked = {"accounts": 0, "red": 0, "orange": 0}
         for key in T.drafts_to_mark(work.source):
@@ -724,6 +726,8 @@ def summary_text(report: Dict[str, Any]) -> str:
                                      for s_, x in o["sections"].items()))
         if res.get("findings"):
             lines.append(f"           deck findings {res['findings']}")
+        for b_ in res.get("blockers") or []:
+            lines.append(f"           deck blocked by {b_['code']}{' ' + b_['account'] if b_['account'] else ''}: {b_['message']}")
         if b.get("calls_without_provider_usage"):
             lines.append(f"           {b['calls_without_provider_usage']} call(s) without provider usage (estimated, not in the columns above)")
         if (b.get("cached_input_pricing") or "").startswith(tuple("0123456789")):

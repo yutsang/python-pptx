@@ -507,6 +507,61 @@ _WORKBOOK_META_RE = re.compile(r"隐藏(?:的)?(?:工作表|表|页)|(?:工作)?
 _ADJUSTMENT_CAUSE_RE = re.compile(r"(?P<why>主要系|主要因|主要由于|由于|系|因)[^，。；]{0,6}?(?:管理层|审计|示意性)?调整(?:调增|调减|增加|减少)?")
 _MOVE_WORD_RE = re.compile(r"(?:增加|减少|上升|下降|增长|下滑)\s*(?:了|约)?\s*$")
 
+#: what a reason clause may hold besides the name of a line and its figure: the words of a movement and of a balance
+_DRIVER_FILLER = re.compile(r"新增|增加|增长|上升|上涨|减少|下降|下滑|降低|余额|金额|账面|本期|当期|期末|年末|较上年|较上期|所致|导致|合计|共计|约为?|为|了|的|万元|亿元|元|主要|其中|其|及|和|与|、")
+_BARE_SYSTEM_RE = re.compile(r"[，,]\s*(?:主要)?系(?![统列])")
+
+
+def _line_driver_only(text: str, contract: EvidenceContract, account: str, claim_periods: Iterable[str]) -> Optional[str]:
+    """A sentence whose only reason is the movement of one of the account's own lines ("较上年末增加4.86万元，主要因预提成本新增4.9万元"):
+    every reason clause names a line of the tab and writes only figures of that line (its balance in a period, or its change between
+    two), and says nothing else. That is a statement of which line moved, which the databook shows, not a cause that a note must give.
+    Returns the line named, or None. With 主要 the line's change must be at least half of the account's, as far as both are known.
+    Before 2026-11-17 such a clause was refused as an unsupported cause; flash kept it through three repair rounds (a book of six)."""
+    if _FORWARD_RE.search(text):
+        return None
+    marks = [m.end() for m in _CAUSE_RE.finditer(text)] + [m.end() for m in _BARE_SYSTEM_RE.finditer(text)]
+    if not marks:
+        return None
+    lines: Dict[str, Dict[str, float]] = {}
+    for f in contract.facts:
+        if f["role"] == ROLE_COMPONENT and f.get("line") and f.get("value") is not None:
+            lines.setdefault(_bare(f["line"]), {})[f["period"]] = f["value"]
+    named: Optional[str] = None
+    for at in marks:
+        end = next((i for i in range(at, len(text)) if text[i] in "，,。；;"), len(text))
+        clause = text[at:end]
+        found = [lab for lab in lines if lab != account and any(len(n) >= 2 and n in clause for n in {lab, lab.split("-")[-1]})]
+        if not found:
+            return None
+        lab = max(found, key=len)
+        spans = text_amounts(clause)
+        if not spans:
+            return None
+        series = lines[lab]
+        ordered = sorted(series)
+        allowed = [(abs(v), 0.0) for v in series.values()] + [(abs(b - a), 0.0) for a, b in zip((series[p] for p in ordered), (series[p] for p in ordered[1:]))]
+        for sp in spans:
+            if not any(abs(sp["value"] - v) <= sp["tolerance"] for v, _ in allowed):
+                return None
+        rest = clause
+        for sp in sorted(spans, key=lambda x: -x["start"]):
+            rest = rest[:sp["start"]] + rest[sp["end"]:]
+        for n in {lab, lab.split("-")[-1]}:
+            rest = rest.replace(n, "")
+        if len(re.findall(r"[\u4e00-\u9fff]", _DRIVER_FILLER.sub("", rest))) > 1:
+            return None
+        if text[max(0, at - 4):at].find("主要") >= 0:
+            periods = sorted(p for p in claim_periods if p in contract.periods)[-2:]
+            if len(periods) == 2 and contract.total(periods[0]) is not None and contract.total(periods[1]) is not None:
+                whole = contract.total(periods[1]) - contract.total(periods[0])
+                part = series.get(periods[1], 0.0) - series.get(periods[0], 0.0)
+                if whole and abs(part) < 0.5 * abs(whole):
+                    return None
+        named = lab
+    return named
+
+
 
 def _plain_number(written: str) -> Optional[float]:
     try:
@@ -971,6 +1026,7 @@ def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict
         return "an increase" if signs == {1} else ("a decrease" if signs == {-1} else "no change")
 
     spans = text_amounts(text)
+    mentions = period_mentions(text)
 
     def by_written_amount(w: Dict[str, Any], truths: List[Dict[str, Any]]) -> Optional[set]:
         """The sign a direction word is bound to by the amounts written beside it, when several cited movements disagree:
@@ -980,7 +1036,19 @@ def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict
         gap = re.match(r"[\s了约为额度幅至到]{0,3}", text[w["end"]:])
         after = next((sp for sp in spans if w["end"] <= sp["start"] <= w["end"] + (gap.end() if gap else 0)), None)
         if after is not None:
-            hit = {_sign(t["value"]) for t in truths if abs(abs(t["value"]) - after["value"]) <= after["tolerance"]}
+            tied = [t for t in truths if abs(abs(t["value"]) - after["value"]) <= after["tolerance"]]
+            hit = {_sign(t["value"]) for t in tied}
+            if len(hit) > 1:
+                # a balance that went up by an amount and came back down by the same one: two movements of one size and opposite
+                # signs. The periods written between the amount before and this one tell which is meant ("2024年较2023年增加2.4万元，
+                # 2025年较2024年减少2.4万元"); before 2026-11-17 this was refused as unbound on four of six real books.
+                start = max([sp["end"] for sp in spans if sp["end"] <= after["start"]] + [0])
+                written = [m for m in mentions if m["start"] >= start and m["end"] <= after["start"]]
+                score = {id(t): sum(any(mention_matches(m, p) for m in written) for p in t.get("periods") or []) for t in tied}
+                best = max(score.values(), default=0)
+                narrowed = [t for t in tied if score[id(t)] == best] if best else tied
+                if len({_sign(t["value"]) for t in narrowed}) == 1:
+                    hit = {_sign(narrowed[0]["value"])}
             if hit:
                 return hit
             before = [sp for sp in spans if sp["end"] <= w["start"] and w["start"] - sp["end"] <= 16]
@@ -2057,10 +2125,10 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     up, down = _has(text, _UP), _has(text, _DOWN)
     if percents or up or down or cited_derived or _has(text, _ANNUAL_ANY):
         checked.add("arithmetic")
-    amount_truths = [{"line": "", "value": d["value"], "ref": d["ref"]}
+    amount_truths = [{"line": "", "value": d["value"], "ref": d["ref"], "periods": list(d.get("periods") or [])}
                      for d in cited_derived if d.get("kind") == KIND_MOVEMENT and d.get("value") is not None]
     amount_truths += [{"line": a["line"] if a["role"] in _LINE_ROLES else "", "value": b["value"] - a["value"],
-                       "ref": f"movement({a['ref']},{b['ref']})"} for a, b in pairs]
+                       "ref": f"movement({a['ref']},{b['ref']})", "periods": [a["period"], b["period"]]} for a, b in pairs]
     if True:
         # the sentence decides how a deduction line's share is read: a minus sign on any percentage means signed,
         # none means its size (as an unsigned share is accepted as the size above)
@@ -2260,6 +2328,9 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                      "wording is there and no contradiction was found; a person reads the note against it")
         elif notes and not related:
             fail("CAUSE_NOTE_UNRELATED", "causal", "the cited note(s) do not say what the sentence gives as the cause")
+        elif not notes and _line_driver_only(text, contract, account, claim_periods):
+            info("CAUSE_IS_LINE_MOVEMENT", "causal", "the reason given is the movement of one of the account's own lines "
+                 f"({_line_driver_only(text, contract, account, claim_periods)}), which the databook shows; no note is needed for it")
         elif not notes and claim["inference"]:
             info("CAUSE_INFERENCE", "causal", "stated as an inference: no note supports it; the deck marks it")
         elif not notes:

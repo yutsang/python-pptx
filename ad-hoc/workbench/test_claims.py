@@ -108,6 +108,67 @@ class MovementsOverPeriods(unittest.TestCase):
         self.assertEqual(cl._bare("'*甲物流科技(中国)有限公司"), "甲物流科技(中国)有限公司")
 
 
+class UpThenDownByTheSameAmount(unittest.TestCase):
+    """2026-11-17, the free pre-flight on four real books: a balance that rose by an amount and fell back by the same one has two
+    movements of one size and opposite signs. Each word is bound by the periods written before its amount, not by the size alone."""
+    P0 = "2023-12-31"
+
+    def setUp(self):
+        rows = [("甲公司", "detail", {self.P0: 1000000, P1: 1240000, P2: 1000000}),
+                ("Total", "total", {self.P0: 1000000, P1: 1240000, P2: 1000000})]
+        self.c = build(rows=rows, periods=(self.P0, P1, P2), notes=[])
+        cl.standard_derived(self.c)
+        self.moves = [d["ref"] for d in self.c.derived if d.get("kind") == cl.KIND_MOVEMENT]
+
+    def test_each_word_takes_the_movement_of_the_periods_written_before_its_amount(self):
+        for text in ("应收账款2024年度较2023年度增加24.0万元，2025年度较2024年度减少24.0万元。",
+                     "应收账款2024年末较2023年末增加24.0万元，2025年末较2024年末减少24.0万元。",
+                     "应收账款2024年12月31日较2023年12月31日增加24.0万元，2025年12月31日较2024年12月31日减少24.0万元。"):
+            v = verdict(text, self.c, self.moves, [self.P0, P1, P2], kind="movement")
+            self.assertEqual(v["verdict"], "verified", (text, v["findings"]))
+
+    def test_the_words_swapped_between_the_two_movements_are_a_sign_error(self):
+        v = verdict("应收账款2024年度较2023年度减少24.0万元，2025年度较2024年度增加24.0万元。", self.c, self.moves,
+                    [self.P0, P1, P2], kind="movement")
+        self.assertIn("SIGN_ERROR", codes(v), v["findings"])
+
+
+class AReasonThatIsTheMovementOfALine(unittest.TestCase):
+    """2026-11-17, six books, third paid run: 主要因预提成本新增4.9万元 names the account's own line and that line's figure. It says which
+    line moved, which the databook shows, and was refused three times as a cause with no note (flash kept it each time)."""
+
+    def setUp(self):
+        rows = [("预提成本", "detail", {P1: 0, P2: 48600}), ("仓库建造成本", "detail", {P1: 600000, P2: 600000}),
+                ("Total", "total", {P1: 600000, P2: 648600})]
+        self.c = build(rows=rows, notes=[], account="在建工程")
+        cl.standard_derived(self.c)
+        self.cites = [ref(self.c, P2, "预提成本"), ref(self.c, P1, "仓库建造成本")] + \
+            [d["ref"] for d in self.c.derived if d.get("kind") == cl.KIND_MOVEMENT]
+
+    def check(self, text):
+        return verdict(text, self.c, self.cites, [P1, P2], kind="movement")
+
+    def test_the_line_and_its_own_figure_as_the_reason_needs_no_note(self):
+        v = self.check("2025年末余额较2024年末增加4.86万元，主要因预提成本新增4.9万元。")
+        self.assertNotIn("CAUSE_UNSUPPORTED", codes(v), v["findings"])
+        self.assertIn("CAUSE_IS_LINE_MOVEMENT", {f["code"] for f in v["findings"]})
+
+    def test_a_reason_with_more_in_it_than_the_line_and_its_figure_still_needs_a_note(self):
+        v = self.check("2025年末余额较2024年末增加4.86万元，主要因预提成本新增4.9万元，系工程款延迟支付。")
+        self.assertIn("CAUSE_UNSUPPORTED", codes(v), v["findings"])
+        v = self.check("2025年末余额较2024年末增加4.86万元，主要因预提成本新增4.9万元及供应商调整合同价格所致。")
+        self.assertIn("CAUSE_UNSUPPORTED", codes(v), v["findings"])
+
+    def test_a_line_that_is_less_than_half_of_the_change_is_not_the_main_reason(self):
+        rows = [("预提成本", "detail", {P1: 0, P2: 48600}), ("仓库建造成本", "detail", {P1: 600000, P2: 1500000}),
+                ("Total", "total", {P1: 600000, P2: 1548600})]
+        c = build(rows=rows, notes=[], account="在建工程")
+        cl.standard_derived(c)
+        cites = [ref(c, P2, "预提成本")] + [d["ref"] for d in c.derived if d.get("kind") == cl.KIND_MOVEMENT]
+        v = verdict("2025年末余额较2024年末增加94.86万元，主要因预提成本新增4.9万元。", c, cites, [P1, P2], kind="movement")
+        self.assertIn("CAUSE_UNSUPPORTED", codes(v), v["findings"])
+
+
 class ReviewFindings20261109(unittest.TestCase):
     """Three kinds of wrong sentence a sentence-level review of the client file found accepted with no mark (2026-11-09)."""
 

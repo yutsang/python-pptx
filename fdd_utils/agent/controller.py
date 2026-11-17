@@ -889,19 +889,40 @@ class AgentController:
             if any(text.split("|")[-1].strip() and text.split("|")[-1].strip() in other["text"] for other in picked):
                 continue
             seen_labels.add(label)
-            picked.append({"ref": n["ref"], "why": why, "text": text[:160]})
+            picked.append({"ref": n["ref"], "why": why, "text": text[:160], "amounts": [round(a, 2) for a in amounts[:6]],
+                           "account": str(view.get("account") or "")})
             if len(picked) >= 8:
                 break
         return picked
 
     @staticmethod
+    def _stated_by_figure(m: Dict[str, Any], claims: List[Dict[str, Any]], outcome: Dict[str, Any]) -> bool:
+        """A verified claim that writes a figure the note gives, about what the note is about, has stated the note without citing it:
+        flash wrote the adjustment a note states three rounds running and was told each time to cite the note (2026-11-17, one of
+        six books). Both must hold: an amount of the sentence is one of the note's (within what its digits show), and the two
+        share at least two pairs of characters beyond the account's own name."""
+        verdicts = outcome.get("verdicts") or []
+        figures = [float(a) for a in m.get("amounts") or []]
+        if not figures:
+            return False
+        for n, c in enumerate(claims):
+            if n >= len(verdicts) or verdicts[n].get("verdict") not in ("verified", "verified_inference"):
+                continue
+            text = str(c.get("text") or "")
+            shared = (cl._bigrams(text) & cl._bigrams(str(m.get("text") or ""))) - cl._bigrams(str(m.get("account") or ""))
+            if any(abs(abs(sp["value"]) - f) <= sp["tolerance"] for sp in cl.text_amounts(text) for f in figures) and len(shared) >= 2:
+                return True
+        return False
+
+    @staticmethod
     def _unaddressed(must: List[Dict[str, str]], claims: List[Dict[str, Any]], outcome: Dict[str, Any], unresolved: List[str]) -> List[Dict[str, str]]:
-        """Must-address notes neither cited by a verified claim nor named in unresolved."""
+        """Must-address notes neither cited by a verified claim, nor stated by one (its figure written), nor named in unresolved."""
         verdicts = outcome.get("verdicts") or []
         cited = {r for n, c in enumerate(claims) if n < len(verdicts) and verdicts[n].get("verdict") in ("verified", "verified_inference")
                  for r in list(c.get("cites") or []) + list(c.get("cause_cites") or [])}
         named = {r for u in unresolved for r in re.findall(r"(?<![A-Za-z])N\d+(?!\d)", str(u))}
-        return [m for m in must if m["ref"] not in cited and m["ref"] not in named]
+        return [m for m in must if m["ref"] not in cited and m["ref"] not in named
+                and not AgentController._stated_by_figure(m, claims, outcome)]
 
     def _flags(self, account: str, view: Dict[str, Any], must: List[Dict[str, str]], claims: List[Dict[str, Any]],
                outcome: Dict[str, Any], unresolved: List[str], escalated: bool) -> List[Dict[str, Any]]:
@@ -912,7 +933,7 @@ class AgentController:
         verdicts = outcome.get("verdicts") or []
         cited = {r for c in claims for r in list(c.get("cites") or []) + list(c.get("cause_cites") or [])}
         for m in must:
-            if m["ref"] not in cited:
+            if m["ref"] not in cited and not self._stated_by_figure(m, claims, outcome):
                 flags.append({"kind": "deferred_note", "ref": m["ref"], "why": m["why"], "text": m["text"]})
         for n, v in enumerate(verdicts):
             codes = {f.get("code") for f in v.get("findings") or []}
@@ -1813,8 +1834,9 @@ class AgentController:
                                                      "when it is under 1万元"]
                         if unaddressed:
                             rejected.setdefault(len(claims), []).extend(
-                                f"NOTE_UNADDRESSED: {m['ref']} ({m['why']}) is in MUST ADDRESS; state it citing {m['ref']}, or name {m['ref']} "
-                                "in 'unresolved' with the reason" for m in unaddressed)
+                                f"NOTE_UNADDRESSED: {m['ref']} ({m['why']}: {str(m.get('text') or '')[:110]!r}) is in MUST ADDRESS; add a claim "
+                                f"that states what it says and lists {m['ref']} in its cites (a claim that is already verified takes {m['ref']} "
+                                f"in its cites when it is about this), or name {m['ref']} in 'unresolved' with the reason" for m in unaddressed)
                         codes = sorted(outcome.get("by_code") or {}) + (["REQUIRED_NOT_STATED"] if missing else []) + \
                             (["NOTE_UNADDRESSED"] if unaddressed else [])
                         record["feedback"] = " | ".join(o for objs in rejected.values() for o in objs)[:900]
