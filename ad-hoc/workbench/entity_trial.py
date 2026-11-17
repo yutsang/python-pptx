@@ -149,6 +149,18 @@ class _Bar:
             self.bar.close()
 
 
+#: the sentences a refusal's hint carries (claims.py), to count how often each was put in front of the writer without keeping its text
+_HINTS = {"nearest figure": "nearest figure in EVIDENCE", "unnamed lines": "Lines shown and not named", "line ref": "cite that for it"}
+
+
+def _repair_counts(repairs: List[Dict[str, Any]]) -> Dict[str, int]:
+    """{'rounds': n, 'nearest figure': k, ...}: how many repair rounds an account had and how many carried each hint. No text."""
+    out = {"rounds": len(repairs)}
+    for name, needle in _HINTS.items():
+        out[name] = sum(1 for r in repairs if needle in str(r.get("feedback") or ""))
+    return out
+
+
 def code_fingerprint() -> Dict[str, Any]:
     """sha256 of the code a trial depends on, line endings normalised: the company folder is not a git checkout, so this is how a
     run says which frozen version it used."""
@@ -286,6 +298,7 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                    "review_cost": ((d.get("by_purpose") or {}).get("review") or {}).get("cost"),
                    "fallback": (turn.report or {}).get("prepared_fallback"), "seeded": ((turn.report or {}).get("prepared") or {}).get("seeded"),
                    "research": (turn.report or {}).get("research"),
+                   "repairs": _repair_counts((turn.report or {}).get("repairs") or []),
                    "seconds": round(time.perf_counter() - clock[-1], 2)}
             per.append(row)
             result["_texts"][key] = {"text": cl.render_claims(c.claims) if c is not None else "", "accepted": bool(c is not None and c.accepted and c.validated),
@@ -661,6 +674,12 @@ def summary_text(report: Dict[str, Any]) -> str:
         gap_accounts = sum(1 for p in per_acc if (p.get("flags") or {}).get("source_gap"))
         gap_stops = sum(1 for p in per_acc if p.get("stop_reason") == "source_gap")
         stale_labels = sum(1 for p in per_acc if (p.get("flags") or {}).get("period_label_suspect"))
+        repaired = [p for p in per_acc if (p.get("repairs") or {}).get("rounds")]
+        if repaired:
+            hints = {k: sum((p["repairs"].get(k) or 0) for p in repaired) for k in _HINTS}
+            lines.append(f"           repair rounds: {len(repaired)} account(s), {sum(p['repairs']['rounds'] for p in repaired)} round(s); "
+                         f"accepted after repair {sum(1 for p in repaired if p.get('ok'))}; rounds that carried a hint: "
+                         + ", ".join(f"{k} {v}" for k, v in hints.items()))
         if looked or gap_accounts or gap_stops or stale_labels:
             lookups = sum(len(p["research"]) for p in looked)
             hits = sum(int(x.get("hits") or 0) for p in looked for x in p["research"])

@@ -199,6 +199,31 @@ class Round(unittest.TestCase):
         self.assertEqual(turn.report.get("prepared_fallback"), "账龄资料")
 
 
+class RepairRecord(unittest.TestCase):
+    """What each repair round was told is kept with the run, so a trial can count the rounds and the hints."""
+
+    _work = WF.PreparedWrite._work
+
+    def test_a_refused_sentence_leaves_its_message_in_the_report_and_the_hint_is_counted(self):
+        def fn(system, user, n):
+            view = writer_view(user)
+            if "REJECTED" in user:
+                return {"fix": [{"index": 1, "claim": amount_claim(view, P2, "2025年12月31日应收账款余额130.0万元")}]}
+            # 130.1万元 is within 1% of the balance the evidence has: a figure made by hand
+            return {"draft": {"claims": [amount_claim(view, P2, GOOD), amount_claim(view, P2, "2025年12月31日应收账款余额130.1万元")], "unresolved": []}}
+        turn = self._work(Writer(fn)).edit("撰写应收账款的段落", ACCOUNT)
+        repairs = turn.report["repairs"]
+        self.assertEqual(len(repairs), 1)
+        self.assertIn("the nearest figure in EVIDENCE is", repairs[0]["feedback"])
+        import entity_trial as E
+        self.assertEqual(E._repair_counts(repairs), {"rounds": 1, "nearest figure": 1, "unnamed lines": 0, "line ref": 0})
+
+    def test_a_first_draft_that_passes_has_no_repairs(self):
+        writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
+        turn = self._work(writer).edit("撰写应收账款的段落", ACCOUNT)
+        self.assertNotIn("repairs", turn.report)
+
+
 class PeriodLabels(unittest.TestCase):
     def flags(self, periods):
         controller = C.AgentController.__new__(C.AgentController)

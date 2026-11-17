@@ -2066,6 +2066,10 @@ class AgentController:
                                               unresolved, escalated=self._repaired_by_stronger()) + [
                     {"kind": "tool_loop", "text": f"written in the tool loop: {self._fallback_reason}"[:200]}]
                 run.report["flags"] = list(candidate.flags)
+        # what each repair round was told, kept with the run: a trial can then say whether a refusal's hint was shown and what came of it
+        repairs = [{"step": st.get("step"), "feedback": str(st["feedback"])[:600]} for st in run.steps if st.get("feedback")]
+        if repairs:
+            run.report["repairs"] = repairs
         run.usage = usage
         run.issues = [i.to_dict() for i in self.issues.values()]
         if not run.ok:
