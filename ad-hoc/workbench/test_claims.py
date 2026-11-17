@@ -195,6 +195,30 @@ class ARestThatNamesItsLinesInABracket(unittest.TestCase):
         self.assertIn("REST_NOT_REMAINDER", codes(v), v["findings"])
 
 
+class ADeckBalanceOfNilStatedWithTheDifference(unittest.TestCase):
+    """2026-11-17, three paid runs: the refusal NIL_NOT_PERMITTED says to state the deck's balance and the difference from the tab; a
+    sentence that did exactly that ("财务报表口径应付账款余额为0元，底稿明细合计为6.0万元，差异6.0万元") was refused again because 0元 is a nil word.
+    It held two decks on the same two accounts in each run."""
+
+    def setUp(self):
+        rows = [("甲公司", "detail", {P1: 60000, P2: 70000}), ("Total", "total", {P1: 0, P2: 70000})]
+        self.c = build(rows=rows, notes=[], account="应付账款", financials={P1: 0.0, P2: 70000.0},
+                       authority={P1: {"tab": 60000.0, "financials": 0.0}})
+        cl.standard_derived(self.c)
+        self.total = ref(self.c, P1)
+        self.diff = next(d["ref"] for d in self.c.derived if d.get("kind") == cl.KIND_DIFFERENCE and P1 in (d.get("periods") or [d.get("period")]))
+
+    def test_the_nil_deck_balance_stated_with_the_difference_is_right(self):
+        v = verdict("2024年12月31日财务报表口径应付账款余额为0元，底稿明细合计为6.0万元，差异6.0万元。", self.c, [self.total, self.diff], [P1])
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+
+    def test_calling_it_nil_without_the_difference_is_still_refused(self):
+        v = verdict("2024年12月31日应付账款余额为0元。", self.c, [self.total], [P1])
+        self.assertIn("NIL_NOT_PERMITTED", codes(v))
+        v = verdict("2024年12月31日应付账款余额为0元，差异6.0万元。", self.c, [self.diff], [P1])
+        self.assertIn("NIL_NOT_PERMITTED", codes(v), "the deck's balance is not cited")
+
+
 class ReviewFindings20261109(unittest.TestCase):
     """Three kinds of wrong sentence a sentence-level review of the client file found accepted with no mark (2026-11-09)."""
 

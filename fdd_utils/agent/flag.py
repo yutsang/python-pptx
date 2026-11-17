@@ -94,7 +94,10 @@ def research(config: Optional[Dict[str, Any]] = None) -> bool:
     agent.research_lookups read-only lookups (search_notes, get_account_components, adjustment_evidence, cross_account_evidence,
     read_source_block); what a search finds is filed as notes it may cite. When it still lacks something it does not hand the turn to
     the tool loop (0.3 to 0.9 yuan an account on the stronger model, one in four finished, 2026-11-09): the gap is written on the
-    candidate and shown to the reader as a source gap. Off until entity_trial.py (arm 'researched') is compared with arm 'flash'."""
+    candidate and shown to the reader as a source gap. Compared with arm 'flash' on six books (124 accounts, 2026-11-17): the writer asked
+    for no lookup at all (0 of 124), accepted accounts 120 against 120, accounts with a reason no note supports 20 against 22. Run
+    by hand on four local books, the queries of the 17 gaps they have found a remark for 9, of which one says anything (a management
+    remark on ageing): the workbooks mostly do not hold what the gaps ask for. Left off."""
     return bool(_agent_block(config).get("research"))
 
 

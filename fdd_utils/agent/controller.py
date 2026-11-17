@@ -899,8 +899,8 @@ class AgentController:
     def _stated_by_figure(m: Dict[str, Any], claims: List[Dict[str, Any]], outcome: Dict[str, Any]) -> bool:
         """A verified claim that writes a figure the note gives, about what the note is about, has stated the note without citing it:
         flash wrote the adjustment a note states three rounds running and was told each time to cite the note (2026-11-17, one of
-        six books). Both must hold: an amount of the sentence is one of the note's (within what its digits show), and the two
-        share at least two pairs of characters beyond the account's own name."""
+        six books; a second book, the same way, with 44.2万元 for 442.27千元 and only 调整 in common). Both must hold: an amount of the
+        sentence is one of the note's (within what its digits show), and the two share a pair of characters beyond the account's own name."""
         verdicts = outcome.get("verdicts") or []
         figures = [float(a) for a in m.get("amounts") or []]
         if not figures:
@@ -910,7 +910,7 @@ class AgentController:
                 continue
             text = str(c.get("text") or "")
             shared = (cl._bigrams(text) & cl._bigrams(str(m.get("text") or ""))) - cl._bigrams(str(m.get("account") or ""))
-            if any(abs(abs(sp["value"]) - f) <= sp["tolerance"] for sp in cl.text_amounts(text) for f in figures) and len(shared) >= 2:
+            if any(abs(abs(sp["value"]) - f) <= sp["tolerance"] for sp in cl.text_amounts(text) for f in figures) and len(shared) >= 1:
                 return True
         return False
 

@@ -1038,6 +1038,13 @@ class PreparedWrite(unittest.TestCase):
         self.assertEqual([m["ref"] for m in C.AgentController._unaddressed(must, said, {"verdicts": [{"verdict": "failed"}]}, [])], ["N3"],
                          "a sentence the verifier refused states nothing")
 
+    def test_a_figure_in_thousands_written_in_ten_thousands_is_the_figure_of_the_note(self):
+        must = [{"ref": "N2", "why": "adjustment of 14% of the balance", "text": "「2023」「示意性调整后」：长期应付款 +442.27千元",
+                 "amounts": [442270.0], "account": "长期应付款"}]
+        ok = {"verdicts": [{"verdict": "verified"}]}
+        said = [{"text": "2023年审计调整将股东借款利息代扣代缴税金44.2万元从其他应付款重分类至长期应付款。", "cites": ["N7"]}]
+        self.assertEqual(C.AgentController._unaddressed(must, said, ok, []), [])
+
     def test_a_material_note_stated_with_its_ref_is_not_deferred(self):
         def state(system, user, n):
             view = writer_view(user)

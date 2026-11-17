@@ -2112,6 +2112,15 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                 total = contract.total(p)
                 tf = _total_fact(contract, p)
                 diff = next((x for x in contract.derived if x.get("kind") == KIND_DIFFERENCE and p in (x.get("periods") or [x.get("period")])), None)
+                # "财务报表口径应付账款余额为0元，底稿明细合计为6.0万元，差异6.0万元": the deck's own balance is nil, the sentence cites it and
+                # states the difference from the tab. That is the way out this refusal names; it refused that sentence three runs in a row on two
+                # books (2026-11-17) because 0元 is a nil word.
+                cited_refs = {str(c.get("ref")) for c in cited}
+                if (total is not None and abs(total) <= 1.0 and tf is not None and tf["ref"] in cited_refs and diff is not None
+                        and diff["ref"] in cited_refs and diff.get("value") is not None
+                        and any(abs(abs(a["value"]) - abs(diff["value"])) <= a["tolerance"] for a in amounts)):
+                    info("NIL_AS_DECK_BALANCE", "binding", f"{p}: the deck's balance is nil and the sentence states the difference from the tab")
+                    continue
                 way = (f": the deck's balance for {p} is {total / 1e4:,.2f}万元" + (f" ({tf['ref']})" if tf else "")
                        + "; state that balance" + (f" and the difference from the tab ({diff['ref']})" if diff else "")
                        + ", and do not say the account was nil or first arose" if total is not None else "")
