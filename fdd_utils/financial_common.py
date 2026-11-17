@@ -161,7 +161,18 @@ def clean_english_placeholders(text: str) -> str:
     return cleaned_text.strip()
 
 
+#: whitespace as a header cell holds it: a line break inside the cell, a no-break or an ideographic space
+_CELL_WHITESPACE = re.compile(r"[\s 　​]+")
+
+
 def normalize_financial_date_label(date_str: Any) -> Any:
+    if isinstance(date_str, str) and re.search(r"[年月日]", date_str):
+        # A Chinese date broken across a line or spaced out ("2023年\n12月31日", "2023 年 12 月 31 日") is one date. Until
+        # 2026-11-17 none of these parsed, so the sheet's real date row scored zero hits and a row that did parse took its place:
+        # on one client book 15 of 21 source tabs got 2023-01-01, 2024-01-01, 2025-01-01 for year ends, and every sentence
+        # that named a date inherited the wrong one from evidence the verifier trusts. Only strings that name 年/月/日 are
+        # squeezed: a note that merely contains a space elsewhere is untouched.
+        date_str = _CELL_WHITESPACE.sub("", date_str)
     if isinstance(date_str, str):
         if re.fullmatch(r"FY\d{2}", date_str):
             year = int("20" + date_str[2:])

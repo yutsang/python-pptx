@@ -63,7 +63,8 @@ sys.path.insert(0, str(ROOT))
 import agent_acceptance as A  # noqa: E402
 
 OUT_DIR = ROOT / "fdd_utils" / "output" / "agent_trial"
-ARMS = ("pro_lead", "flash_lead", "mixed_lead", "pro", "flash", "mixed", "planned", "routed", "seeded", "reviewed", "checked", "loop")
+ARMS = ("pro_lead", "flash_lead", "mixed_lead", "pro", "flash", "mixed", "planned", "routed", "seeded", "reviewed", "checked", "loop",
+        "researched")
 # the model leads (understands, decides, checks); Python reads, computes and verifies as a tool. pro / flash / mixed are the
 # Python-gated prepared write, kept to compare against; seeded / reviewed were measured 2026-11-08 and dropped
 DEFAULT_ARMS = "pro_lead,flash_lead,mixed_lead"
@@ -102,6 +103,10 @@ def arm_setup(cfg: Dict[str, Any], name: str, args: argparse.Namespace) -> Dict[
     if name == "checked":                        # the cheaper writes alone; the stronger reads each verified paragraph once and
         # marks the sentences it objects to (agent.review_meaning: mark), changing nothing; it never takes over a write
         return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": True, "escalate_after": 99, "review": "mark"}
+    if name == "researched":                     # the cheaper writes alone, as in 'flash', and is told what its evidence lacks (a loan's rate and
+        # maturity, receivables' ageing, a depreciation policy, what cash is made of); it may look ONCE, within a cap, with read-only
+        # tools, and what it does not find reaches the reader as a source gap (agent.research). Compared with 'flash' on the same books.
+        return {"primary": cheap, "escalation": None, "routing": "single", "prepare": True, "research": True}
     if name == "loop":
         return {"primary": cheap, "escalation": strong, "routing": "escalate", "prepare": False}
     raise ValueError(f"unknown arm {name!r} (arms: {', '.join(ARMS)})")
@@ -120,6 +125,7 @@ def arm_config(cfg: Dict[str, Any], setup: Dict[str, Any]) -> Dict[str, Any]:
     agent["review_meaning"] = setup.get("review") if setup.get("review") == "mark" else bool(setup.get("review"))
     agent["lead_write"] = bool(setup.get("lead"))
     agent["plan_first"] = bool(setup.get("plan"))
+    agent["research"] = bool(setup.get("research"))
     return out
 
 
@@ -277,6 +283,7 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                    "review_calls": ((d.get("by_purpose") or {}).get("review") or {}).get("calls", 0),
                    "review_cost": ((d.get("by_purpose") or {}).get("review") or {}).get("cost"),
                    "fallback": (turn.report or {}).get("prepared_fallback"), "seeded": ((turn.report or {}).get("prepared") or {}).get("seeded"),
+                   "research": (turn.report or {}).get("research"),
                    "seconds": round(time.perf_counter() - clock[-1], 2)}
             per.append(row)
             result["_texts"][key] = {"text": cl.render_claims(c.claims) if c is not None else "", "accepted": bool(c is not None and c.accepted and c.validated),
@@ -647,6 +654,16 @@ def summary_text(report: Dict[str, Any]) -> str:
         flagged = sum(1 for p in res.get("per_account") or [] if any(k in (p.get("flags") or {}) for k in
                                                                        ("deferred_note", "cause_not_proven", "note_wording_unchecked")))
         lines.append(f"           material notes: {stated} stated, {deferred} deferred (flagged), of {must}; accounts with a human check: {flagged}")
+        per_acc = res.get("per_account") or []
+        looked = [p for p in per_acc if p.get("research")]
+        gap_accounts = sum(1 for p in per_acc if (p.get("flags") or {}).get("source_gap"))
+        gap_stops = sum(1 for p in per_acc if p.get("stop_reason") == "source_gap")
+        stale_labels = sum(1 for p in per_acc if (p.get("flags") or {}).get("period_label_suspect"))
+        if looked or gap_accounts or gap_stops or stale_labels:
+            lookups = sum(len(p["research"]) for p in looked)
+            hits = sum(int(x.get("hits") or 0) for p in looked for x in p["research"])
+            lines.append(f"           research: {len(looked)} account(s) looked, {lookups} lookup(s), {hits} hit(s); source gap shown on {gap_accounts} account(s); "
+                         f"stopped with no paragraph for a gap: {gap_stops}; period labels suspect: {stale_labels}")
         mk = res.get("marked") or {}
         if mk.get("accounts"):
             lines.append(f"           not accepted but in the draft, rejected sentences marked: {mk['accounts']} account(s), "

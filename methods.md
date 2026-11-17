@@ -372,6 +372,30 @@ if a person accepted the draft; a review that did not happen asks for one
 (`REVIEW_PENDING`). A review is recorded as a call with purpose `review`; it is
 not an escalation and does not count as one.
 
+**Research round (`agent.research`, off by default).** Four meanings a reader expects in a paragraph are tied to the kind of
+account (`agent/knowledge.py`, decided from the account's name): a loan's rate and maturity, the ageing of trade and other
+receivables and payables, the depreciation or amortisation policy of a fixed or intangible asset or a long-term deferred
+expense, and what a cash balance is made of. The controller looks for each in the free text the writer is shown (the notes
+and the names of the detail lines) and lists what is absent as NOT IN EVIDENCE in the writer's prompt, with the words to
+search for. The match is lexical: a word present does not prove the paragraph states the term right (the verifier does that),
+and a word absent does not prove the workbook lacks it (the lookup does that). With the switch on, the writer may reply with
+`look`, once, up to `agent.research_lookups` (default 3, at most 6) lookups in all, from `search_notes`,
+`get_account_components`, `adjustment_evidence`, `cross_account_evidence` and `read_source_block` only, none of which writes
+or calls a model; a tool outside that list is refused and still counted, and hidden sheets are not read. A search names the
+account, so each hit is filed on it as a note (an N ref) the next draft can cite; the evidence is read again and the next
+prompt carries the lookups' answers. A writer that says the evidence is not enough is answered once (write from what there
+is, name the gap under `unresolved`); the second time the turn ends `source_gap` with no paragraph. Research mode never hands
+the turn to the tool loop. What is still absent when the paragraph is finished is written on the candidate (`source_gap`,
+and `research_open` for what the writer said was missing) and exported as a `SOURCE_GAP` finding (review): the person
+checking the deck sees that the workbook does not give the term, not that the paragraph forgot it. Separately and always on,
+two or more period labels that are 1 January set the flag `period_label_suspect` (a year taken for a period end).
+
+Where the dates of a source tab come from. A Chinese date broken across a line or spaced out ("2023年\n12月31日", "2023 年 12 月
+31 日") is one date, and a date written with dots is a date when the row is being chosen. Among the rows near the stage row, one
+that holds any date that is not a 1 January beats a row of year starts however many cells that row has (a helper row of date
+cells formatted as a bare year); among the rest the row with more dates wins, as before. `ad-hoc/workbench/test_date_labels.py`
+holds the shapes; `period_audit.py` is the free check of a real workbook.
+
 **A whole entity from zero.** `WorkSession.draft_entity()` writes every account
 the selection admitted (the fixed pipeline's own rule, decided by Python), one
 prepared write each, with a fresh memory per account so no account's answer is

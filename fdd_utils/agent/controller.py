@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..ai import claims as cl
+from . import knowledge as K
 from . import routing as R
 from . import tools as T
 from .lengths import written_length
@@ -62,6 +63,9 @@ STOP_SESSION = "budget_session"      # a cap that spans turns, roles and attempt
 STOP_SEMANTIC_BLOCKED = "semantic_blocked"
 #: a review was due (Python found something to judge) and did not happen: the call failed or the reply was not in the protocol
 STOP_REVIEW_PENDING = "review_pending"
+#: research mode: the writer asked for evidence twice and the one round of lookups did not settle it. No paragraph is written; the
+#: account is left for a person with what was missing named, instead of a tool loop that finished one account in four
+STOP_SOURCE_GAP = "source_gap"
 
 Model = Callable[[str, str, int], Dict[str, Any]]
 
@@ -303,6 +307,17 @@ WRITER_PROTOCOL = (
     '  {"draft": {"claims": [...], "unresolved": ["..."]}}       the paragraph, as claims\n'
     '  {"need_evidence": "<what is missing and why>"}           only if the evidence below cannot support a paragraph at all\n'
 )
+LOOK_PROTOCOL = (
+    '  {"look": [{"tool": "<name>", "args": {...}}, ...]}       look in the workbook, ONCE, only for what NOT IN EVIDENCE lists\n'
+    "Lookups (read-only, at most {n} in all): search_notes(query, account), get_account_components(account, period, offset),\n"
+    "adjustment_evidence(account), cross_account_evidence(account), read_source_block(account, ref | sheet, row). What they return is\n"
+    "shown to you next; a search hit is filed as a note (N ref) you may cite. If the workbook does not have it, say so in 'unresolved'.\n"
+    "Do not state a term from habit.\n"
+)
+#: the reads a prepared write's writer may ask for (investigate.py); none of them writes, calls a model or leaves the workbook
+RESEARCH_TOOLS = ("search_notes", "get_account_components", "adjustment_evidence", "cross_account_evidence", "read_source_block")
+#: what one lookup's answer may take of the next prompt
+RESEARCH_RESULT_CHARS = 1600
 REPAIR_PROTOCOL = (
     "Reply with exactly ONE JSON object and nothing else:\n"
     '  {"fix": [{"index": <n>, "claim": {...}}, {"index": <n>, "drop": "<why; it goes to unresolved>"}],\n'
@@ -485,8 +500,16 @@ def system_prompt(mode: str, session: SourceSession, language: str, remembered: 
 class AgentController:
     def __init__(self, session: SourceSession, model: Model, *, budget: Optional[Budget] = None, language: Optional[str] = None,
                  memory: Optional[Memory] = None, prepare: bool = False, seed: bool = False, review: bool = False,
-                 lead: bool = False, plan: bool = False, tool_loop_on_repeat: bool = False, review_mark: bool = False):
+                 lead: bool = False, plan: bool = False, tool_loop_on_repeat: bool = False, review_mark: bool = False,
+                 research: bool = False, research_lookups: int = 3):
         self.session = session
+        #: prepared write only (agent.research): the writer is told what its evidence lacks and may look once, within a cap
+        self.research = research
+        self.research_lookups = max(0, int(research_lookups))
+        self._lookups_left = self.research_lookups
+        self._research_log: List[str] = []
+        self._research_open: List[str] = []
+        self._asked_for_evidence = 0
         #: prepared write only: the escalation model reads the evidence once and plans; the primary writes (agent.plan_first)
         self.plan = plan
         self.tool_loop_on_repeat = tool_loop_on_repeat
@@ -858,6 +881,17 @@ class AgentController:
                 flags.append({"kind": "unresolved", "text": str(u)[:200]})
         if view.get("material_not_shown"):
             flags.append({"kind": "evidence_cut", "text": f"{view['material_not_shown']} detail line(s) of at least 1% were not shown to the writer"})
+        # period labels that are year starts: a year taken for a period end (the client book where a helper row of 2023-01-01 cells won
+        # the date row of 15 of 21 tabs, 2026-11-10). The extractor now prefers a row of period ends; this is for the next way to fail.
+        year_starts = [p for p in view.get("periods") or [] if str(p).endswith("-01-01")]
+        if len(year_starts) >= 2:
+            flags.append({"kind": "period_label_suspect", "text": f"{len(year_starts)} period labels are 1 January ({', '.join(year_starts[:3])}); "
+                                                                 "compare them with the sheet's own header before trusting any date in the text"})
+        if self.research and view.get("periods"):
+            for g in K.missing(account, view):
+                flags.append({"kind": "source_gap", "need": g["need"], "text": f"not found in the workbook's notes for this account: {g['label']}"})
+        for text in self._research_open:
+            flags.append({"kind": "research_open", "text": f"the writer said the evidence was not enough: {text}"[:200]})
         if escalated:
             flags.append({"kind": "escalated", "text": "the cheaper model's draft was rejected; the stronger model repaired it"})
         return flags
@@ -921,12 +955,19 @@ class AgentController:
                          "sentence):\n" + "\n".join(f"  - {p['point']}" + (f" [{', '.join(p['refs'])}]" if p.get("refs") else "")
                                                      for p in plan.get("points") or [])
                          + ("\nTRAPS:\n" + "\n".join(f"  - {c}" for c in plan.get("cautions") or []) if plan.get("cautions") else ""))
+        if self.research:
+            gaps = K.describe(K.missing(account, view))
+            if gaps:
+                parts.append(gaps)
+            if self._research_log:
+                parts.append("RESEARCH (what your lookups returned; hits are now notes in EVIDENCE, cite them by their N ref):\n" + "\n".join(self._research_log))
         if required:
             parts.append("REQUIRED: a claim must cite " + ", ".join(required) + " (the latest balance the deck uses, or the difference that replaces it).")
         parts.append(length_line(view, self.language))
         parts.append(f"REQUEST: {goal}")
         if not claims:
-            parts.append(WRITER_PROTOCOL + "Your JSON object:")
+            look = LOOK_PROTOCOL.replace("{n}", str(self._lookups_left)) if (self.research and self._lookups_left > 0 and K.missing(account, view)) else ""
+            parts.append(WRITER_PROTOCOL + look + "Your JSON object:")
             return "\n\n".join(parts)
         if not rejected and not unresolved:          # the first prompt of a seeded write: Python's sentences, the model adds
             parts.append("KEPT (Python wrote these from EVIDENCE and verified them):\n" + "\n".join(f"  [{n}] {c.get('text')}" for n, c in enumerate(claims)))
@@ -1434,6 +1475,7 @@ class AgentController:
         required = self._required_refs(view)
         self._view, self._must = view, self._must_address(view)
         self._plan = {}
+        self._lookups_left, self._research_log, self._research_open, self._asked_for_evidence = self.research_lookups, [], [], 0
         if self.plan and self.router is not None and R.ROLE_ESCALATION in self.router.roles:
             self._plan = self._make_plan(run, account, view, usage)
             run.report["plan"] = self._plan
@@ -1466,6 +1508,14 @@ class AgentController:
             if role:
                 record["role"] = role
             codes: List[str] = []
+            if self.research and turn is not None and not any(k in turn for k in ("draft", "fix", "add")):
+                handled = self._research_turn(run, account, turn, record)
+                if handled is not None:
+                    run.steps.append(record)
+                    if handled == "stop":
+                        return True
+                    view = self._view if self._view is not None else view
+                    continue
             if turn is not None and _wants_handover(turn):
                 record["fallback"] = str(turn.get("need_evidence") or f"tool {turn.get('tool')}")[:300]
                 if "tool" in turn:
@@ -1596,6 +1646,71 @@ class AgentController:
             run.steps.append(record)
         run.stop_reason = STOP_STEPS
         return True
+
+    def _research_turn(self, run: AgentRun, account: str, turn: Dict[str, Any], record: Dict[str, Any]) -> Optional[str]:
+        """A prepared write's writer replied with no draft. In research mode that is a request, answered here and not by the tool
+        loop: "continue" (the lookups were run, or declined, and the writer is asked again), "stop" (it asked for evidence twice
+        and the round did not settle it: STOP_SOURCE_GAP, no paragraph, the gap named), or None (not a request).
+
+        The round is bounded three ways: the lookups one account may ask for in all (agent.research_lookups), the tools it may ask
+        with (RESEARCH_TOOLS, none of which writes or calls a model), and the turns spent on requests rather than a draft (three).
+        A lookup the writer is refused is still counted, so asking cannot go on."""
+        look = turn.get("look")
+        if not look and turn.get("tool"):
+            look = [{"tool": turn.get("tool"), "args": turn.get("args")}]
+        if isinstance(look, list) and look:
+            self._asked_for_evidence += 1
+            record["action"] = "research"
+            if self._asked_for_evidence > 3:
+                run.stop_reason, run.report["source_gap"] = STOP_SOURCE_GAP, list(self._research_open) + ["lookups asked for without a draft"]
+                return "stop"
+            looked: List[Dict[str, Any]] = []
+            for item in look:
+                if not isinstance(item, dict):
+                    continue
+                if self._lookups_left <= 0:
+                    self._research_log.append("- no lookups left: write from EVIDENCE and RESEARCH, and say in 'unresolved' what is still missing")
+                    break
+                self._lookups_left -= 1
+                name = str(item.get("tool") or "")
+                args = dict(item.get("args")) if isinstance(item.get("args"), dict) else {}
+                if name not in RESEARCH_TOOLS:
+                    self._research_log.append(f"- {name or '(no tool)'}: not a lookup you may ask for ({', '.join(RESEARCH_TOOLS)})")
+                    looked.append({"tool": name, "ok": False, "error": "NOT_A_LOOKUP"})
+                    continue
+                spec = T.TOOLS[name].args
+                if "account" in spec and not args.get("account"):
+                    args["account"] = account                 # hits are filed on this account, where its paragraph can cite them
+                result = T.call_tool(self.session, name, args)
+                self._absorb(name, args, result)
+                self.transcript.append({"tool": name, "args": args, "result": result.to_dict(), "by": "writer_lookup"})
+                shown = ", ".join(f"{k}={str(v)[:60]}" for k, v in args.items())
+                if result.ok:
+                    hits = (result.data or {}).get("hits")
+                    self._research_log.append(f"- {name}({shown}): " + _truncate(result.data, RESEARCH_RESULT_CHARS))
+                    looked.append({"tool": name, "ok": True, "hits": len(hits) if isinstance(hits, list) else None})
+                else:
+                    err = result.error or {}
+                    self._research_log.append(f"- {name}({shown}): refused, {err.get('code')}: {str(err.get('message'))[:200]}")
+                    looked.append({"tool": name, "ok": False, "error": err.get("code")})
+            record["looked"] = looked
+            run.report.setdefault("research", []).extend(looked)
+            fresh = self._prepare_evidence(account)          # the notes a search filed are now part of what may be cited
+            if fresh is not None:
+                self._view = fresh
+            return "continue"
+        if _wants_handover(turn):
+            text = str(turn.get("need_evidence") or f"tool {turn.get('tool')}")[:300]
+            self._research_open.append(text)
+            self._asked_for_evidence += 1
+            record["action"], record["need_evidence"] = "need_evidence", text
+            if self._asked_for_evidence >= 2:
+                run.stop_reason, run.report["source_gap"] = STOP_SOURCE_GAP, list(self._research_open)
+                return "stop"
+            self._research_log.append(f"- you said the evidence is not enough ({text}). No tool loop follows: write the paragraph from EVIDENCE "
+                                      "and RESEARCH, and name what is missing in 'unresolved'.")
+            return "continue"
+        return None
 
     def _context(self, codes: List[str]) -> R.StepContext:
         """What this step's codes mean in context (routing.effective_classes): what was read, what exists, what the searches found."""
@@ -1993,5 +2108,6 @@ class AgentController:
             STOP_SESSION: "a cap over the whole working session was reached: " + str((run.report.get("budget") or {}).get("message") or ""),
             STOP_SEMANTIC_BLOCKED: "the paragraph verifies, but the reviewer's objection to its meaning stands (listed under unresolved)",
             STOP_REVIEW_PENDING: "a review of the paragraph's meaning was due and did not happen",
+            STOP_SOURCE_GAP: "the writer needed evidence the workbook did not give after one round of lookups (listed under gaps)",
         }.get(run.stop_reason, run.stop_reason)
         return {"why_stopped": why, "known": known, "gaps": gaps, "next_steps": next_steps, "accounts_consulted": list(self.consulted)}

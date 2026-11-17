@@ -114,7 +114,8 @@ def parse_date(date_str, debug=False, allow_bare_number=True):
         # here as a datetime/Timestamp via openpyxl and is unaffected.
         if isinstance(date_str, (int, float)) and not isinstance(date_str, bool):
             return None
-        if str(date_str).strip().replace(",", "").replace(".", "").isdigit():
+        # a number is digits with at most one decimal point; 2023.12.31 has two and is a date written with dots
+        if re.fullmatch(r"(?:[\d,]+(?:\.\d*)?|\.\d+)", str(date_str).strip()):
             return None
 
     if isinstance(date_str, (int, float)) and not isinstance(date_str, bool):

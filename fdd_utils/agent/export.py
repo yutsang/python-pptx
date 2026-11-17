@@ -87,7 +87,12 @@ def review_findings(session: SourceSession, accounts: Iterable[str]) -> List[Fin
             out.append(Finding("REVIEW_PENDING", "review", f"a review of this paragraph's meaning was due and did not happen: {str(review.get('why') or '')[:160]}", account))
         flags = [f for f in ((candidate.flags if candidate is not None else []) or [])
                  if f.get("kind") in ("deferred_note", "cause_not_proven", "note_wording_unchecked", "lead_left_to_person", "open_fix",
-                                      "review_objection", "review_missing")]
+                                      "review_objection", "review_missing", "period_label_suspect")]
+        gaps = [f for f in ((candidate.flags if candidate is not None else []) or []) if f.get("kind") in ("source_gap", "research_open")]
+        if gaps:
+            # what the workbook does not say is not an error in the paragraph; the person checking it needs to know the paragraph is
+            # silent because the source is, and not because it forgot
+            out.append(Finding("SOURCE_GAP", "review", "the workbook does not give: " + "; ".join(str(g.get("text") or "")[:110] for g in gaps[:4]), account))
         # note_amount and detail_caveat left this list on 2026-11-09 with the deck's orange (claims.HIGHLIGHT_FLAGS): a
         # sentence-level review found them on right sentences far more often than on wrong ones
         if flags:

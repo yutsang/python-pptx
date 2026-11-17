@@ -88,6 +88,22 @@ def tool_loop_on_repeat(config: Optional[Dict[str, Any]] = None) -> bool:
     return bool(_agent_block(config).get("tool_loop_on_repeat"))
 
 
+def research(config: Optional[Dict[str, Any]] = None) -> bool:
+    """agent.research (default false): a prepared write tells the writer what its evidence says nothing about (the rate and maturity of
+    a loan, the ageing of receivables, a depreciation policy, what cash is made of) and lets it ask ONCE for up to
+    agent.research_lookups read-only lookups (search_notes, get_account_components, adjustment_evidence, cross_account_evidence,
+    read_source_block); what a search finds is filed as notes it may cite. When it still lacks something it does not hand the turn to
+    the tool loop (0.3 to 0.9 yuan an account on the stronger model, one in four finished, 2026-11-09): the gap is written on the
+    candidate and shown to the reader as a source gap. Off until entity_trial.py (arm 'researched') is compared with arm 'flash'."""
+    return bool(_agent_block(config).get("research"))
+
+
+def research_lookups(config: Optional[Dict[str, Any]] = None) -> int:
+    """agent.research_lookups (default 3, at most 6): the lookups one account's writer may ask for, in all."""
+    value = _agent_block(config).get("research_lookups")
+    return max(0, min(6, int(value))) if value not in (None, "") else 3
+
+
 def seed_facts(config: Optional[Dict[str, Any]] = None) -> bool:
     """agent.seed_facts (default false): in a prepared write Python writes the balance and movement sentences and the model adds
     the rest. Off until a paid comparison (entity_trial.py, arm 'seeded') shows it helps."""

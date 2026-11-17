@@ -133,6 +133,13 @@ def primary_stage_row_index(
     return best_idx if best_hits > 0 else None
 
 
+def _is_year_start(parsed: Any) -> bool:
+    """A detector's answer (a datetime, or an ISO 'YYYY-MM-DD' string) that is 1 January."""
+    if isinstance(parsed, str):
+        return parsed.endswith("-01-01")
+    return getattr(parsed, "month", None) == 1 and getattr(parsed, "day", None) == 1
+
+
 def date_row_index(
     df: pd.DataFrame,
     stage_row_idx: Optional[int],
@@ -142,13 +149,18 @@ def date_row_index(
     if stage_row_idx is None:
         return None
     best_idx = None
-    best_hits = 0
+    best_score = (False, 0)
     for row_idx in range(max(0, stage_row_idx - max_distance), min(len(df), stage_row_idx + max_distance + 1)):
-        hits = sum(1 for value in df.iloc[row_idx].tolist() if date_detector(value))
-        if hits > best_hits:
-            best_hits = hits
+        found = [d for d in (date_detector(value) for value in df.iloc[row_idx].tolist()) if d]
+        # A row of dates that are all 1 January is a year shown as a date (a real date cell formatted "yyyy", used as a helper
+        # above the header): it says which year, not which period end. Any row with a date that is not a 1 January beats it
+        # however many cells it has, and among the rest the row with more dates wins as before. On one client book the helper
+        # row won 15 of 21 tabs and gave every period end the label of its 1 January.
+        score = (any(not _is_year_start(d) for d in found), len(found))
+        if score[1] > 0 and score > best_score:
+            best_score = score
             best_idx = row_idx
-    return best_idx if best_hits > 0 else None
+    return best_idx
 
 
 def _unit_markers(df: pd.DataFrame, max_rows: int = 8) -> List[str]:

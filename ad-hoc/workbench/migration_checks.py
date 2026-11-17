@@ -37,6 +37,7 @@ SUITES = [
     "test_delivery_decision",
     "test_evidence_contract",
     "test_sheet_visibility",
+    "test_date_labels",
     "test_claims",
     "test_agent_tools",
     "test_agent_controller",
@@ -50,6 +51,7 @@ SUITES = [
     "test_extract_private_settings",
     "test_codemap",
     "test_agent_workflow",
+    "test_agent_research",
     "test_agent_panel",
     "test_workspace_flows",      # real workbook + archived run named by FDD_FLOW_WORKBOOK / FDD_FLOW_BASE_RUN; skipped without them
 ]

@@ -269,6 +269,12 @@ agent:
   # tool_loop_on_repeat: when a draft fails the same way twice, hand the turn to the tool loop. Off: the write ends at the
   # rejection limit and the draft goes into the deck marked (the hand-over cost 0.3-0.9 yuan an account on Pro, 2026-11-09).
   tool_loop_on_repeat: false
+  # research: the writer is told what its evidence says nothing about (a loan's rate and maturity, receivables' ageing, a
+  # depreciation policy, what cash is made of) and may look ONCE, up to research_lookups read-only lookups; what it does not
+  # find is shown to the reader as a source gap. It never hands the turn to the tool loop. Off until entity_trial.py arm
+  # 'researched' is compared with arm 'flash' on books neither was tuned on.
+  research: false
+  research_lookups: 3
   models:                  # provider "" = agent.models decides nothing; then --model / the app's selection, else local
     primary:    {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Flash model id
     escalation: {provider: "", model: "", thinking: "", reasoning_effort: "", max_output: 1500}   # e.g. dashscope / a Pro model id
