@@ -38,7 +38,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .evidence_contract import (
-    BASIS_ADJUSTED, BASIS_FINANCIALS, BASIS_RAW, ROLE_COMPONENT, ROLE_RELATED, ROLE_SUPPORT, ROLE_TOTAL, EvidenceContract,
+    BASIS_ADJUSTED, BASIS_FINANCIALS, BASIS_RAW, ROLE_COMPONENT, ROLE_RELATED, ROLE_SUPPORT, ROLE_TOTAL, EvidenceContract, tie_tolerance,
 )
 from .validator import display_half_ulp, extract_amount_spans
 
@@ -974,6 +974,22 @@ def verify_directions(text: str, line_names: List[str], amount_truths: List[Dict
     return out
 
 
+#: A sentence that says the lines it quotes are the tab's, before the audit adjustments, has stated their basis.
+_BEFORE_ADJUSTMENT = ("调整前", "未经调整", "未调整", "未含审计调整", "未包含审计调整", "不含审计调整", "未计入审计调整",
+                      "before adjustment", "before audit adjustment", "unadjusted")
+
+
+def _tab_detail_total(contract: EvidenceContract, period: str) -> Optional[float]:
+    """The tab's own total for the period when the tab's detail lines add up to it (flat, or its top level where lines sit under
+    their own sub-lines): then the lines are what the tab says and nothing else. None when there is no such total or they differ."""
+    raw = contract.total(period, BASIS_RAW)
+    parts = [f for f in contract.facts if f["period"] == period and f["role"] == ROLE_COMPONENT]
+    if raw is None or not parts:
+        return None
+    flat, top = sum(f["value"] for f in parts), sum(f["value"] for f in parts if not f.get("nested_in"))
+    return raw if any(abs(x - raw) <= tie_tolerance(x, raw) for x in (flat, top)) else None
+
+
 def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContract], *, default_account: str = "",
                  index: int = 0) -> Dict[str, Any]:
     claim = normalize_claim(raw_claim, default_account, index)
@@ -1402,7 +1418,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     # earnings this way after the adjusted balance, 2026-11-09/10); a sentence that says the lines are before the adjustments
     # ("（未经调整）") states it rightly and was refused before
     if _has(text, ("构成", "组成", "其中", "consist", "made up of", "comprise", "of which")) and \
-            not _has(text, ("调整前", "未经调整", "未调整", "before adjustment", "unadjusted")):
+            not _has(text, _BEFORE_ADJUSTMENT):
         by_p: Dict[str, List[Dict[str, Any]]] = {}
         for f in cited_facts:
             if f["role"] == ROLE_COMPONENT:
@@ -1437,9 +1453,23 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         if source.get("role") == ROLE_COMPONENT:
             perm = contract.permissions.get(source["period"]) or {}
             basis = perm.get("detail_basis", "tied")
-            if basis in ("untied", "none"):
-                fail("DETAIL_NOT_PERMITTED", "binding",
-                     f"the tab's detail for {source['period']} does not add up to the account total; it may not be used to explain it")
+            tab_total = _tab_detail_total(contract, source["period"]) if basis == "untied" else None
+            if basis == "untied" and tab_total is not None and _has(text, _BEFORE_ADJUSTMENT):
+                # The deck's total replaced the tab's and the lines were not updated: they add up to the tab's own total, and the
+                # sentence says that is what they are. (The composition rule asks for exactly this wording; refusing it here too
+                # left a trial's sentence unfixable, 2026-11-17.)
+                if not any(f.code == "DETAIL_BEFORE_ADJUSTMENT" and source["period"] in f.message for f in findings):
+                    info("DETAIL_BEFORE_ADJUSTMENT", "binding",
+                         f"{source['period']}: the lines are the tab's own and add up to its own total ({_fmt(tab_total)} yuan), which the "
+                         "deck replaced; the sentence says they are before the adjustments")
+            elif basis in ("untied", "none"):
+                message = (f"the tab's detail for {source['period']} does not add up to the account total; it may not be used to explain it")
+                if tab_total is not None:
+                    message += (f". The lines are the tab's own and add up to its total of {_fmt(tab_total)} yuan: they may be quoted "
+                                "as the workbook's detail before the adjustments (write it, e.g. 工作簿明细（未经调整）), not as what makes "
+                                "up the account's balance")
+                if not any(f.code == "DETAIL_NOT_PERMITTED" and f.message == message for f in findings):
+                    fail("DETAIL_NOT_PERMITTED", "binding", message)
             elif basis == "ambiguous" and not any(f.code == "DETAIL_NESTING_UNKNOWN" for f in findings):
                 info("DETAIL_NESTING_UNKNOWN", "binding",
                      f"{source['period']}: the lines do not sum to the total as a flat list and their nesting is not known; "

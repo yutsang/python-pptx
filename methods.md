@@ -396,6 +396,14 @@ A refusal says what to do. `AMOUNT_UNMATCHED` names the nearest figure in the ev
 rounded one), `REST_INCOMPLETE` names the lines shown and not named that make up the shortfall, and `WRONG_LINE` gives the ref of
 the line the sentence names. Pass or fail is unchanged; only what the writer reads in a repair round.
 
+A year whose total the deck replaced with the Financials figure keeps the tab's detail lines as they were, and they no longer add up
+to the deck's total. Such lines may not explain the total (`DETAIL_NOT_PERMITTED`). They may be quoted when the sentence says they
+are before the adjustments ("工作簿明细（未经调整）", "未含审计调整", "unadjusted") and they add up to the tab's own total for that
+period: the composition rule asked the writer to write exactly that, and the detail rule refused it (a three-line, three-period
+sentence on one book, 2026-11-17). The verdict carries `DETAIL_BEFORE_ADJUSTMENT` (info). The refusal names the tab's own total
+when the lines do add up to it, and is given once per period. Amounts, periods and lines are still held to the cited facts. A
+`分别` series that names no line takes its lines by position, and the order is not checked.
+
 Where the dates of a source tab come from. A Chinese date broken across a line or spaced out ("2023年\n12月31日", "2023 年 12 月
 31 日") is one date, and a date written with dots is a date when the row is being chosen. Among the rows near the stage row, one
 that holds any date that is not a 1 January beats a row of year starts however many cells that row has (a helper row of date

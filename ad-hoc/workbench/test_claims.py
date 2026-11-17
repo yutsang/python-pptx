@@ -260,6 +260,83 @@ class ReplacedTotal(unittest.TestCase):
         self.assertIn("NIL_NOT_PERMITTED", codes(v))
 
 
+class ReplacedTotalStatedAsTheTabs(unittest.TestCase):
+    """2026-11-17, a real trial: a sentence quoting the workbook's detail for two replaced years, saying "未含审计调整", was refused
+    DETAIL_NOT_PERMITTED while the composition rule told the writer to say exactly that. 2024: the tab sums to 800k and says so;
+    Financials, which the deck uses, says 1,000k."""
+
+    def setUp(self):
+        rows = [("甲公司", "detail", {P1: 500000, P2: 700000}), ("乙公司", "detail", {P1: 300000, P2: 300000}),
+                ("丙公司", "detail", {P1: 0, P2: 300000}), ("Total", "total", {P1: 1000000, P2: 1300000})]
+        self.c = build(rows, financials={P1: 1000000.0, P2: 1300000.0}, authority={P1: {"tab": 800000.0, "financials": 1000000.0}})
+        self.cites = [ref(self.c, P1, "甲公司"), ref(self.c, P1, "乙公司")]
+
+    def test_detail_that_says_it_is_before_the_adjustments_and_is_the_tabs_own_total_is_not_refused(self):
+        for label in ("（未含审计调整）", "（未经调整）", "（调整前）", "（unadjusted）"):
+            v = verdict(f"2024年12月31日工作簿明细{label}显示甲公司50.0万元、乙公司30.0万元", self.c, self.cites, [P1])
+            self.assertNotIn("DETAIL_NOT_PERMITTED", codes(v), (label, v["findings"]))
+            self.assertIn(("DETAIL_BEFORE_ADJUSTMENT", "info"), [(f["code"], f["severity"]) for f in v["findings"]], label)
+            self.assertEqual(v["verdict"], "verified", (label, v["findings"]))
+
+    def test_without_that_statement_it_is_still_refused_and_the_refusal_says_what_would_pass(self):
+        v = verdict("2024年12月31日工作簿明细显示甲公司50.0万元、乙公司30.0万元", self.c, self.cites, [P1])
+        self.assertIn("DETAIL_NOT_PERMITTED", codes(v))
+        message = next(f["message"] for f in v["findings"] if f["code"] == "DETAIL_NOT_PERMITTED")
+        self.assertIn("未经调整", message)
+        self.assertIn("800,000", message)          # the tab's own total the lines add up to, in yuan like the other messages
+        self.assertEqual(sum(f["code"] == "DETAIL_NOT_PERMITTED" for f in v["findings"]), 1, "one refusal per period, not one per amount")
+
+    def test_the_statement_does_not_excuse_detail_that_is_not_the_tabs_own_total(self):
+        rows = [("甲公司", "detail", {P1: 500000, P2: 700000}), ("乙公司", "detail", {P1: 300000, P2: 300000}),
+                ("Total", "total", {P1: 1000000, P2: 1000000})]
+        c = build(rows, financials={P1: 1000000.0, P2: 1000000.0}, authority={P1: {"tab": 900000.0, "financials": 1000000.0}})
+        v = verdict("2024年12月31日工作簿明细（未经调整）显示甲公司50.0万元、乙公司30.0万元", c,
+                    [ref(c, P1, "甲公司"), ref(c, P1, "乙公司")], [P1])
+        self.assertIn("DETAIL_NOT_PERMITTED", codes(v), "the lines add up to 80.0万, the tab's total says 90.0万: no basis to call them the tab's")
+
+    def test_the_amounts_are_still_held_to_the_lines(self):
+        v = verdict("2024年12月31日工作簿明细（未经调整）显示甲公司55.0万元、乙公司30.0万元", self.c, self.cites, [P1])
+        self.assertNotEqual(v["verdict"], "verified")
+        v = verdict("2024年12月31日工作簿明细（未经调整）显示甲公司30.0万元、乙公司50.0万元", self.c, self.cites, [P1])
+        self.assertNotEqual(v["verdict"], "verified", "the two lines swapped")
+
+
+class ThreeLinesThreePeriodsOneSentence(unittest.TestCase):
+    """The 2026-11-17 trial's sentence: 3 lines x 3 periods, 分别 in two of three clauses, the first two years replaced by Financials
+    (the tab's lines kept), the last period tied; every amount is right and the sentence says the lines are before the adjustments.
+    Known gap, present before this class and not tested here: a 分别 series that names no line takes its lines by position, and the
+    verifier does not check the order (two lines of one period written in each other's places still verify)."""
+    Q0, Q1, Q2 = "2024-12-31", "2025-12-31", "2026-06-30"
+    SENTENCE = ("工作簿中营业收入明细（未含审计调整）显示：2024年度租赁费363.1万元、物业费160.0万元、能耗收入67.4万元；"
+                "2025年度分别为{r25}、{p25}、19.2万元；2026年1-6月分别为{r26}、65.3万元、28.6万元。")
+
+    def setUp(self):
+        Q0, Q1, Q2 = self.Q0, self.Q1, self.Q2
+        rows = [("租赁费", "detail", {Q0: 3631100, Q1: 2301000, Q2: 1482700}), ("物业费", "detail", {Q0: 1600200, Q1: 1014000, Q2: 653400}),
+                ("能耗收入", "detail", {Q0: 673700, Q1: 191700, Q2: 286200}), ("Total", "total", {Q0: 6000000, Q1: 3600000, Q2: 2422300})]
+        self.c = build(rows, financials={Q0: 6000000.0, Q1: 3600000.0, Q2: 2422300.0}, periods=(Q0, Q1, Q2), account="营业收入",
+                       authority={Q0: {"tab": 5905000.0, "financials": 6000000.0}, Q1: {"tab": 3506700.0, "financials": 3600000.0}})
+        self.cites = [ref(self.c, q, line) for q in (Q0, Q1, Q2) for line in ("租赁费", "物业费", "能耗收入")]
+
+    def check(self, text):
+        return verdict(text, self.c, self.cites, [self.Q0, self.Q1, self.Q2])
+
+    def test_the_sentence_as_the_writer_wrote_it_is_verified(self):
+        v = self.check(self.SENTENCE.format(r25="230.1万元", p25="101.4万元", r26="148.3万元"))
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+
+    def test_the_same_sentence_without_the_statement_of_basis_is_refused_once_per_replaced_period(self):
+        v = self.check(self.SENTENCE.format(r25="230.1万元", p25="101.4万元", r26="148.3万元").replace("（未含审计调整）", ""))
+        refused = [f["message"] for f in v["findings"] if f["code"] == "DETAIL_NOT_PERMITTED"]
+        self.assertEqual(len(refused), 2, refused)
+        self.assertTrue(all("800,000" in m or "tab's own" in m for m in refused), refused)
+
+    def test_an_amount_under_the_wrong_year_is_still_refused_with_the_statement_made(self):
+        swapped = self.check(self.SENTENCE.format(r25="148.3万元", p25="101.4万元", r26="230.1万元"))
+        self.assertIn("WRONG_PERIOD", codes(swapped))
+        self.assertNotEqual(swapped["verdict"], "verified")
+
+
 class NestedDetail(unittest.TestCase):
     """甲 includes 乙 (a nested layout): the flat sum misses the total and nothing says why."""
 
