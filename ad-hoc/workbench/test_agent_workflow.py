@@ -806,6 +806,31 @@ class PreparedWrite(unittest.TestCase):
         self.assertTrue(turn.ok, turn.report)
         self.assertIn(GOOD, [c["text"] for c in work.source.candidates[ACCOUNT].claims])
 
+    def test_a_required_figure_written_and_verified_under_its_twin_counts_as_stated(self):
+        def fn(system, user, n):
+            view = writer_view(user)
+            twin = next(t["ref"] for t in view["totals"] if t["period"] == P2 and t["ref"] != total_ref(view, P2))
+            return {"draft": {"claims": [{"kind": "amount", "periods": [P2], "cites": [twin], "text": GOOD}], "unresolved": []}}
+        writer = Writer(fn)
+        work = self._work(writer)
+        turn = work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertEqual(len(writer.users), 1, "the balance was written, verified, and cited under another fact of the same figure")
+        self.assertTrue(turn.ok, turn.report)
+
+    def test_the_last_repair_says_that_a_sentence_still_refused_goes_into_the_deck_in_red(self):
+        def fn(system, user, n):
+            view = writer_view(user)
+            bad = amount_claim(view, P1, "2024年12月31日应收账款余额150.0万元")
+            if n == 1:
+                return {"draft": {"claims": [amount_claim(view, P2, GOOD), bad], "unresolved": []}}
+            return {"fix": [{"index": 1, "claim": bad}]}
+        writer = Writer(fn)
+        work = self._work(writer)
+        work.edit("撰写应收账款的段落", ACCOUNT)
+        self.assertGreaterEqual(len(writer.users), 3)
+        self.assertNotIn("LAST REPAIR", writer.users[1])
+        self.assertIn("LAST REPAIR", writer.users[2])
+
     def test_python_sentences_verify_in_english_and_for_an_income_statement_line(self):
         work = self._work(Writer(lambda *a: {}))
         contract = work.source.contracts[ACCOUNT]

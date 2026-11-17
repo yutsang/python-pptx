@@ -631,6 +631,85 @@ class ThirdRoundOfTheSixBooks(unittest.TestCase):
         self.assertIn("do not compare a part-year figure with a year", cl._movement_remedy(build(notes=[]), d))
 
 
+class FourthRoundOfTheSixBooks(unittest.TestCase):
+    """2026-11-17, third paid run of the six books: the refusals of right sentences that were left after the second fixes."""
+    Q = ("2024-12-31", "2025-12-31", "2026-06-30")
+
+    def periods_of(self, text):
+        mentions = cl.period_mentions(text)
+        return [(sp["written"], (cl.attached_period(text, sp["start"], sp["end"], mentions) or {}).get("text"))
+                for sp in cl.text_amounts(text)]
+
+    def test_a_year_written_straight_before_its_amount_is_a_period_and_an_unlabelled_bracket_after_three_of_them_repeats_them(self):
+        text = "物管成本中，能耗费为主要项目（2024年312.2万元、2025年330.7万元、2026年1-6月115.4万元），物业费（142.7万元、139.1万元、64.3万元）"
+        got = dict(self.periods_of(text))
+        self.assertEqual(got["312.2万元"], "2024年")
+        self.assertEqual(got["330.7万元"], "2025年")
+        self.assertEqual([got["142.7万元"], got["139.1万元"], got["64.3万元"]], ["2024年", "2025年", "2026年1-6月"])
+
+    def test_a_range_of_years_before_a_run_of_amounts_gives_a_year_to_each(self):
+        text = "2024年示意性调整减少34.77万元；2023-2025年各年调减股东借款利息代扣税金44.2万、45.8万、45.8万元。"
+        got = [p for _w, p in self.periods_of(text)]
+        self.assertEqual(got[1:], ["2023年", "2024年", "2025年"])
+
+    def test_lines_put_under_another_by_a_marker_are_not_counted_with_it(self):
+        P = P2
+        rows = [("押金", "detail", {P: 1223400}), ("甲公司", "detail", {P: 415600}), ("乙公司", "detail", {P: 336200}),
+                ("其他", "detail", {P: 99100}), ("Total", "total", {P: 1322500})]
+        c = build(rows, notes=[], periods=(P,), account="其他应付款")
+        cites = [ref(c, P, x) for x in ("押金", "甲公司", "乙公司")]
+        ok = verdict("2025年12月31日其中押金122.3万元，主要为甲公司41.6万元、乙公司33.6万元等供应商保证金", c, cites, [P])
+        self.assertNotIn("COMPOSITION_EXCEEDS_BALANCE", codes(ok), ok["findings"])
+        rows2 = [("押金", "detail", {P: 1223400}), ("甲公司", "detail", {P: 800000}), ("乙公司", "detail", {P: 700000}),
+                 ("其他", "detail", {P: 99100}), ("Total", "total", {P: 1322500})]
+        c2 = build(rows2, notes=[], periods=(P,), account="其他应付款")
+        cites2 = [ref(c2, P, x) for x in ("押金", "甲公司", "乙公司")]
+        bad = verdict("2025年12月31日其中押金122.3万元，主要为甲公司80.0万元、乙公司70.0万元", c2, cites2, [P])
+        self.assertIn("COMPOSITION_EXCEEDS_BALANCE", codes(bad), bad["findings"])
+
+    def test_the_total_a_bracket_after_it_lists_is_not_the_total_of_the_lines_before_it(self):
+        P = P2
+        rows = [("房屋", "detail", {P: 50000000}), ("设备", "detail", {P: 10000000}), ("累计折旧-房屋", "detail", {P: -1500000}),
+                ("累计折旧-设备", "detail", {P: -300000}), ("Total", "total", {P: 58200000})]
+        c = build(rows, notes=[], periods=(P,), account="固定资产")
+        cites = [ref(c, P, x) for x in ("房屋", "设备", "累计折旧-房屋", "累计折旧-设备")]
+        ok = verdict("2025年12月31日其中房屋5000.0万元、设备1000.0万元，累计折旧合计180.0万元（房屋150.0万元、设备30.0万元）", c, cites, [P])
+        self.assertNotIn("SUM_STATED", codes(ok), ok["findings"])
+        bad = verdict("2025年12月31日其中房屋5000.0万元、设备1000.0万元，累计折旧合计200.0万元（房屋150.0万元、设备30.0万元）", c, cites, [P])
+        self.assertIn("SUM_STATED", codes(bad), bad["findings"])
+
+    def test_a_cited_difference_lets_the_sentence_quote_the_two_totals_it_is_the_difference_of(self):
+        rows = [("Total", "total", {P1: 0})]
+        c = build(rows, notes=[], periods=(P1,), account="营业成本", financials={P1: -2403667.0})
+        d = cl.derive_difference(c, P1)
+        v = verdict("2024年度营业成本按财务口径为-240.4万元，与底稿差异240.4万元", c, [d["ref"]], [P1], "difference")
+        self.assertNotIn("SIGN_ERROR", codes(v), v["findings"])
+        self.assertNotIn("AMOUNT_ELSEWHERE", codes(v), v["findings"])
+        rows2 = [("Total", "total", {P1: 0})]
+        c2 = build(rows2, notes=[], periods=(P1,), account="实收资本", financials={P1: 96537209.0})
+        d2 = cl.derive_difference(c2, P1)
+        fin = next(f["ref"] for f in c2.facts if f["period"] == P1 and f["basis"] == ec.BASIS_FINANCIALS)
+        v2 = verdict("2024年12月31日实收资本按财务报表为9,653.7万元，与底稿差异为-9,653.7万元", c2, [fin, d2["ref"]], [P1], "difference")
+        self.assertNotIn("SIGN_ERROR", codes(v2), v2["findings"])
+
+    def test_a_nil_word_is_about_the_period_written_before_it_and_the_refusal_says_what_the_balance_is(self):
+        rows = [("甲公司", "detail", {P1: 500000, P2: 0}), ("乙公司", "detail", {P1: 300000, P2: 0}), ("Total", "total", {P1: 1000000, P2: 0})]
+        c = build(rows, notes=[], financials={P1: 1000000.0, P2: 0.0}, authority={P1: {"tab": 800000.0, "financials": 1000000.0}})
+        ok = verdict("2025年12月31日该科目无余额，2024年12月31日余额100.0万元", c, [ref(c, P1), ref(c, P2)], [P1, P2])
+        self.assertNotIn("NIL_NOT_PERMITTED", codes(ok), ok["findings"])
+        bad = verdict("2024年12月31日该科目无余额", c, [ref(c, P1)], [P1])
+        message = next(f["message"] for f in bad["findings"] if f["code"] == "NIL_NOT_PERMITTED")
+        self.assertIn("100.00万元", message)
+
+    def test_a_figure_a_few_percent_off_a_cited_one_names_it(self):
+        rows = [("甲", "detail", {P1: 259212400, P2: 273679700}), ("Total", "total", {P1: 259212400, P2: 273679700})]
+        c = build(rows, notes=[], account="固定资产")
+        d = cl.derive_movement(c, P1, P2)
+        v = verdict("较2024年末的2.59亿元增加0.15亿元", c, [ref(c, P1), d["ref"]], [P1, P2])
+        message = next(f["message"] for f in v["findings"] if f["code"] == "AMOUNT_UNMATCHED")
+        self.assertIn(d["ref"], message)
+
+
 class NestedDetail(unittest.TestCase):
     """甲 includes 乙 (a nested layout): the flat sum misses the total and nothing says why."""
 

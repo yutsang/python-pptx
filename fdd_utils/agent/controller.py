@@ -330,6 +330,9 @@ REPAIR_PROTOCOL = (
     "Change only the claims listed under REJECTED (by their index). The claims under KEPT were verified and stay exactly as they are.\n"
     '  {"need_evidence": "<what is missing and why>"}           only if the evidence below cannot settle an objection\n'
 )
+LAST_REPAIR = ("LAST REPAIR: this reply is the last for the account. A sentence that is still refused after it goes into the deck in red for a "
+               "person to check. For each REJECTED sentence do one of two things: rewrite it so that every objection is met, or drop it with the "
+               "question it raised in 'unresolved'. Sending it back unchanged does neither.")
 SEED_PROTOCOL = (
     "Reply with exactly ONE JSON object and nothing else:\n"
     '  {"add": [{...claims...}], "unresolved": ["..."]}\n'
@@ -1004,6 +1007,8 @@ class AgentController:
             parts.append("KEPT (verified; unchanged whatever you reply):\n" + "\n".join(kept))
         if bad:
             parts.append("REJECTED (rewrite each from EVIDENCE, or drop it and say why):\n" + "\n".join(bad))
+            if self.rejections >= self.budget.max_rejections - 1:
+                parts.append(LAST_REPAIR)
         extra = [o for n, objs in rejected.items() if n >= len(claims) for o in objs]
         if extra:
             parts.append("ALSO: " + " | ".join(extra)[:600])
@@ -1196,7 +1201,7 @@ class AgentController:
                 + [f"REVIEW_MISSING {m['ref']}: {m['why']}" for m in review.get("missing") or []])
 
     def _required_unstated(self, required: List[str], claims: List[Dict[str, Any]], outcome: Dict[str, Any],
-                           view: Dict[str, Any]) -> List[str]:
+                           view: Dict[str, Any], account: Optional[str] = None) -> List[str]:
         """The required refs no verified claim STATES: it cites the ref and its text carries that figure at its printed precision
         (a nil balance may be written as nil). Citing the balance under "needs continued attention" is not stating it."""
         values = {t["ref"]: t.get("yuan") for t in view.get("totals") or []}
@@ -1207,7 +1212,9 @@ class AgentController:
             value = values.get(ref)
             stated = False
             for n, c in enumerate(claims):
-                if ref not in (c.get("cites") or []) or n >= len(verdicts) or verdicts[n].get("verdict") not in ("verified", "verified_inference"):
+                if n >= len(verdicts) or verdicts[n].get("verdict") not in ("verified", "verified_inference"):
+                    continue
+                if ref not in (c.get("cites") or []) and not self._cites_same_figure(account, ref, value, c, view):
                     continue
                 if value is None:
                     stated = True
@@ -1220,6 +1227,24 @@ class AgentController:
             if not stated:
                 out.append(ref)
         return out
+
+    def _cites_same_figure(self, account: Optional[str], ref: str, value: Any, claim: Dict[str, Any], view: Dict[str, Any]) -> bool:
+        """The claim cites the required figure's twin: a fact of the same period with the same value (the tab's own total where the deck's
+        is the adjusted one, a line equal to the difference). A required figure written and verified was refused three rounds running
+        for citing the twin (2026-11-17)."""
+        contract = (self.session.contracts or {}).get(account) if account else None
+        if contract is None or value is None:
+            return False
+        periods = next((set(t.get("periods") or [t.get("period")]) for t in (view.get("totals") or []) + (view.get("derived") or [])
+                        if t.get("ref") == ref), set())
+        for r in claim.get("cites") or []:
+            item = contract.fact(r) or next((d for d in contract.derived if d.get("ref") == r), None)
+            if item is None or item.get("value") is None:
+                continue
+            there = set(item.get("periods") or [item.get("period")])
+            if abs(abs(float(item["value"])) - abs(float(value))) <= 0.5 and (not periods or there & periods or there <= periods):
+                return True
+        return False
 
     def _settle_review(self, run: AgentRun, account: str, view: Dict[str, Any], claims: List[Dict[str, Any]],
                        pre_review: List[Dict[str, Any]], verified: bool, review: Dict[str, Any], unresolved: List[str],
@@ -1593,7 +1618,7 @@ class AgentController:
                     result = T.call_tool(self.session, "validate_candidate", {"account": account, "claims": claims})
                     self._absorb("validate_candidate", {"account": account, "claims": claims}, result)
                     outcome = (result.data or {}).get("outcome") or {}
-                    missing = self._required_unstated(required, claims, outcome, view)
+                    missing = self._required_unstated(required, claims, outcome, view, account)
                     unaddressed = self._unaddressed(self._must, claims, outcome, unresolved)
                     record.update(claims=len(claims), verified=outcome.get("verified"), failed=outcome.get("failed"),
                                   unverified=outcome.get("unverified"))

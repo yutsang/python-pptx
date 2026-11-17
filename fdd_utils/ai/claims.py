@@ -209,7 +209,9 @@ _PERIOD_PATTERNS: List[Tuple[str, "re.Pattern[str]"]] = [
     ("month", re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月(?!\s*\d)(?:末|底|份)?")),
     ("month_en", re.compile(_EN_MONTH + r"\s+(\d{4})", re.I)),
     ("year_end", re.compile(r"(\d{4})\s*年\s*(?:末|底|年末|年底)")),
-    ("year", re.compile(r"(\d{4})\s*年(?![\d月])")),
+    # a digit straight after the year is no month unless 月 follows it: "2024年312.2万元" names 2024 (the bracket "（2024年312.2万元、2025年330.7万元、
+    # 2026年1-6月115.4万元）" had no period for its first two amounts, and the unlabelled bracket after it was read under the last, 2026-11-17)
+    ("year", re.compile(r"(\d{4})\s*年(?!\s*月|\d{1,2}\s*[月日号])")),
     ("year_en", re.compile(r"(?:\bFY\s?|\b(?:in|during|for|year|since|end of|ended)\s+)(20\d{2})\b", re.I)),
 ]
 
@@ -269,6 +271,39 @@ def _period_list(text: str, before: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return lists[-1] if lists else []
 
 
+def _range_years(text: str, start: int, n: int) -> List[Dict[str, Any]]:
+    """"2023-2025年各年调减…44.2万、45.8万、45.8万元": the run of amounts after a range of years is one year each, when the counts agree."""
+    found = None
+    for found in re.finditer(r"(\d{4})\s*年?\s*(?:至|到|-|－|—|~)\s*(\d{4})\s*年", text[:start]):
+        pass
+    if found is None or re.search(r"[。；;]", text[found.end():start]):
+        return []
+    years = list(range(int(found.group(1)), int(found.group(2)) + 1))
+    if len(years) != n:
+        return []
+    end_of_year = "末" in text[found.end():start]
+    out = []
+    for y in years:
+        where = {"text": f"{y}年", "start": found.start(), "end": found.end()}
+        out.append({"kind": "date", "year": y, "month": 12, "day": 31, **where} if end_of_year else {"kind": "year", "year": y, **where})
+    return out
+
+
+def _labelled_series(text: str, before: List[Dict[str, Any]], n: int) -> List[Dict[str, Any]]:
+    """"（2024年312.2万元、2025年330.7万元、2026年1-6月115.4万元）…（142.7万元、139.1万元、64.3万元）": a run of n amounts with no period
+    of its own, right after n periods each written with its amount, in order, is the same periods again."""
+    ordered = sorted(before, key=lambda m: m["start"])[-n:]
+    if len(ordered) < n:
+        return []
+    keys = [(m["year"], m.get("month") or 0, m.get("day") or 0) for m in ordered]
+    if keys != sorted(set(keys)):
+        return []
+    amounts = text_amounts(text)
+    if not all(any(0 <= sp["start"] - m["end"] <= 3 for sp in amounts) for m in ordered):
+        return []
+    return ordered
+
+
 def attached_period(text: str, start: int, end: int, mentions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The period an amount at [start, end) is written under: the nearest mention before it in the
     same sentence, else the nearest after it ("余额130万元（2025年12月31日）"). None if the sentence names none."""
@@ -326,10 +361,14 @@ def attached_period(text: str, start: int, end: int, mentions: List[Dict[str, An
     # sentence gave last is that list again, one period for each
     run = _amount_run(text, start)
     if len(run) >= 2:
-        last = _period_list(text, before)
         index = next((i for i, sp in enumerate(run) if sp["start"] == start), None)
-        if last and len(last) == len(run) and index is not None:
-            return last[index]
+        last = _period_list(text, before)
+        if index is not None:
+            if last and len(last) == len(run):
+                return last[index]
+            for found in (_range_years(text, start, len(run)), _labelled_series(text, before, len(run))):
+                if found:
+                    return found[index]
     # "较2025年末减少705.67万元": the period after 较 is what the change is measured from, not the period of an amount written
     # after the change word (client file, 2026-11-09: such amounts were refused as written under the wrong period)
     before = [m for m in before if not (re.search(r"(?:较|比|相比|相较|对比)\s*$", text[max(0, m["start"] - 3):m["start"]])
@@ -1068,6 +1107,28 @@ def _short_name_before(own: str, text: str, start: int, named: str) -> bool:
     return False
 
 
+def _lines_put_under_another(text: str, matched: List[Tuple[Dict[str, Any], Dict[str, Any], str]]) -> set:
+    """"其中押金122.3万元，主要为甲41.6万元、乙33.6万元": after a line's figure a marker (其中, 主要为, 包括) and lines that together are no more than
+    it put those lines under it. Two right sentences of a trial were refused as a make-up larger than the balance, the parent counted with
+    its own children (2026-11-17)."""
+    parts = sorted(((span, src) for span, src, _h in matched if span is not None and src.get("role") == ROLE_COMPONENT
+                    and src.get("basis") != BASIS_DERIVED), key=lambda x: x[0]["start"])
+    under: set = set()
+    for i, (span, src) in enumerate(parts[:-1]):
+        nxt = parts[i + 1][0]
+        if not re.search(r"其中|主要为|主要由|主要是|包括|含", text[span["end"]:nxt["start"]]) or re.search(r"[。；;]", text[span["end"]:nxt["start"]]):
+            continue
+        group = []
+        for sp, sr in parts[i + 1:]:
+            if re.search(r"[。；;]", text[span["end"]:sp["start"]]):
+                break
+            group.append((sp, sr))
+        if group and sum(abs(sr["value"]) for _sp, sr in group) <= abs(src["value"]) * 1.05 + span["tolerance"] \
+                and all(sr.get("period") == src.get("period") for _sp, sr in group):
+            under |= {(sr.get("id") or sr.get("ref")) for _sp, sr in group}
+    return under
+
+
 def _movement_remedy(contract: EvidenceContract, d: Dict[str, Any]) -> str:
     """What a sentence may say instead of a change Python did not compute. A sentence that writes the change and says it cannot be
     described is refused the same way again (three rounds each, 2026-11-17)."""
@@ -1272,6 +1333,15 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     for d in cited_derived:
         if d.get("value") is not None:
             allowed.append((abs(d["value"]), d, "derived"))
+    # "按财务口径为-240.4万元，与底稿差异240.4万元" citing the difference: the two totals it is the difference of are its inputs, and the
+    # formula shows them; a sentence that quotes them is not made to cite them as well (2026-11-17, refused three rounds)
+    by_id = {f.get("id"): f for f in contract.facts}
+    for d in cited_derived:
+        if d.get("kind") in (KIND_MOVEMENT, KIND_DIFFERENCE, KIND_ANNUALIZED):
+            for iid in d.get("inputs") or []:
+                f = by_id.get(iid)
+                if f is not None and f.get("value") is not None and f.get("role") == ROLE_TOTAL:
+                    allowed.append((abs(f["value"]), f, "input_of_cited"))
     by_period: Dict[str, List[Dict[str, Any]]] = {}
     for f in cited_facts:
         if f["role"] == ROLE_COMPONENT:
@@ -1332,12 +1402,13 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             mention = attached_period(text, span["start"], span["end"], mentions_here)
             as_change = _has(text[max(0, span["start"] - 8):span["start"]], _UP + _DOWN + _CHANGE_CUES)
 
-            def fit(h: Tuple[float, Dict[str, Any], str]) -> Tuple[bool, bool, bool]:
+            def fit(h: Tuple[float, Dict[str, Any], str]) -> Tuple[bool, bool, bool, bool]:
                 src = h[1]
                 periods = set(src.get("periods") or ([src["period"]] if src.get("period") else []))
                 is_change = src.get("role") == "movement" or src.get("kind") == KIND_MOVEMENT
                 return (bool(named) and _bare(src.get("line")) == named, as_change == is_change,
-                        mention is not None and any(mention_matches(mention, p) for p in periods))
+                        mention is not None and any(mention_matches(mention, p) for p in periods),
+                        not span.get("sign") or ((span["sign"] == "-") == ((src.get("value") or 0) < 0)))
             hit = max(hits, key=fit)                     # max keeps the first of equals, so ties fall back to the order above
         if hit:
             matched_sources.append((span, hit[1], hit[2]))
@@ -1386,7 +1457,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         else:
             # A figure the writer made by hand from a rounded one (176.0万 doubled: 352.0万, where Python's annualised figure is 351.9万)
             # was refused the same way three times running; the message did not say that the figure it wanted was in the evidence.
-            near = min((o for o in others if o.get("value") and 0 < abs(abs(o["value"]) - target) <= 0.01 * target),
+            near = min((o for o in others if o.get("value") and 0 < abs(abs(o["value"]) - target) <= 0.05 * target),
                        key=lambda o: abs(abs(o["value"]) - target), default=None)
             hint = ""
             if near is not None:
@@ -1703,6 +1774,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         kids = _prefix_children([src for _s, src, _h in every if src.get("role") == ROLE_COMPONENT])
         in_bracket = {(src.get("id") or src.get("ref")) for span, src, _h in matched_sources
                       if span is not None and any(b0 <= span["start"] < b1 for b0, b1 in _bracket_spans(text))}
+        in_bracket |= _lines_put_under_another(text, matched_sources)
         for _span, src, _how in every:
             ident = src.get("id") or src.get("ref")
             if (src.get("role") == ROLE_COMPONENT and src.get("basis") != BASIS_DERIVED and not src.get("nested_in")
@@ -1762,6 +1834,9 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                     message += (f". The lines are the tab's own and add up to its total of {_fmt(tab_total)} yuan: they may be quoted "
                                 "as the workbook's detail before the adjustments (write it, e.g. 工作簿明细（未经调整）), not as what makes "
                                 "up the account's balance")
+                else:
+                    message += (". The lines add up to no total of the tab's either: do not list them; write the account's balance, the difference "
+                                "from the tab where there is one, and say the detail is not provided (明细未提供)")
                 if not any(f.code == "DETAIL_NOT_PERMITTED" and f.message == message for f in findings):
                     fail("DETAIL_NOT_PERMITTED", "binding", message)
             elif basis == "ambiguous" and not any(f.code == "DETAIL_NESTING_UNKNOWN" for f in findings):
@@ -1815,10 +1890,28 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             if not has_figure and not about_note and (attached or (line_level and not as_cause)):
                 fail("LINE_NOT_CITED", "binding", f"the sentence names '{label}' but cites none of its figures" + _line_remedy(contract, label, claim_periods))
     if _has(text, _NIL):
-        for p in claim_periods or contract.periods:
+        # the period a nil word is about is the one written before it: "2024年12月31日应付账款余额为0元，2025年12月31日增至281.1万元" calls
+        # 2024 nil, and refusing it for 2025 (a Financials period) was a refusal of a right sentence
+        about = set()
+        all_mentions = period_mentions(text)
+        for word in _NIL:
+            for at in (m.start() for m in re.finditer(re.escape(word), text, re.I)):
+                near = [m for m in all_mentions if m["end"] <= at and "。" not in text[m["end"]:at]]
+                if near:
+                    last = max(near, key=lambda m: m["end"])
+                    about |= {p for p in (claim_periods or contract.periods) if mention_matches(last, p)}
+                else:
+                    about |= set(claim_periods or contract.periods)
+        for p in sorted(about):
             if p in contract.permissions and not contract.permissions[p].get("state_nil_or_first_arose", True):
+                total = contract.total(p)
+                tf = _total_fact(contract, p)
+                diff = next((x for x in contract.derived if x.get("kind") == KIND_DIFFERENCE and p in (x.get("periods") or [x.get("period")])), None)
+                way = (f": the deck's balance for {p} is {total / 1e4:,.2f}万元" + (f" ({tf['ref']})" if tf else "")
+                       + "; state that balance" + (f" and the difference from the tab ({diff['ref']})" if diff else "")
+                       + ", and do not say the account was nil or first arose" if total is not None else "")
                 fail("NIL_NOT_PERMITTED", "binding",
-                     f"{p}: the deck's total for this period comes from Financials; the account may not be called nil / first arisen from the tab")
+                     f"{p}: the deck's total for this period comes from Financials; the account may not be called nil / first arisen from the tab{way}")
                 break
 
     # -- direction ---------------------------------------------------------------------------
@@ -1961,7 +2054,12 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             signed = [-a["value"] if text[max(0, a["start"] - 1):a["start"]] in ("-", "−", "－") or text[max(0, a["start"] - 1):a["start"]] == "负"
                       else a["value"] for a in parts]
             stated, slack = after[0]["value"], sum(a["tolerance"] for a in parts) + after[0]["tolerance"]
-            if min(abs(abs(sum(signed)) - stated), abs(sum(abs(v) for v in signed) - stated)) > slack:
+            # "累计折旧合计6991.5万元（房屋建筑物5786.0万元、机械设备587.9万元、室外工程617.6万元）": the total of what the bracket after it lists
+            shut = next((b for b in _bracket_spans(text) if 0 <= b[0] - after[0]["end"] <= 2), None)
+            inside = [a for a in spans if shut and shut[0] <= a["start"] < shut[1]]
+            if len(inside) >= 2 and abs(sum(a["value"] for a in inside) - stated) <= sum(a["tolerance"] for a in inside) + after[0]["tolerance"]:
+                pass
+            elif min(abs(abs(sum(signed)) - stated), abs(sum(abs(v) for v in signed) - stated)) > slack:
                 fail("SUM_STATED", "arithmetic", f"'{after[0]['written']}' is given as the total of "
                      f"{', '.join(a['written'] for a in parts)}, which add up to {abs(sum(signed)) / 1e4:,.1f}万元: name every part, "
                      "or do not call it their total")

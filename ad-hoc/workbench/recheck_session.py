@@ -66,7 +66,13 @@ def red_detail(n: int, key: str, claim: Dict[str, Any], verdict: Dict[str, Any],
     for ref in claim.get("cites") or []:
         item, _owner = cl._lookup(str(ref), contracts, key)
         if item is None:
-            cited.append(f"{ref}: not found")
+            note = (contracts.get(key).note(str(ref)) if contracts.get(key) is not None else None)
+            if note is not None:        # a note: its text and the figures the verifier reads from it, each with the period it gives them
+                figs = cl.note_figures(note, contracts[key].periods)
+                shown = ", ".join(f"{a['written']}@{a.get('period') or '?'}" for a in figs["amounts"][:6])
+                cited.append(f"{ref} note[{figs.get('period') or '?'}] {str(note.get('text') or '')[:130]!r} figures: {shown}")
+            else:
+                cited.append(f"{ref}: not found")
             continue
         value = item.get("value")
         cited.append(f"{item.get('ref') or ref} {item.get('period') or '/'.join(map(str, item.get('periods') or []))} "
