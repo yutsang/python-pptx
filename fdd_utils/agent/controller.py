@@ -309,7 +309,7 @@ WRITER_PROTOCOL = (
 )
 LOOK_PROTOCOL = (
     '  {"look": [{"tool": "<name>", "args": {...}}, ...]}       look in the workbook, ONCE, only for what NOT IN EVIDENCE lists\n'
-    "Lookups (read-only, at most {n} in all): search_notes(query, account), get_account_components(account, period, offset),\n"
+    "Lookups (read-only, at most {n} in all): search_notes(query = ONE word, account), get_account_components(account, period, offset),\n"
     "adjustment_evidence(account), cross_account_evidence(account), read_source_block(account, ref | sheet, row). What they return is\n"
     "shown to you next; a search hit is filed as a note (N ref) you may cite. If the workbook does not have it, say so in 'unresolved'.\n"
     "Do not state a term from habit.\n"

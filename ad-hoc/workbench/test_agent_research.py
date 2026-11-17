@@ -64,6 +64,8 @@ class Gaps(unittest.TestCase):
         self.assertIn("NOT IN EVIDENCE", text)
         self.assertIn("interest rate", text)
         self.assertIn("利率", text)
+        self.assertIn("one word per search", text)
+        self.assertNotIn("利率 年利率", text, "a query of two words asks for both")
         self.assertEqual(K.describe([]), "")
 
 

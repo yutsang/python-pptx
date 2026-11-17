@@ -31,8 +31,9 @@ class Need:
     account: "re.Pattern[str]"
     #: facet name -> words that say it. A facet is covered when any of its words is in the evidence text.
     facets: Tuple[Tuple[str, "re.Pattern[str]"], ...]
-    #: words to search the workbook with when the writer asks for the facet (search_notes terms; space separated, any may match)
-    queries: Tuple[Tuple[str, str], ...]
+    #: words to search the workbook with when the writer asks for the facet, ONE per search: search_notes keeps a cell only when at
+    #: least 60% of the words of a query are in it, so "利率 年利率" asks for both and misses the cell that says 利率 alone
+    queries: Tuple[Tuple[str, Tuple[str, ...]], ...]
 
 
 def _re(pattern: str) -> "re.Pattern[str]":
@@ -44,20 +45,20 @@ NEEDS: Tuple[Need, ...] = (
          _re(r"借款|贷款|貸款|loan|borrowing"),
          (("rate", _re(r"利率|年化|基点|基點|\bLPR\b|\bBP\b|\d\s*%|interest rate|per annum")),
           ("maturity", _re(r"到期|期限|还款|還款|偿还|償還|展期|结清|結清|\bmatur|repay|\bterm of\b"))),
-         (("rate", "利率 年利率 LPR"), ("maturity", "到期 期限 还款"))),
+         (("rate", ("利率", "年利率")), ("maturity", ("到期", "期限")))),
     Need("ageing", "ageing of the balance",
          # trade and other receivables and payables, not every line that ends in "payable" (taxes, payroll, dividends have no ageing)
          _re(r"应收账款|應收賬款|应付账款|應付賬款|其他应收|其他應收|其他应付|其他應付|应收票据|应付票据|(?:accounts?|trade|other|notes?) (?:receivable|payable)|^AR$|^AP$|^OAR$|^OAP$"),
          (("ageing", _re(r"账龄|賬齡|逾期|\d\s*年以[内內上]|一年以[内內上]|ag(?:e)?ing|overdue|aged|past due")),),
-         (("ageing", "账龄 逾期 aging ageing"),)),
+         (("ageing", ("账龄", "逾期")),)),
     Need("depreciation_policy", "depreciation or amortisation policy",
          _re(r"固定资产|固定資產|投资性房地产|投資性房地產|无形资产|無形資產|使用权资产|使用權資產|长期待摊|長期待攤|fixed asset|investment propert|intangible|right-of-use|\bPPE\b|deferred expense"),
          (("policy", _re(r"年限|使用寿命|使用壽命|残值|殘值|直线法|直線法|折旧率|摊销率|useful li|straight-line|residual")),),
-         (("policy", "折旧年限 使用寿命 直线法 摊销年限"),)),
+         (("policy", ("折旧年限", "使用寿命")),)),
     Need("cash_nature", "what the cash balance is made of",
          _re(r"货币资金|貨幣資金|现金|現金|银行存款|銀行存款|^cash|bank balance|cash and"),
          (("nature", _re(r"保证金|保證金|受限|冻结|凍結|质押|質押|定期|活期|通知存款|基本户|基本戶|结算户|結算戶|资本金户|restricted|pledged|frozen|time deposit|demand deposit|current account|escrow|deposits? with")),),
-         (("nature", "受限 保证金 定期 活期 存款"),)),
+         (("nature", ("保证金", "受限")),)),
 )
 
 #: word shown by a facet name, for the writer's prompt and the reader's flag
@@ -90,7 +91,7 @@ def missing(account: str, view: Dict[str, Any]) -> List[Dict[str, str]]:
             if not words.search(text):
                 words = FACET_WORDS.get(facet, facet)
                 out.append({"need": need.id, "facet": facet, "label": need.label if words == need.label else f"{need.label}: {words}",
-                            "query": queries.get(facet, "")})
+                            "query": " / ".join(queries.get(facet, ()))})
     return out
 
 
@@ -99,4 +100,4 @@ def describe(gaps: List[Dict[str, str]]) -> str:
     if not gaps:
         return ""
     return ("NOT IN EVIDENCE (the notes and line names above say nothing on these; do not state them from habit):\n"
-            + "\n".join(f"  - {g['label']}" + (f"  [search words: {g['query']}]" if g.get("query") else "") for g in gaps))
+            + "\n".join(f"  - {g['label']}" + (f"  [one word per search: {g['query']}]" if g.get("query") else "") for g in gaps))
