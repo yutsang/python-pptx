@@ -8,6 +8,8 @@ offline gate runs once for all of them.
 
     python ad-hoc/workbench/portfolio_trial.py --dir databooks --audit [--where] --entities A,B     free: date audit and gap count of each book, read as the trial reads it;
                                                                                                      --where: what the flagged months are (the row's name beside each)
+    python ad-hoc/workbench/portfolio_trial.py --dir databooks --blind --entities A,B                free: a review file with the sentences and the workbook text they cite and nothing
+                                                                                                     the verifier said (blind_review.py), from each book's newest paid trial
     python ad-hoc/workbench/portfolio_trial.py --dir databooks --recheck                             free: the verifier as it is
                                                                                                      now, over those runs' drafts
 
@@ -136,6 +138,34 @@ def recheck_all(found: List[Dict[str, Any]], out_dir: Optional[Path] = None, che
     return out
 
 
+def blind_all(found: List[Dict[str, Any]], out_dir: Optional[Path] = None, build: Optional[Callable[..., str]] = None) -> List[str]:
+    """For each pick, the newest paid trial on that workbook and every arm's saved drafts in it, written as a blind review file
+    (blind_review.py: sentences and the workbook text they cite, no marks, refusals or flags). No model call. One file per book
+    and arm, named by the trial's stamp; the file holds client text and stays local."""
+    import entity_trial as E
+    import blind_review as BR
+    out_dir, build = Path(out_dir or E.OUT_DIR), build or BR.blind
+    trials = paid_trials(out_dir)
+    out = []
+    for g in found:
+        for r in g["pick"]:
+            mine = sorted((t for t in trials if str(t[1].get("databook_sha256") or "").startswith(r["sha"])), key=lambda t: t[0])
+            if not mine:
+                out.append(f"===== {r['entity']}: no paid trial of this workbook in {out_dir}")
+                continue
+            stamp, data = mine[-1]
+            for arm in data.get("arms") or {}:
+                session = out_dir / f"trial_{arm}_{stamp}.agent-session.json"
+                if not session.exists():
+                    out.append(f"===== {r['entity']} {arm}: no session file {session.name}")
+                    continue
+                target = out_dir / f"trial_blind_{arm}_{stamp}.md"
+                text = build(str(r["path"]), str(session))
+                target.write_text(text, encoding="utf-8")
+                out.append(f"===== {r['entity']} {arm} (trial {stamp}): {text.count(chr(10) + '## ')} account(s) -> {target}")
+    return out
+
+
 def flagged_months(lines: List[str]) -> List[Any]:
     """[(sheets, months)] from an audit's lines: the sheets of a 'N sheet(s) to check' group and the months it says are written
     often there and used by no account."""
@@ -191,6 +221,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--i-accept-paid-calls", action="store_true")
     ap.add_argument("--recheck", action="store_true", help="free: re-verify the newest paid trial of each pick with the code as it is now")
     ap.add_argument("--audit", action="store_true", help="free: before a paid run, the date audit and the gap count of each pick, read as the trial reads it")
+    ap.add_argument("--blind", action="store_true", help="free: write a blind review file (no marks) from the newest paid trial of each pick")
     ap.add_argument("--where", action="store_true", help="with --audit: for each sheet it flags, the rows that write the months no account uses, with the row's name")
     ap.add_argument("--untried", action="store_true", help="pick only entities no paid trial has run on (acceptance books)")
     args = ap.parse_args(argv)
@@ -200,6 +231,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("\n".join(show(found)), flush=True)
     if args.recheck:
         print("\n".join(recheck_all(found)))
+        return 0
+    if args.blind:
+        print("\n".join(blind_all(found)))
         return 0
     if args.audit:
         import warnings

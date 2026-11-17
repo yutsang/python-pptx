@@ -1377,6 +1377,57 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertIn("STILL RED", text)
         self.assertIn("amount read under:  130.0万元 -> 2024年12月31日", text)
 
+    def test_a_blind_review_file_has_the_sentences_and_what_they_cite_and_nothing_the_verifier_said(self):
+        import blind_review as BR
+        tmp = tempfile.mkdtemp(prefix="blind_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        path = os.path.join(W.DEFAULT_DIR, f"test-blind-{os.getpid()}.agent-session.json")
+
+        def load(**kw):
+            fresh = session_on(book)
+            fresh.load_params = {"workbook": book}
+            return fresh
+        try:
+            with mock.patch.object(W.SourceSession, "load", side_effect=load):
+                work = W.WorkSession.open(book, session_path=path, model=answer_policy(), budget=C.Budget(max_steps=6))
+            work.ask("应收账款期末余额是多少？")
+            work.report("把这段放入报告")
+            work.save(path)
+            saved = json.loads(Path(path).read_text(encoding="utf-8"))
+            claims = saved["candidates"][ACCOUNT]["claims"]
+            claims[0]["text"] = "2024年12月31日应收账款余额130.0万元"          # a sentence the verifier refuses (red in the deck)
+            claims.append(dict(claims[0], text="2025年12月31日应收账款余额130.0万元"))
+            saved["candidates"][ACCOUNT]["flags"] = [{"kind": "source_gap", "why": "no ageing in the evidence"}]
+            Path(path).write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+            with mock.patch.object(W.SourceSession, "load", side_effect=load):
+                text = BR.blind(book, path)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+        self.assertIn(f"## 科目 1：{ACCOUNT}", text)
+        self.assertIn("[0] 2024年12月31日应收账款余额130.0万元", text)
+        self.assertIn("[1] 2025年12月31日应收账款余额130.0万元", text)
+        self.assertRegex(text, r"- F7：2025-12-31 .*1,300,000\.00")                # the cited fact as read from the workbook, in yuan
+        for word in ("WRONG_PERIOD", "red", "RED", "orange", "refus", "verified", "source_gap", "no ageing", "marked", "flag"):
+            self.assertNotIn(word, text, f"a blind file must not carry the verifier's side: {word!r}")
+
+    def test_the_blind_files_are_written_one_per_book_and_arm_from_the_newest_paid_trial(self):
+        import portfolio_trial as PT
+        tmp = Path(tempfile.mkdtemp(prefix="blind_all_"))
+        found = [{"portfolio": "I", "rollup": Path("r.xlsx"), "pick": [
+                     {"entity": "北湖", "path": Path("a.xlsx"), "sheet": "北湖Financials", "sha": "abcd1234"},
+                     {"entity": "东湖", "path": Path("b.xlsx"), "sheet": "东湖Financials", "sha": "ffff0000"}]}]
+        (tmp / "trial_20260101_000000.json").write_text(json.dumps({"databook_sha256": "abcd1234" + "0" * 56, "scripted": False,
+                                                                    "arms": {"flash": {}}}), encoding="utf-8")
+        (tmp / "trial_flash_20260101_000000.agent-session.json").write_text("{}", encoding="utf-8")
+        seen = []
+        lines = PT.blind_all(found, out_dir=tmp, build=lambda book, session: seen.append((book, Path(session).name)) or "# x\n## 科目 1：甲\n")
+        self.assertEqual(seen, [("a.xlsx", "trial_flash_20260101_000000.agent-session.json")])
+        self.assertEqual((tmp / "trial_blind_flash_20260101_000000.md").read_text(encoding="utf-8"), "# x\n## 科目 1：甲\n")
+        self.assertIn("1 account(s)", lines[0])
+        self.assertIn("no paid trial of this workbook", lines[1], "the second book has none")
+
     def test_a_portfolio_folder_runs_one_entity_per_portfolio_against_its_roll_up_sheet_with_one_gate(self):
         import portfolio_trial as PT
         from openpyxl import Workbook
