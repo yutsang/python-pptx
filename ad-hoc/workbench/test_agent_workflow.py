@@ -1434,6 +1434,25 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertEqual([[r["entity"] for r in g["pick"]] for g in again], [["南湖"], ["东湖"]])
         self.assertIn("tried before", "\n".join(PT.show(again)))
 
+    def test_a_book_is_audited_before_a_paid_run_exactly_as_the_trial_will_read_it(self):
+        import portfolio_trial as PT
+        found = [{"portfolio": "I", "rollup": Path("roll.xlsx"), "pick": [
+                     {"entity": "北湖", "path": Path("a.xlsx"), "sheet": "北湖Financials", "sha": "x"},
+                     {"entity": "东湖", "path": Path("b.xlsx"), "sheet": None, "sha": "y"}]}]
+        seen = []
+
+        def load(args):
+            seen.append((args.databook, args.financials_from, args.financials_sheet, args.entity, args.session))
+            if args.databook == "b.xlsx":
+                raise ValueError("no such sheet")
+            return "session", {"workbook": args.databook}
+        lines = PT.audit_all(found, load=load, audit=lambda session, params: [f"PERIOD AUDIT {params['workbook']}"],
+                             gaps=lambda session: ["GAP PROBE 3 account(s) with something their evidence does not say; 2 of them ..."])
+        self.assertEqual(seen, [("a.xlsx", "roll.xlsx", "北湖Financials", "", ""), ("b.xlsx", "", "", "", "")])
+        self.assertEqual(lines[:4], ["===== 北湖 (Portfolio I)", "PERIOD AUDIT a.xlsx",
+                                     "GAP PROBE 3 account(s) with something their evidence does not say; 2 of them ...", "===== 东湖 (Portfolio I)"])
+        self.assertIn("could not be read: ValueError: no such sheet", lines[4], "one unreadable book does not stop the others")
+
     def test_the_scripted_writer_writes_the_latest_balance_it_is_shown(self):
         import entity_trial as E
         tmp = tempfile.mkdtemp(prefix="trial_w_")

@@ -6,6 +6,7 @@ offline gate runs once for all of them.
     python ad-hoc/workbench/portfolio_trial.py --dir databooks --arms checked,pro --max-cost-per-book 12 \\
         --flash <provider::model> --pro <provider::model> --i-accept-paid-calls                      PAID
 
+    python ad-hoc/workbench/portfolio_trial.py --dir databooks --audit --entities A,B                free: date audit and gap count of each book, read as the trial reads it
     python ad-hoc/workbench/portfolio_trial.py --dir databooks --recheck                             free: the verifier as it is
                                                                                                      now, over those runs' drafts
 
@@ -133,6 +134,32 @@ def recheck_all(found: List[Dict[str, Any]], out_dir: Optional[Path] = None, che
     return out
 
 
+def audit_all(found: List[Dict[str, Any]], load: Optional[Callable[..., Any]] = None, audit: Optional[Callable[..., List[str]]] = None,
+              gaps: Optional[Callable[..., List[str]]] = None) -> List[str]:
+    """Free, no model call: each pick read exactly as the paid trial reads it (same workbook, same Financials sheet), then the
+    date audit (period_audit.py: does every account's period label agree with the dates written on its own sheet) and how many
+    accounts have something their evidence does not say (gap_probe.py). The paid run on a book whose dates are mislabelled is
+    wasted: the 2026-11-10 acceptance lost 13 of 16 confirmed errors to one such cluster."""
+    import gap_probe as GP
+    import period_audit as PA
+    load = load or PA.load_session
+    audit = audit or (lambda session, params: PA.audit(session, params))
+    gaps = gaps or (lambda session: GP.gaps(session, 56))
+    out = []
+    for g in found:
+        for r in g["pick"]:
+            out.append(f"===== {r['entity']} (Portfolio {g['portfolio']})")
+            args = argparse.Namespace(session="", dir="", databook=str(r["path"]), entity="", sheet="", verbose=False, probe="",
+                                      financials_from=str(g["rollup"]) if r["sheet"] else "", financials_sheet=r["sheet"] or "")
+            try:
+                session, params = load(args)
+                out.extend(audit(session, params))
+                out.append(gaps(session)[0])
+            except Exception as exc:                                              # noqa: BLE001
+                out.append(f"could not be read: {type(exc).__name__}: {exc}")
+    return out
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--dir", required=True, help="the folder of portfolio databooks")
@@ -144,6 +171,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--pro", default="")
     ap.add_argument("--i-accept-paid-calls", action="store_true")
     ap.add_argument("--recheck", action="store_true", help="free: re-verify the newest paid trial of each pick with the code as it is now")
+    ap.add_argument("--audit", action="store_true", help="free: before a paid run, the date audit and the gap count of each pick, read as the trial reads it")
     ap.add_argument("--untried", action="store_true", help="pick only entities no paid trial has run on (acceptance books)")
     args = ap.parse_args(argv)
     import agent_acceptance as A
@@ -152,6 +180,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("\n".join(show(found)), flush=True)
     if args.recheck:
         print("\n".join(recheck_all(found)))
+        return 0
+    if args.audit:
+        import warnings
+        warnings.filterwarnings("ignore")
+        print("\n".join(audit_all(found)))
         return 0
     if not args.i_accept_paid_calls:
         print("free listing only; add --i-accept-paid-calls to run the books above")
