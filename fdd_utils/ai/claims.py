@@ -265,6 +265,11 @@ def attached_period(text: str, start: int, end: int, mentions: List[Dict[str, An
         stop = re.search(r"[。；;]|分别", text[split + 2:])
         limit = split + 2 + stop.start() if stop else len(text)
         series = [sp for sp in text_amounts(text) if split < sp["start"] < limit]
+        # "分别为0元、0元、281.1万元和0元": a bare zero is no amount to the extractor and the series came up one short of its periods, so
+        # the one amount went under the last period (a refused right sentence, 2026-11-17)
+        series += [{"start": m.start(), "end": m.end(), "value": 0.0} for m in re.finditer(r"(?<![\d.,])0(?:\.0+)?元|零元", text)
+                   if split < m.start() < limit and not any(sp["start"] <= m.start() < sp["end"] for sp in series)]
+        series.sort(key=lambda sp: sp["start"])
         index = next((i for i, sp in enumerate(series) if sp["start"] == start), None)
         if len(listed) >= 2 and index is not None and len(series) == len(listed):
             return listed[index]
@@ -1007,12 +1012,12 @@ def _signed(text: str, span: Dict[str, Any]) -> float:
     return -span["value"] if before in ("-", "−", "－", "负") else span["value"]
 
 
-def _stated_rest_problem(text: str, amounts: List[Dict[str, Any]], total_word: "re.Match[str]", rest_word: "re.Match[str]",
-                         contract: EvidenceContract, claim_periods: Iterable[str], nested_starts: set) -> Optional[str]:
+def _rest_analysis(text: str, amounts: List[Dict[str, Any]], total_word: "re.Match[str]", rest_word: "re.Match[str]",
+                   contract: EvidenceContract, claim_periods: Iterable[str], nested_starts: set) -> Optional[Dict[str, Any]]:
     """"主要包括A、B，其余8项合计X": X is what is left of the period's total after the lines named before 其余. The lines inside a bracket
     ("物管成本73.9万元（其中物业费47.6万元…）") and lines the contract found nested in another are parts of a line already named. Returns
-    the refusal, or None when X is that remainder within the rounding of the figures written, or when it cannot be tested (no period,
-    the lines belong to more than one period, no total)."""
+    {stated, parts, period, base, expected, slack}, or None when it cannot be tested (no period, the lines belong to more than one
+    period, no total)."""
     spans = sorted(amounts, key=lambda a: a["start"])
     after = [a for a in spans if a["start"] >= total_word.end()]
     if not after:
@@ -1045,13 +1050,27 @@ def _stated_rest_problem(text: str, amounts: List[Dict[str, Any]], total_word: "
     if not parts or any(period_of(a) != period for a in parts):
         return None
     named = sum(_signed(text, a) for a in parts)
-    expected, given = base - named, _signed(text, stated)
-    slack = sum(a["tolerance"] for a in parts) + stated["tolerance"] + max(1.0, 0.0005 * abs(base))
-    if abs(given - expected) <= slack:
+    return {"stated": stated, "parts": parts, "period": period, "base": base, "named": named, "expected": base - named,
+            "given": _signed(text, stated),
+            "slack": sum(a["tolerance"] for a in parts) + stated["tolerance"] + max(1.0, 0.0005 * abs(base))}
+
+
+def _stated_rest_problem(text: str, amounts: List[Dict[str, Any]], total_word: "re.Match[str]", rest_word: "re.Match[str]",
+                         contract: EvidenceContract, claim_periods: Iterable[str], nested_starts: set) -> Optional[str]:
+    """The refusal when the rest a sentence gives is not the remainder of the period's total after the lines it names, else None."""
+    a = _rest_analysis(text, amounts, total_word, rest_word, contract, claim_periods, nested_starts)
+    if a is None or abs(a["given"] - a["expected"]) <= a["slack"]:
         return None
-    return (f"'{stated['written']}' is given as what is left of {period}'s total of {base / 1e4:,.2f}万元 after the {len(parts)} lines "
-            f"named ({named / 1e4:,.2f}万元), but the total less those lines is {expected / 1e4:,.2f}万元: write that figure for the rest "
-            "(cite the D ref that sums the lines not named, if there is one), or name the lines that make the difference")
+    return (f"'{a['stated']['written']}' is given as what is left of {a['period']}'s total of {a['base'] / 1e4:,.2f}万元 after the "
+            f"{len(a['parts'])} lines named ({a['named'] / 1e4:,.2f}万元), but the total less those lines is {a['expected'] / 1e4:,.2f}万元: "
+            "write that figure for the rest (cite the D ref that sums the lines not named, if there is one), or name the lines that make "
+            "the difference")
+
+
+def _prefix_children(sources: List[Dict[str, Any]]) -> set:
+    """ids of the lines whose name continues another's with a dash ("管理费用-行政-Leasing" under "管理费用-行政"): its parts, not another line."""
+    names = {(s.get("id") or s.get("ref")): _bare(s.get("line")) for s in sources if s.get("line")}
+    return {i for i, n in names.items() if any(n != m and n.startswith(m + "-") for m in names.values() if m)}
 
 
 def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContract], *, default_account: str = "",
@@ -1150,6 +1169,15 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             allowed.append((abs(a["value"]), {"id": f"note:{ref_n}", "ref": ref_n, "account": account, "role": "note", "basis": "note",
                                               "line": "", "period": a.get("period"), "currency": a["currency"], "value": a["value"],
                                               "annualised": bool(a.get("annualised"))}, "note"))
+    # "其余8项合计X": Python computes the rest, as it computes the change between two cited lines, so the writer need not cite a figure
+    # that no fact carries (two right sentences of a trial were refused AMOUNT_UNMATCHED for writing the remainder the verifier asked for)
+    _tw = re.search(r"合计|共计|总计|合共", text)
+    _rw = _REST_BEFORE_TOTAL_RE.search(text[:_tw.start()]) if _tw else None
+    if _tw and _rw:
+        _ra = _rest_analysis(text, amounts, _tw, _rw, contract, claim_periods, set())
+        if _ra is not None:
+            allowed.append((abs(_ra["expected"]), {"id": "rest", "ref": "rest", "role": "rest", "account": account, "period": _ra["period"],
+                                                  "line": "", "basis": BASIS_DERIVED, "value": _ra["expected"]}, "implicit_rest"))
     pairs = _consecutive_pairs(cited_facts)
     for a, b in pairs:
         allowed.append((abs(b["value"] - a["value"]), {
@@ -1201,7 +1229,10 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                 else:
                     fail("SIGN_ERROR", "amounts", say)
             continue
-        scaled = next(((v, s) for v, s, _h in allowed if v and any(
+        # a figure within 1% of an allowed one is a miss by a hand-rounded step, not a scale slip: a subset of cited lines that happened to
+        # sum to ten times the figure called a 28.0万 for 27.94万 a unit error three rounds running (2026-11-17)
+        near_allowed = any(0 < abs(v - target) <= 0.01 * target for v, _s, _h in allowed)
+        scaled = None if near_allowed else next(((v, s) for v, s, how in allowed if v and how != "sum_of_cited" and any(
             abs(target - v * 10 ** k) <= max(span["tolerance"], abs(target) * 0.01) for k in (-4, -3, -2, -1, 1, 2, 3, 4))), None)
         if scaled:
             factor = 10 ** round(math.log10(max(target, 1e-9) / max(scaled[0], 1e-9)))
@@ -1209,12 +1240,23 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                  f"'{span['written']}' is {factor:g}x the cited {scaled[1].get('ref')} "
                  f"({_fmt(scaled[0])} yuan): a unit or scale slip")
             continue
-        elsewhere = next((o for o in others if o.get("value") is not None
-                          and abs(abs(o["value"]) - target) <= span["tolerance"]), None)
-        if elsewhere is not None:
+        equal = [o for o in others if o.get("value") is not None and abs(abs(o["value"]) - target) <= span["tolerance"]]
+        here = attached_period(text, span["start"], span["end"], period_mentions(text))
+        # the same figure sits in other periods too: point at the one in the period the sentence writes it under, else a declared one
+        equal.sort(key=lambda o: (not (here is not None and o.get("period") and mention_matches(here, o["period"])),
+                                  o.get("period") not in claim_periods))
+        elsewhere = equal[0] if equal else None
+        stated_in = next((n for n in contract.notes if any(abs(abs(a["value"]) - target) <= span["tolerance"]
+                                                          and (a.get("currency") or "CNY") == currency
+                                                          for a in note_figures(n, contract.periods)["amounts"])), None)
+        if elsewhere is not None or stated_in is not None:
+            where = (f"it equals {elsewhere.get('ref')} ({elsewhere.get('account')} {elsewhere.get('period')} {elsewhere.get('basis')} "
+                     f"{elsewhere.get('line') or elsewhere.get('kind') or 'total'}), which is not cited") if elsewhere is not None else ""
+            note = (f"note {stated_in.get('ref')} states it ({str(stated_in.get('text') or '')[:70]!r}), and is not cited either"
+                    if stated_in is not None else "")
             fail("AMOUNT_ELSEWHERE", "amounts",
-                 f"'{span['written']}' is not what the cited facts say; it equals {elsewhere.get('ref')} "
-                 f"({elsewhere.get('account')} {elsewhere.get('period')} {elsewhere.get('basis')} {elsewhere.get('line') or elsewhere.get('kind') or 'total'}), which is not cited")
+                 f"'{span['written']}' is not what the cited facts say; " + "; ".join(x for x in (where, note) if x)
+                 + ("; cite the one the sentence means" if where and note else ""))
         else:
             # A figure the writer made by hand from a rounded one (176.0万 doubled: 352.0万, where Python's annualised figure is 351.9万)
             # was refused the same way three times running; the message did not say that the figure it wanted was in the evidence.
@@ -1225,6 +1267,13 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                 hint = (f"; the nearest figure in EVIDENCE is {near.get('ref')} ({_fmt(abs(near['value']))} yuan, "
                         f"{near.get('line') or near.get('kind') or 'total'}, {near.get('period') or '/'.join(near.get('periods') or [])}): "
                         "write that figure as it is given, and cite it, instead of a figure made by hand")
+            else:
+                made = min(((v, s) for v, s, how in allowed if how in ("implicit_movement", "implicit_rest") and 0 < abs(v - target) <= 0.01 * target),
+                           key=lambda x: abs(x[0] - target), default=None)
+                if made is not None:
+                    what = "the change between the two cited figures" if made[1].get("role") == "movement" else "what is left of the total"
+                    hint = (f"; {what} is {_fmt(made[0])} yuan ({made[0] / 1e4:,.2f}万元): write that figure, not one made by hand "
+                            "from rounded ones")
             fail("AMOUNT_UNMATCHED", "amounts",
                  f"'{span['written']}' ({_fmt(target)} yuan) is not accounted for by any cited fact" + hint)
 
@@ -1507,10 +1556,16 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         named_lines: Dict[str, List[Dict[str, Any]]] = {}
         # the lines the sentence writes a figure for, and the lines it cites: "余额主要为仓库建造成本及土地相关成本，另有预提成本4.9万元"
         # writes one figure and cites three lines of 24,866万, 5,850万 and 4.86万 over a balance of 4.86万
-        for _span, src, _how in [(None, f, "cited") for f in cited_facts] + list(matched_sources):
-            if src.get("role") == ROLE_COMPONENT and src.get("basis") != BASIS_DERIVED and not src.get("nested_in") and src.get("period"):
+        every = [(None, f, "cited") for f in cited_facts] + list(matched_sources)
+        kids = _prefix_children([src for _s, src, _h in every if src.get("role") == ROLE_COMPONENT])
+        in_bracket = {(src.get("id") or src.get("ref")) for span, src, _h in matched_sources
+                      if span is not None and any(b0 <= span["start"] < b1 for b0, b1 in _bracket_spans(text))}
+        for _span, src, _how in every:
+            ident = src.get("id") or src.get("ref")
+            if (src.get("role") == ROLE_COMPONENT and src.get("basis") != BASIS_DERIVED and not src.get("nested_in")
+                    and ident not in kids and ident not in in_bracket and src.get("period")):
                 bucket = named_lines.setdefault(src["period"], [])
-                if all((src.get("id") or src.get("ref")) != (x.get("id") or x.get("ref")) for x in bucket):
+                if all(ident != (x.get("id") or x.get("ref")) for x in bucket):
                     bucket.append(src)
         for period, parts in sorted(named_lines.items()):
             if len(parts) < 2:
@@ -1522,8 +1577,11 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                 continue
             made = sum(f["value"] for f in parts)
             if made > base + max(0.10 * base, 10000.0):
+                tab = contract.total(period, BASIS_RAW)
+                own = (f" (the tab's own total for {period}, before the adjustments, is {tab / 1e4:,.2f}万元: lines like these are from it)"
+                       if tab is not None and abs(tab - base) > max(1.0, 0.0005 * abs(base)) else "")
                 fail("COMPOSITION_EXCEEDS_BALANCE", "binding",
-                     f"{period}: the {len(parts)} lines named add up to {made / 1e4:,.2f}万元, more than the balance of {base / 1e4:,.2f}万元, "
+                     f"{period}: the {len(parts)} lines named add up to {made / 1e4:,.2f}万元, more than the balance of {base / 1e4:,.2f}万元{own}, "
                      "so they cannot be what it is made of. Lines that offset them are not named (credit balances, accumulated depreciation, "
                      "an adjustment), or they are the tab's own before an adjustment: name the offsetting lines too, say they are the tab's "
                      "own (工作簿明细（未经调整）), or name fewer lines and do not call them its make-up")
@@ -1607,6 +1665,9 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             as_cause = _name_on_cause_side(text, position, position + len(label))
             about_note = any(label in str(n.get("text") or "") for n in source_notes)
             has_figure = label in cited_lines or any(l.endswith("-" + label) or l.endswith("－" + label) for l in cited_lines)
+            if not has_figure:           # "主要为银行存款-人民币户，其中A账户…，B账户…": the group is named and its accounts are cited
+                group = {f.get("ref") for f in contract.facts if f["role"] == ROLE_COMPONENT and _bare(f.get("line")) == label}
+                has_figure = any(f.get("nested_in") in group for f in cited_facts)
             if not has_figure and not about_note and (attached or (line_level and not as_cause)):
                 fail("LINE_NOT_CITED", "binding", f"the sentence names '{label}' but cites none of its figures")
     if _has(text, _NIL):
@@ -1743,7 +1804,8 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         # "…，其余8项小额项目合计14.6万元" gives the total of the rest, not of the lines before it (a trial on four books refused three
         # right sentences of that kind as SUM_STATED, 2026-11-17, and a wrong one, whose rest was a line the total already includes, was
         # only refused for that reason): it is checked as the remainder of the period's total
-        nested_starts = {span["start"] for span, src, _h in matched_sources if src.get("nested_in")}
+        kids = _prefix_children([src for _s, src, _h in matched_sources])
+        nested_starts = {span["start"] for span, src, _h in matched_sources if src.get("nested_in") or (src.get("id") or src.get("ref")) in kids}
         problem = _stated_rest_problem(text, amounts, total_word, rest_word, contract, claim_periods, nested_starts)
         if problem:
             fail("REST_NOT_REMAINDER", "arithmetic", problem)

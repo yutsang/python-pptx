@@ -474,6 +474,82 @@ class RefusalsOfRightSentencesInFourBooks(unittest.TestCase):
         self.assertIn("COMPOSITION_EXCEEDS_BALANCE", codes(v), v["findings"])
 
 
+class SecondRoundOfTheFourBooks(unittest.TestCase):
+    """2026-11-17, the new version on six books: eleven accounts not accepted, nine of them for a refusal the writer could not settle."""
+
+    def test_zeros_written_as_bare_yuan_count_in_a_series_of_periods(self):
+        Q = ("2023-12-31", "2024-12-31", "2025-12-31", "2026-06-30")
+        rows = [("甲", "detail", {Q[0]: 0, Q[1]: 0, Q[2]: 2810900, Q[3]: 0}), ("Total", "total", {Q[0]: 0, Q[1]: 0, Q[2]: 2810900, Q[3]: 0})]
+        c = build(rows, notes=[], periods=Q, account="应付账款")
+        cites = [ref(c, q) for q in Q]
+        head = "目标公司应付账款余额在2023年12月31日、2024年12月31日、2025年12月31日及2026年6月30日"
+        ok = verdict(head + "分别为0元、0元、281.1万元和0元。", c, cites, list(Q))
+        self.assertNotIn("WRONG_PERIOD", codes(ok), ok["findings"])
+        bad = verdict(head + "分别为281.1万元、0元、0元和0元。", c, cites, list(Q))
+        self.assertIn("WRONG_PERIOD", codes(bad), bad["findings"])
+
+    def test_a_figure_a_hair_off_the_change_between_two_cited_lines_is_a_miss_with_the_change_named_not_a_unit_slip(self):
+        rows = [("折旧", "detail", {P1: 15039700, P2: 14760300}), ("Total", "total", {P1: 15039700, P2: 14760300})]
+        c = build(rows, notes=[], account="营业成本")
+        cites = [ref(c, P1, "折旧"), ref(c, P2, "折旧")]
+        v = verdict("2025年度折旧成本较2024年度减少28.0万元", c, cites, [P1, P2])
+        self.assertIn("AMOUNT_UNMATCHED", codes(v), v["findings"])
+        self.assertNotIn("UNIT_ERROR", codes(v))
+        self.assertIn("27.94万元", next(f["message"] for f in v["findings"] if f["code"] == "AMOUNT_UNMATCHED"))
+        slip = verdict("2025年度折旧成本较2024年度减少279.4万元", c, cites, [P1, P2])
+        self.assertIn("UNIT_ERROR", codes(slip), "a real tenfold slip is still one")
+
+    def test_the_rest_a_sentence_writes_needs_no_cited_figure_when_it_is_the_remainder(self):
+        rows = [("甲", "detail", {P2: 5000000}), ("乙", "detail", {P2: 3000000}), ("丙", "detail", {P2: 1500000}), ("Total", "total", {P2: 9500000})]
+        c = build(rows, notes=[], periods=(P2,))
+        cites = [ref(c, P2, "甲"), ref(c, P2, "乙")]
+        v = verdict("2025年12月31日其中甲500.0万元、乙300.0万元，其余项目合计150.0万元", c, cites, [P2])
+        self.assertEqual(v["verdict"], "verified", v["findings"])
+        bad = verdict("2025年12月31日其中甲500.0万元、乙300.0万元，其余项目合计100.0万元", c, cites, [P2])
+        self.assertTrue(codes(bad), bad["findings"])
+
+    def test_a_refusal_for_an_uncited_figure_points_at_the_period_the_sentence_is_about_and_at_a_note_that_states_it(self):
+        rows = [("甲", "detail", {P1: 3850000, P2: 3850000}), ("乙", "detail", {P1: 150000, P2: 150000}), ("Total", "total", {P1: 4000000, P2: 4000000})]
+        c = build(rows, notes=[], account="其他应付款")
+        v = verdict("2025年12月31日其中甲385.0万元", c, [ref(c, P2)], [P2])
+        message = next(f["message"] for f in v["findings"] if f["code"] == "AMOUNT_ELSEWHERE")
+        self.assertIn(ref(c, P2, "甲"), message, "the 2025 line, not the 2024 one with the same figure")
+        notes = ["「2024」Audit ADJ#8：-5.1万元（调减）（对方科目：毛利、管理费用）；调整说明：管理服务收入与费用net处理"]
+        rows2 = [("管理咨询服务费", "detail", {P1: 51300, P2: 0}), ("租赁费", "detail", {P1: 1000000, P2: 0}), ("Total", "total", {P1: 1051300, P2: 0})]
+        c2 = build(rows2, notes=notes, account="营业收入")
+        v2 = verdict("2024年12月31日审计调整调减5.1万元", c2, [ref(c2, P1)], [P1])
+        m2 = next(f["message"] for f in v2["findings"] if f["code"] == "AMOUNT_ELSEWHERE")
+        self.assertIn("note N", m2)
+        self.assertIn("cite the one the sentence means", m2)
+
+    def test_a_group_line_named_without_a_figure_is_cited_when_its_accounts_are(self):
+        rows = [("银行存款-人民币户", "detail", {P2: 5000000}), ("甲银行0555", "detail", {P2: 3000000}), ("乙银行0016", "detail", {P2: 2000000}),
+                ("Total", "total", {P2: 5000000})]
+        c = build(rows, notes=[], periods=(P2,), account="货币资金")
+        cites = [ref(c, P2, "甲银行0555"), ref(c, P2, "乙银行0016")]
+        v = verdict("2025年12月31日主要为银行存款-人民币户，其中甲银行0555账户300.0万元，乙银行0016账户200.0万元", c, cites, [P2])
+        self.assertNotIn("LINE_NOT_CITED", codes(v), v["findings"])
+
+    def test_parts_written_in_a_bracket_or_named_under_a_line_in_the_cited_list_are_not_counted_twice(self):
+        rows = [("管理费用-行政", "detail", {P2: 155300}), ("管理费用-行政-Leasing", "detail", {P2: 60700}),
+                ("管理费用-行政-AMF", "detail", {P2: 49100}), ("管理层调整", "detail", {P2: 142100}), ("Total", "total", {P2: 297400})]
+        c = build(rows, notes=[], periods=(P2,), account="管理费用")
+        cites = [ref(c, P2, x) for x in ("管理费用-行政", "管理费用-行政-Leasing", "管理费用-行政-AMF", "管理层调整")]
+        v = verdict("2025年12月31日主要明细为行政15.5万元（其中Leasing 6.1万元、AMF 4.9万元），另有管理层调整14.2万元", c, cites, [P2])
+        self.assertNotIn("COMPOSITION_EXCEEDS_BALANCE", codes(v), v["findings"])
+
+    def test_the_refusal_of_a_make_up_over_an_adjusted_balance_says_what_the_tab_totalled(self):
+        rows = [("仓库建造成本", "detail", {P2: 248662100}), ("土地价款", "detail", {P2: 58501600}), ("预提成本", "detail", {P2: 48600}),
+                ("Total", "total", {P2: 48600})]
+        c = build(rows, notes=[], periods=(P2,), account="在建工程", financials={P2: 48600.0},
+                  authority={P2: {"tab": 307212300.0, "financials": 48600.0}})
+        cites = [ref(c, P2, x) for x in ("仓库建造成本", "土地价款", "预提成本")] + [ref(c, P2)]
+        v = verdict("2025年12月31日余额4.9万元，主要为仓库建造成本及土地相关成本，另有预提成本4.9万元", c, cites, [P2])
+        message = next(f["message"] for f in v["findings"] if f["code"] == "COMPOSITION_EXCEEDS_BALANCE")
+        self.assertIn("the tab's own total", message)
+        self.assertIn("30,721.23万元", message)
+
+
 class NestedDetail(unittest.TestCase):
     """甲 includes 乙 (a nested layout): the flat sum misses the total and nothing says why."""
 

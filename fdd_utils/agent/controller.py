@@ -505,6 +505,17 @@ def system_prompt(mode: str, session: SourceSession, language: str, remembered: 
     return f"{rules}\nTools:\n{T.describe_tools()}\n\nWorkbook source version: {session.source_version}\n\n{PROTOCOL}"
 
 
+def required_figures(refs: List[str], view: Dict[str, Any]) -> str:
+    """The figure each required ref carries, so that a refusal can say what to write: 'F7 = 1,300,000.00 yuan (130.00万元)'."""
+    values = {t["ref"]: t.get("yuan") for t in view.get("totals") or []}
+    values.update({d["ref"]: d.get("value") for d in view.get("derived") or []})
+    out = []
+    for ref in refs:
+        v = values.get(ref)
+        out.append(f"{ref} = {float(v):,.2f} yuan ({float(v) / 1e4:,.4f}万元)" if isinstance(v, (int, float)) else ref)
+    return "; ".join(out)
+
+
 class AgentController:
     def __init__(self, session: SourceSession, model: Model, *, budget: Optional[Budget] = None, language: Optional[str] = None,
                  memory: Optional[Memory] = None, prepare: bool = False, seed: bool = False, review: bool = False,
@@ -1630,8 +1641,9 @@ class AgentController:
                                 bad = [f for f in v.get("findings") or [] if f.get("severity") in ("failed", "review")]
                                 rejected[n] = [f"{f['code']}: {f.get('message', '')}" for f in bad] or ["not verified"]
                         if missing:
-                            rejected[len(claims)] = [f"REQUIRED_NOT_STATED: no verified claim cites {', '.join(missing)} AND writes its figure; "
-                                                     "add one ('add')"]
+                            rejected[len(claims)] = [f"REQUIRED_NOT_STATED: no verified claim cites {', '.join(missing)} AND writes its figure "
+                                                     f"({required_figures(missing, view)}); add one ('add'), the figure written as it is, in 元 "
+                                                     "when it is under 1万元"]
                         if unaddressed:
                             rejected.setdefault(len(claims), []).extend(
                                 f"NOTE_UNADDRESSED: {m['ref']} ({m['why']}) is in MUST ADDRESS; state it citing {m['ref']}, or name {m['ref']} "
