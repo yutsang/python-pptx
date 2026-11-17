@@ -385,10 +385,16 @@ or calls a model; a tool outside that list is refused and still counted, and hid
 account, so each hit is filed on it as a note (an N ref) the next draft can cite; the evidence is read again and the next
 prompt carries the lookups' answers. A writer that says the evidence is not enough is answered once (write from what there
 is, name the gap under `unresolved`); the second time the turn ends `source_gap` with no paragraph. Research mode never hands
-the turn to the tool loop. What is still absent when the paragraph is finished is written on the candidate (`source_gap`,
-and `research_open` for what the writer said was missing) and exported as a `SOURCE_GAP` finding (review): the person
-checking the deck sees that the workbook does not give the term, not that the paragraph forgot it. Separately and always on,
-two or more period labels that are 1 January set the flag `period_label_suspect` (a year taken for a period end).
+the turn to the tool loop. Always on, whatever the switch (it changes nothing the writer is told): what is still absent when
+the paragraph is finished is written on the candidate (`source_gap`; `research_open` for what the writer said was missing, in
+research mode) and exported as a `SOURCE_GAP` finding (review), so the person checking the deck sees that the workbook does not
+give the term, not that the paragraph forgot it; and two or more period labels that are 1 January set `period_label_suspect`
+(a year taken for a period end). `ad-hoc/workbench/gap_probe.py` (free) checks the gaps against the workbook: one search per
+word, on the account's own sheet and elsewhere; with `--account` it shows how that account's lines nest in the evidence.
+
+A refusal says what to do. `AMOUNT_UNMATCHED` names the nearest figure in the evidence within 1% (a figure made by hand from a
+rounded one), `REST_INCOMPLETE` names the lines shown and not named that make up the shortfall, and `WRONG_LINE` gives the ref of
+the line the sentence names. Pass or fail is unchanged; only what the writer reads in a repair round.
 
 Where the dates of a source tab come from. A Chinese date broken across a line or spaced out ("2023年\n12月31日", "2023 年 12 月
 31 日") is one date, and a date written with dots is a date when the row is being chosen. Among the rows near the stage row, one

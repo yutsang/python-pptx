@@ -57,7 +57,7 @@ NEEDS: Tuple[Need, ...] = (
          (("policy", ("折旧年限", "使用寿命")),)),
     Need("cash_nature", "what the cash balance is made of",
          _re(r"货币资金|貨幣資金|现金|現金|银行存款|銀行存款|^cash|bank balance|cash and"),
-         (("nature", _re(r"保证金|保證金|受限|冻结|凍結|质押|質押|定期|活期|通知存款|基本户|基本戶|结算户|結算戶|资本金户|restricted|pledged|frozen|time deposit|demand deposit|current account|escrow|deposits? with")),),
+         (("nature", _re(r"银行存款|库存现金|其他货币资金|保证金|保證金|受限|冻结|凍結|质押|質押|定期|活期|通知存款|基本户|基本戶|结算户|結算戶|资本金户|bank deposits?|cash on hand|other monetary|restricted|pledged|frozen|time deposit|demand deposit|current account|escrow|deposits? with")),),
          (("nature", ("保证金", "受限")),)),
 )
 

@@ -864,7 +864,8 @@ class PreparedWrite(unittest.TestCase):
         flags = work.source.candidates[ACCOUNT].flags
         self.assertIn(("deferred_note", "N1"), [(f["kind"], f.get("ref")) for f in flags])
         from fdd_utils.agent.export import review_findings
-        self.assertEqual([f.code for f in review_findings(work.source, [ACCOUNT])], ["HUMAN_CHECK"])
+        # SOURCE_GAP (the tab says nothing on receivables' ageing) is always on and is not what this test is about
+        self.assertEqual([f.code for f in review_findings(work.source, [ACCOUNT]) if f.code != "SOURCE_GAP"], ["HUMAN_CHECK"])
 
     def test_a_material_note_stated_with_its_ref_is_not_deferred(self):
         def state(system, user, n):

@@ -82,6 +82,12 @@ class Round(unittest.TestCase):
         self.assertNotIn("NOT IN EVIDENCE", writer.users[0])
         self.assertNotIn('"look"', writer.users[0])
 
+    def test_the_gap_is_shown_to_the_reader_whatever_the_switch_because_it_changes_nothing_the_writer_is_told(self):
+        writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
+        work = self._work(writer)
+        self.assertTrue(work.edit("撰写应收账款的段落", ACCOUNT).ok)
+        self.assertIn("source_gap", [f["kind"] for f in work.source.candidates[ACCOUNT].flags])
+
     def test_with_it_on_the_writer_is_told_what_is_missing_and_how_to_ask(self):
         writer = Writer(lambda system, user, n: {"draft": {"claims": [amount_claim(writer_view(user), P2, GOOD)], "unresolved": []}})
         turn = self._work(writer, config=RESEARCH).edit("撰写应收账款的段落", ACCOUNT)
@@ -197,7 +203,7 @@ class PeriodLabels(unittest.TestCase):
     def flags(self, periods):
         controller = C.AgentController.__new__(C.AgentController)
         controller.research, controller._research_open = False, []
-        return controller._flags("AR", {"periods": periods, "permissions": {}, "checks": {}}, [], [], {}, [], False)
+        return controller._flags("Paid-in capital", {"periods": periods, "permissions": {}, "checks": {}}, [], [], {}, [], False)
 
     def test_two_year_start_labels_are_flagged_for_a_person(self):
         got = self.flags(["2023-01-01", "2024-01-01", "2025-01-01", "2026-06-30"])

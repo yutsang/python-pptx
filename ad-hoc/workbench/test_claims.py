@@ -1559,6 +1559,45 @@ class Interop(unittest.TestCase):
         self.assertIn(P2, view["permissions"])
 
 
+class ActionableRefusals(unittest.TestCase):
+    """A refusal that tells the writer what to do. On two portfolio books (2026-11-17) one account's sentences were refused in all
+    four runs and a half-year figure doubled by hand in both arms, through every repair round: the message said the figure or the
+    rest was wrong and not which figure, which lines."""
+
+    def message(self, v, code):
+        return next(f["message"] for f in v["findings"] if f["code"] == code)
+
+    def test_a_figure_made_by_hand_is_refused_with_the_nearest_figure_the_evidence_has(self):
+        c = build()
+        v = verdict("2025年12月31日余额130.1万元", c, [ref(c, P2)], [P2])
+        message = self.message(v, "AMOUNT_UNMATCHED")
+        self.assertRegex(message, r"the nearest figure in EVIDENCE is [FD]\d+ \(1,300,000\.00 yuan, total, 2025-12-31\)")
+        self.assertIn("1,300,000.00 yuan", message)
+
+    def test_a_figure_far_from_everything_gets_no_such_hint(self):
+        c = build()
+        v = verdict("2025年12月31日余额150.0万元", c, [ref(c, P2)], [P2])
+        self.assertNotIn("nearest figure", self.message(v, "AMOUNT_UNMATCHED"))
+
+    def test_the_rest_that_falls_short_names_the_lines_shown_and_not_named(self):
+        rows = [("会计服务费", "detail", {P2: 75000}), ("审计费", "detail", {P2: 50000}), ("法律咨询费", "detail", {P2: 49000}),
+                ("招待费", "detail", {P2: 14000}), ("通讯费", "detail", {P2: 1300}), ("办公费", "detail", {P2: 700}),
+                ("Total", "total", {P2: 190000})]
+        c = build(rows=rows, notes=[], statement="IS", periods=(P2,), account="管理费用")
+        rest = cl.derive_sum(c, [ref(c, P2, "通讯费"), ref(c, P2, "办公费")])["ref"]
+        named = [ref(c, P2, line) for line in ("会计服务费", "审计费", "法律咨询费")]
+        v = verdict("其中会计服务费7.5万元、审计费5.0万元、法律咨询费4.9万元，其余2项合计0.2万元", c, named + [rest], [P2])
+        message = self.message(v, "REST_INCOMPLETE")
+        self.assertIn("Lines shown and not named: " + ref(c, P2, "招待费") + " 招待费 14,000.00", message)
+        self.assertNotIn("会计服务费 ", message.split("Lines shown and not named:")[1], "a line the sentence named is not listed")
+
+    def test_a_parent_figure_given_a_child_ref_is_told_which_ref_is_the_parents(self):
+        c = build()                     # 乙公司 and 丙公司 both 30.0万元 in 2025
+        v = verdict("2025年12月31日，其中乙公司30.0万元", c, [ref(c, P2, "丙公司")], [P2], "composition")
+        message = self.message(v, "WRONG_LINE")
+        self.assertIn(f"'乙公司' is {ref(c, P2, '乙公司')} (300,000.00 yuan): cite that", message)
+
+
 def self_text():
     return "2025年12月31日应收账款余额130.0万元，主要系租金回款延迟所致"
 

@@ -1120,8 +1120,17 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                  f"'{span['written']}' is not what the cited facts say; it equals {elsewhere.get('ref')} "
                  f"({elsewhere.get('account')} {elsewhere.get('period')} {elsewhere.get('basis')} {elsewhere.get('line') or elsewhere.get('kind') or 'total'}), which is not cited")
         else:
+            # A figure the writer made by hand from a rounded one (176.0万 doubled: 352.0万, where Python's annualised figure is 351.9万)
+            # was refused the same way three times running; the message did not say that the figure it wanted was in the evidence.
+            near = min((o for o in others if o.get("value") and 0 < abs(abs(o["value"]) - target) <= 0.01 * target),
+                       key=lambda o: abs(abs(o["value"]) - target), default=None)
+            hint = ""
+            if near is not None:
+                hint = (f"; the nearest figure in EVIDENCE is {near.get('ref')} ({_fmt(abs(near['value']))} yuan, "
+                        f"{near.get('line') or near.get('kind') or 'total'}, {near.get('period') or '/'.join(near.get('periods') or [])}): "
+                        "write that figure as it is given, and cite it, instead of a figure made by hand")
             fail("AMOUNT_UNMATCHED", "amounts",
-                 f"'{span['written']}' ({_fmt(target)} yuan) is not accounted for by any cited fact")
+                 f"'{span['written']}' ({_fmt(target)} yuan) is not accounted for by any cited fact" + hint)
 
     # -- a note's figure where the tab has the exact one -----------------------------------
     # "2023年在建工程余额1.87亿元" from a note whose author rounded 187,654,321 down: the tab's figure is 1.88亿元 (four sentences
@@ -1177,10 +1186,16 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                 continue
             gap = total["value"] - sum(f["value"] for f in named) - d["value"]
             if abs(gap) > max(0.005 * abs(total["value"]), 1000.0):
+                # the lines shown and not named are what the gap is made of (a credit balance among debits, a small line): name them
+                cited_ids = {f["id"] for f in cited_facts}
+                unnamed = sorted((f for f in contract.facts if f["role"] == ROLE_COMPONENT and f["period"] == d.get("period")
+                                  and not f.get("nested_in") and f["id"] not in inputs and f["id"] not in cited_ids
+                                  and abs(f.get("value") or 0) >= 100), key=lambda f: -abs(f["value"]))
+                listed = "; ".join(f"{f['ref']} {_bare(f['line'])[:24]} {_fmt(f['value'])}" for f in unnamed[:4])
                 fail("REST_INCOMPLETE", "arithmetic",
                      f"{d['ref']} sums only the lines the evidence did not show; with the {len(named)} lines named it leaves "
                      f"{_fmt(gap)} yuan of {d.get('period')}'s total unaccounted for: name the other lines or call the rest by "
-                     "what it is")
+                     "what it is" + (f". Lines shown and not named: {listed}" if listed else ""))
 
     # -- percentages ----------------------------------------------------------------------
     # Bound like an amount: to the period the sentence writes it under, the line it names, and the
@@ -1428,8 +1443,12 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         written_own = own and (own in text[max(0, span["start"] - 60):span["start"]]
                                or any(own[-k:] in text[max(0, span["start"] - 24):span["start"]] for k in range(4, min(len(own), 12) + 1)))
         if named and source.get("role") == ROLE_COMPONENT and source.get("line") and _bare(source["line"]) != named and not written_own:
+            own_line = next((f for f in contract.facts if f["role"] == ROLE_COMPONENT and f["period"] == source.get("period")
+                             and _bare(f.get("line")) == named and f["basis"] == source.get("basis")), None)
             fail("WRONG_LINE", "binding",
-                 f"the sentence attaches '{span['written']}' to '{named}' but cites the '{source['line']}' figure")
+                 f"the sentence attaches '{span['written']}' to '{named}' but cites the '{source['line']}' figure"
+                 + (f"; '{named}' is {own_line['ref']} ({_fmt(own_line['value'])} yuan): cite that for it, and cite the lines under it separately"
+                    if own_line is not None else ""))
     # A line the sentence names must have a figure behind it. Two lines that
     # happen to add up to the cited total are not thereby cited.
     masked, cited_lines = text, {_bare(f["line"]) for f in cited_facts if f["role"] in _LINE_ROLES} | {

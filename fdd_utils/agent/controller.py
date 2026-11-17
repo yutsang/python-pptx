@@ -887,7 +887,9 @@ class AgentController:
         if len(year_starts) >= 2:
             flags.append({"kind": "period_label_suspect", "text": f"{len(year_starts)} period labels are 1 January ({', '.join(year_starts[:3])}); "
                                                                  "compare them with the sheet's own header before trusting any date in the text"})
-        if self.research and view.get("periods"):
+        # Not tied to the research switch: it changes nothing the writer is told. Read against the workbooks on two portfolio books
+        # (2026-11-17, gap_probe.py), 15 of the 17 accounts it named really have no such term on any visible sheet.
+        if view.get("periods"):
             for g in K.missing(account, view):
                 flags.append({"kind": "source_gap", "need": g["need"], "text": f"not found in the workbook's notes for this account: {g['label']}"})
         for text in self._research_open:
