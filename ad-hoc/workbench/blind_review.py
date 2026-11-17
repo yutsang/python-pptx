@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import shutil
 import sys
 import tempfile
@@ -88,6 +89,68 @@ def blind(databook: str, session: str) -> str:
             if notes:
                 out.append("該科目的附註與說明：")
                 out.extend(f"- {n['ref']}：{n.get('text')}" for n in notes)
+            out.append("")
+    return "\n".join(out)
+
+
+_BASIS = {"authority_adjusted": "adjusted", "raw_schedule": "schedule"}
+_ROLE = {"total": "T", "component": "C", "support": "S", "related": "R"}
+
+
+def _cite(contract: object, ref: str) -> str:
+    """One cited fact, derived value or note on one short line: ref, period, line, value in 万元, basis, where it sits in the workbook."""
+    fact = contract.fact(ref)
+    if fact:
+        value = fact.get("value")
+        shown = f"{value / 10000:,.2f}万" if isinstance(value, (int, float)) and not isinstance(value, bool) else str(value)
+        where = f"{fact.get('sheet') or ''}!{fact.get('row') or ''}".strip("!")
+        return (f"{ref} {_ROLE.get(fact.get('role'), '?')} {str(fact.get('period') or '')[2:]} {fact.get('line') or '(合计)'} {shown} "
+                f"[{_BASIS.get(fact.get('basis'), fact.get('basis'))}] @{where}")
+    derived = next((d for d in contract.derived if d.get("ref") == ref), None)
+    if derived:
+        pct = derived.get("pct")
+        value = derived.get("value")
+        shown = f"{pct:+.2f}%" if isinstance(pct, (int, float)) else (f"{value / 10000:,.2f}万" if isinstance(value, (int, float)) else str(value))
+        return f"{ref} D {derived.get('kind')} {derived.get('line') or ''} {shown} = {derived.get('formula') or ''}".replace("  ", " ")
+    note = contract.note(ref)
+    return f"{ref} note" if note else f"{ref} (not found)"
+
+
+def packet(databook: str, session: str, every: int = 3, everything: bool = False) -> str:
+    """A compact blind review packet: the accounts numbered `every`, 2*every, ... as the blind file numbers them (all of them with
+    everything=True), each sentence followed by the facts it cites, each cited note once per account. No marks, no refusals."""
+    from fdd_utils.agent.workspace import WorkSession
+    saved = json.loads(Path(session).read_text(encoding="utf-8"))
+    out: List[str] = []
+    with tempfile.TemporaryDirectory(prefix="packet_") as tmp:
+        copy = Path(tmp) / Path(session).name
+        shutil.copyfile(session, copy)
+        work = WorkSession.open(databook, session_path=str(copy), resume=True)
+        work.path = None
+        case = 0
+        for key, cand in (saved.get("candidates") or {}).items():
+            claims = list(cand.get("claims") or [])
+            if not claims:
+                continue
+            case += 1
+            if not everything and case % max(1, every):
+                continue
+            contract = work.source.contracts.get(key)
+            out.append(f"### 科目 {case}：{key}")
+            seen_notes: List[str] = []
+            for n, c in enumerate(claims):
+                out.append(f"[{n}] {str(c.get('text') or '').strip()}")
+                for ref in list(c.get("cites") or []) + list(c.get("cause_cites") or []):
+                    if contract is None:
+                        break
+                    if contract.fact(ref) is None and contract.note(ref) is not None:
+                        if ref not in seen_notes:
+                            seen_notes.append(ref)
+                        out.append(f"    ← {ref} (附註，見下)")
+                    else:
+                        out.append(f"    ← {_cite(contract, ref)}")
+            for ref in seen_notes:
+                out.append(f"    {ref}: {re.sub(chr(10), ' ', str((contract.note(ref) or {}).get('text') or ''))[:260]}")
             out.append("")
     return "\n".join(out)
 

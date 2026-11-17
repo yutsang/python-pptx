@@ -104,6 +104,28 @@ class Scoring(unittest.TestCase):
         self.assertIn("数字 1", text)
 
 
+class CombinedFile(unittest.TestCase):
+    def test_one_file_holds_every_book_under_a_book_line_and_a_book_without_a_section_has_no_review(self):
+        tmp = Path(tempfile.mkdtemp(prefix="combined_"))
+        for stamp in ("20260101_000001", "20260101_000002"):
+            (tmp / f"trial_flash_{stamp}.agent-session.json").write_text(json.dumps(SESSION), encoding="utf-8")
+        (tmp / "review_claude.txt").write_text(
+            "BOOK|20260101_000001\nREVIEWED|营业收入,应收账款,无形资产\nFINDING|营业收入|3|数字|重大|确定|x\n"
+            "BOOK｜20260101_000002\nREVIEWED|营业收入\n", encoding="utf-8")
+        text = "\n".join(SR.score_all(["20260101_000001", "20260101_000002"], tmp))
+        self.assertIn("claude: reviewed 3/3 accounts", text)
+        self.assertIn("claude: reviewed 1/3 accounts", text)
+        self.assertIn("claude: 2 book(s)", text)
+        self.assertIn("UNMARKED major sure 1", text)
+
+    def test_a_reviewers_own_file_for_a_stamp_wins_over_its_combined_file(self):
+        tmp = Path(tempfile.mkdtemp(prefix="combined_"))
+        (tmp / "review_claude.txt").write_text("BOOK|s1\nREVIEWED|甲\n", encoding="utf-8")
+        (tmp / "review_claude_s1.txt").write_text("REVIEWED|乙\n", encoding="utf-8")
+        self.assertEqual(SR.reply_for("claude", "s1", tmp), "REVIEWED|乙\n")
+        self.assertEqual(SR.split_books("noise\nBOOK|s1\na\nBOOK|s2\nb"), {"s1": "a", "s2": "b"})
+
+
 class BlindInstructions(unittest.TestCase):
     def test_the_instructions_ask_for_exactly_the_lines_the_scorer_reads(self):
         text = BR.INSTRUCTIONS

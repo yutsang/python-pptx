@@ -166,6 +166,38 @@ def blind_all(found: List[Dict[str, Any]], out_dir: Optional[Path] = None, build
     return out
 
 
+def packet_all(found: List[Dict[str, Any]], out_dir: Optional[Path] = None, build: Optional[Callable[..., str]] = None,
+               every: int = 3, everything: bool = False) -> List[str]:
+    """One compact review packet over the newest paid trial of each pick (blind_review.packet): the sentences of every
+    `every`-th account and the facts each cites, no marks. Written to review_packet.txt in the trial folder, a section per book
+    headed 'BOOK|<trial stamp>' (the stamp score_review.py takes). No model call; the file holds client text."""
+    import entity_trial as E
+    import blind_review as BR
+    out_dir, build = Path(out_dir or E.OUT_DIR), build or BR.packet
+    trials = paid_trials(out_dir)
+    parts, out = [], []
+    for g in found:
+        for r in g["pick"]:
+            mine = sorted((t for t in trials if str(t[1].get("databook_sha256") or "").startswith(r["sha"])), key=lambda t: t[0])
+            if not mine:
+                out.append(f"===== {r['entity']}: no paid trial of this workbook in {out_dir}")
+                continue
+            stamp, data = mine[-1]
+            for arm in data.get("arms") or {}:
+                session = out_dir / f"trial_{arm}_{stamp}.agent-session.json"
+                if not session.exists():
+                    out.append(f"===== {r['entity']} {arm}: no session file {session.name}")
+                    continue
+                body = build(str(r["path"]), str(session), every=every, everything=everything)
+                parts.append(f"BOOK|{stamp}\n{body}")
+                out.append(f"===== {r['entity']} {arm} (trial {stamp}): {body.count(chr(10) + '### ') + body.startswith('### ')} account(s), {len(body):,} characters")
+    if parts:
+        target = out_dir / "review_packet.txt"
+        target.write_text("\n".join(parts), encoding="utf-8")
+        out.append(f"written: {target} ({sum(len(x) for x in parts):,} characters in all)")
+    return out
+
+
 def flagged_months(lines: List[str]) -> List[Any]:
     """[(sheets, months)] from an audit's lines: the sheets of a 'N sheet(s) to check' group and the months it says are written
     often there and used by no account."""
@@ -222,6 +254,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--recheck", action="store_true", help="free: re-verify the newest paid trial of each pick with the code as it is now")
     ap.add_argument("--audit", action="store_true", help="free: before a paid run, the date audit and the gap count of each pick, read as the trial reads it")
     ap.add_argument("--blind", action="store_true", help="free: write a blind review file (no marks) from the newest paid trial of each pick")
+    ap.add_argument("--packet", action="store_true", help="free: one compact review packet (sentences and the facts they cite, no marks) from the newest paid trial of each pick")
+    ap.add_argument("--every", type=int, default=3, help="with --packet: every n-th account in the blind file's numbering (default 3)")
+    ap.add_argument("--all-accounts", action="store_true", help="with --packet: every account")
     ap.add_argument("--where", action="store_true", help="with --audit: for each sheet it flags, the rows that write the months no account uses, with the row's name")
     ap.add_argument("--untried", action="store_true", help="pick only entities no paid trial has run on (acceptance books)")
     args = ap.parse_args(argv)
@@ -231,6 +266,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     print("\n".join(show(found)), flush=True)
     if args.recheck:
         print("\n".join(recheck_all(found)))
+        return 0
+    if args.packet:
+        print("\n".join(packet_all(found, every=args.every, everything=args.all_accounts)))
         return 0
     if args.blind:
         print("\n".join(blind_all(found)))

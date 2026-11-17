@@ -6,7 +6,9 @@ For each stamp it reads, from fdd_utils/output/agent_trial:
     trial_<arm>_<stamp>.agent-session.json     the drafts and the marks (the deck's colours, as trial_digest.py reads them)
     review_gpt_<stamp>.txt                     the model reviewer's reply to the blind file (blind_review.py)
     review_human_<stamp>.txt                   a person's list, same line format (optional)
-A missing review file is reported, not an error. The reply may hold other text and a code fence; only these lines are read, with
+    review_claude_<stamp>.txt                  the same for a third reviewer
+Each reviewer may instead keep one file, review_<who>.txt, holding every book under a 'BOOK|<stamp>' line. A missing review file is
+reported, not an error. The reply may hold other text and a code fence; only these lines are read, with
 a half-width or full-width bar:
 
     REVIEWED|account,account,...
@@ -148,10 +150,35 @@ def lines_for(name: str, res: Dict[str, Any], books: Dict[str, Any]) -> List[str
     return out
 
 
+REVIEWERS = ("gpt", "human", "claude")
+
+
+def split_books(text: str) -> Dict[str, str]:
+    """{stamp: the lines under 'BOOK|<stamp>'} from one file that holds several books' lines."""
+    out: Dict[str, List[str]] = {}
+    current = None
+    for line in str(text or "").splitlines():
+        head = re.match(rf"\s*BOOK\s*{_BAR}\s*(\S+)", line)
+        if head:
+            current = head.group(1)
+            out.setdefault(current, [])
+        elif current is not None:
+            out[current].append(line)
+    return {k: "\n".join(v) for k, v in out.items()}
+
+
+def reply_for(who: str, stamp: str, folder: Path) -> Optional[str]:
+    """The reviewer's reply for one book: its own file review_<who>_<stamp>.txt, else its section of review_<who>.txt."""
+    own = _read(folder / f"review_{who}_{stamp}.txt")
+    if own is not None:
+        return own
+    combined = _read(folder / f"review_{who}.txt")
+    return split_books(combined).get(stamp) if combined is not None else None
+
+
 def find(stamp: str, folder: Path) -> Dict[str, Any]:
     sessions = sorted(folder.glob(f"trial_*_{stamp}.agent-session.json"))
-    return {"session": sessions[0] if sessions else None,
-            "gpt": folder / f"review_gpt_{stamp}.txt", "human": folder / f"review_human_{stamp}.txt"}
+    return {"session": sessions[0] if sessions else None}
 
 
 def _read(path: Path) -> Optional[str]:
@@ -166,8 +193,8 @@ def _read(path: Path) -> Optional[str]:
 
 def score_all(stamps: List[str], folder: Path = TRIAL_DIR) -> List[str]:
     out: List[str] = []
-    totals: Dict[str, Counter] = {"gpt": Counter(), "human": Counter()}
-    by_category: Dict[str, Counter] = {"gpt": Counter(), "human": Counter()}
+    totals: Dict[str, Counter] = {who: Counter() for who in REVIEWERS}
+    by_category: Dict[str, Counter] = {who: Counter() for who in REVIEWERS}
     for stamp in stamps:
         files = find(stamp, folder)
         if files["session"] is None:
@@ -179,8 +206,8 @@ def score_all(stamps: List[str], folder: Path = TRIAL_DIR) -> List[str]:
         out.append(f"===== trial {stamp} ({files['session'].name.split('_')[1]}): {len(books)} accounts, "
                    f"{sum(len(b['sentences']) for b in books.values())} sentences; deck marks {sum(c == 'red' for c, _w in every)} red "
                    f"{sum(c == 'orange' for c, _w in every)} orange")
-        for who in ("gpt", "human"):
-            res = score_one(books, _read(files[who]))
+        for who in REVIEWERS:
+            res = score_one(books, reply_for(who, stamp, folder))
             out.extend(lines_for(who, res, books))
             if not res.get("missing"):
                 totals[who].update(accounts=len(res["reviewed"]), of=len(books), findings=len(res["rows"]),
@@ -188,7 +215,7 @@ def score_all(stamps: List[str], folder: Path = TRIAL_DIR) -> List[str]:
                                    invalid=len(res["invalid"]), books=1)
                 by_category[who].update(r["category"] for r in res["unmarked_major_sure"])
     out.append("===== ALL BOOKS (each reviewer on its own; never added together)")
-    for who in ("gpt", "human"):
+    for who in REVIEWERS:
         t = totals[who]
         if not t["books"]:
             out.append(f" {who}: no review file read")
