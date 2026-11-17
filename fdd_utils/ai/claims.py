@@ -240,6 +240,35 @@ def period_mentions(text: str) -> List[Dict[str, Any]]:
     return found
 
 
+_RUN_JOIN = re.compile(r"^\s*(?:[、，,]|和|及|与|以及)\s*$")
+_LIST_JOIN = re.compile(r"^[度末底期份]?\s*(?:[、，,]|和|及|与|以及)\s*$")
+
+
+def _amount_run(text: str, start: int) -> List[Dict[str, Any]]:
+    """The amounts written as one list ("108.1万元、107.4万元、47.6万元") that holds the amount at `start`; just it when it stands alone."""
+    spans = sorted(text_amounts(text), key=lambda sp: sp["start"])
+    runs: List[List[Dict[str, Any]]] = []
+    for sp in spans:
+        if runs and _RUN_JOIN.match(text[runs[-1][-1]["end"]:sp["start"]]):
+            runs[-1].append(sp)
+        else:
+            runs.append([sp])
+    return next((r for r in runs if any(sp["start"] == start for sp in r)), [])
+
+
+def _period_list(text: str, before: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The periods named as one list ("2024年度、2025年度及2026年1-6月") that came last before the amount; [] when the last period named
+    stands alone."""
+    ordered = sorted(before, key=lambda m: m["start"])
+    lists: List[List[Dict[str, Any]]] = []
+    for m in ordered:
+        if lists and _LIST_JOIN.match(text[lists[-1][-1]["end"]:m["start"]]):
+            lists[-1].append(m)
+        else:
+            lists.append([m])
+    return lists[-1] if lists else []
+
+
 def attached_period(text: str, start: int, end: int, mentions: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     """The period an amount at [start, end) is written under: the nearest mention before it in the
     same sentence, else the nearest after it ("余额130万元（2025年12月31日）"). None if the sentence names none."""
@@ -262,9 +291,17 @@ def attached_period(text: str, start: int, end: int, mentions: List[Dict[str, An
                 if len(own) >= 2:
                     listed = own
                     break
-        stop = re.search(r"[。；;]|分别", text[split + 2:])
+        stop = re.search(r"[。；;]|分别|其中", text[split + 2:])
         limit = split + 2 + stop.start() if stop else len(text)
-        series = [sp for sp in text_amounts(text) if split < sp["start"] < limit]
+        # a period named after 分别 starts the next statement ("…分别为304.2万元和315.5万元，2025年度较上年增加11.3万元") and an amount in a
+        # bracket is a part of the one before it ("分别为179.2万元、155.3万元和73.9万元（其中物业费108.1万元…）"): neither is counted as
+        # one of the series, or its length stops matching the periods and every amount is read under the last one (two refused right
+        # sentences of one book, 2026-11-17)
+        later = [m["start"] for m in mentions if m["start"] > split + 2]
+        if later:
+            limit = min(limit, min(later))
+        shut = _bracket_spans(text)
+        series = [sp for sp in text_amounts(text) if split < sp["start"] < limit and not any(b0 <= sp["start"] < b1 for b0, b1 in shut)]
         # "分别为0元、0元、281.1万元和0元": a bare zero is no amount to the extractor and the series came up one short of its periods, so
         # the one amount went under the last period (a refused right sentence, 2026-11-17)
         series += [{"start": m.start(), "end": m.end(), "value": 0.0} for m in re.finditer(r"(?<![\d.,])0(?:\.0+)?元|零元", text)
@@ -285,6 +322,14 @@ def attached_period(text: str, start: int, end: int, mentions: List[Dict[str, An
                 if "末" in text[span.end():split]:
                     return {"kind": "date", "year": years[index], "month": 12, "day": 31, **where}
                 return {"kind": "year", "year": years[index], **where}
+    # "…（108.1万元、107.4万元、47.6万元）" after "2024年度、2025年度及2026年1-6月": a run of amounts as long as the list of periods the
+    # sentence gave last is that list again, one period for each
+    run = _amount_run(text, start)
+    if len(run) >= 2:
+        last = _period_list(text, before)
+        index = next((i for i, sp in enumerate(run) if sp["start"] == start), None)
+        if last and len(last) == len(run) and index is not None:
+            return last[index]
     # "较2025年末减少705.67万元": the period after 较 is what the change is measured from, not the period of an amount written
     # after the change word (client file, 2026-11-09: such amounts were refused as written under the wrong period)
     before = [m for m in before if not (re.search(r"(?:较|比|相比|相较|对比)\s*$", text[max(0, m["start"] - 3):m["start"]])
@@ -1003,6 +1048,87 @@ def _tab_detail_total(contract: EvidenceContract, period: str) -> Optional[float
 _REST_BEFORE_TOTAL_RE = re.compile(r"(?:其余|剩余|余下|其他|其它|另外)[^，。；,;（()）]{0,14}$")
 
 
+_COMPANY_FORM = re.compile(r"股份有限公司|有限责任公司|有限公司|分公司|集团|公司")
+
+
+def _short_name_before(own: str, text: str, start: int, named: str) -> bool:
+    """The clause an amount sits in names the line it cites by part of that line's name ("其中华东星河16.3万元" for the line
+    C0229华东星河实业有限公司; "甲银行账户余额为负（-1,204.3万元）" for ZHTC-009甲银行某某分行1006), not by the line named earlier. A piece of
+    three characters or more, outside the code and the company form, counts, unless it is the earlier line's own name: a child written
+    under its parent's name is the parent's WRONG_LINE (2026-11-17: two right sentences refused three rounds each)."""
+    core = _COMPANY_FORM.sub("·", re.sub(r"^[A-Za-z0-9_\-－]+", "", own))
+    window = text[:start]
+    cut = max((window.rfind(ch) for ch in "，,。；;、"), default=-1)
+    clause = window[cut + 1:][-40:]
+    for size in range(min(len(core), 8), 2, -1):
+        for i in range(len(core) - size + 1):
+            piece = core[i:i + size]
+            if "·" not in piece and piece in clause and piece not in named and not (named and named in piece):
+                return True
+    return False
+
+
+def _movement_remedy(contract: EvidenceContract, d: Dict[str, Any]) -> str:
+    """What a sentence may say instead of a change Python did not compute. A sentence that writes the change and says it cannot be
+    described is refused the same way again (three rounds each, 2026-11-17)."""
+    reason = str(d.get("invalid_reason") or "")
+    periods = d.get("periods") or []
+    if "disagree" in reason:
+        diff = [x for x in contract.derived if x.get("kind") == KIND_DIFFERENCE and (x.get("period") in periods or set(x.get("periods") or []) & set(periods))]
+        return ("; do not write the change in any form (nor that it cannot be described): state the tab's figure and Financials' for each "
+                "period and the difference Python computed" + (f" ({', '.join(x['ref'] for x in diff[:3])})" if diff else ""))
+    if "differ in length" in reason:
+        annual = [x for x in contract.derived if x.get("kind") == KIND_ANNUALIZED and x.get("period") in periods]
+        return ("; do not compare a part-year figure with a year in any form (nor say that it is not annualised): state each period's "
+                "figure, and the annualised one" + (f" ({', '.join(x['ref'] for x in annual[:2])})" if annual else "") + " with its basis")
+    return ""
+
+
+def _cn_period(period: str) -> str:
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(period))
+    if not m:
+        return str(period)
+    y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    return f"{y}年末" if (mo, d) == (12, 31) else f"{y}年{mo}月{d}日"
+
+
+def _inside_named_range(text: str, mentions: List[Dict[str, Any]], period: str) -> bool:
+    """"2024年12月31日至2026年6月30日，实收资本各期均为9,653.7万元，无变动": a period between the two ends of a range the sentence names is
+    named by it (the writer was refused three rounds for not writing 2025年末 as well)."""
+    m = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(period))
+    if not m:
+        return False
+    target = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+
+    def low(x: Dict[str, Any]) -> tuple:
+        return (x["year"], x.get("month") or 1, x.get("day") or 1)
+
+    def high(x: Dict[str, Any]) -> tuple:
+        return (x["year"], x.get("month") or 12, x.get("day") or 31)
+    ordered = sorted(mentions, key=lambda x: x["start"])
+    return any(re.match(r"^\s*(?:至|到|-|－|—|–|~|及至)\s*$", text[a["end"]:b["start"]]) and low(a) <= target <= high(b)
+               for a, b in zip(ordered, ordered[1:]))
+
+
+def _line_remedy(contract: EvidenceContract, label: str, claim_periods: Iterable[str]) -> str:
+    """Which figures the sentence would cite for a line it names: the line's own, else the lines under it, else the periods it has."""
+    wanted = set(claim_periods)
+    own = [f for f in contract.facts if f["role"] == ROLE_COMPONENT and _bare(f.get("line")) == label and f.get("basis") != BASIS_DERIVED]
+    here = [f for f in own if not wanted or f["period"] in wanted]
+
+    def show(items: List[Dict[str, Any]]) -> str:
+        return "; ".join(f"{f['ref']} ({f['period']}, {f['value'] / 1e4:,.2f}万元)" for f in items[:4])
+    if here:
+        return f": cite {show(here)}"
+    if own:
+        return f": the account has no '{label}' figure for {', '.join(sorted(wanted))} (it has {show(own)}): leave the name out, or cite the lines that make it up"
+    under = [f for f in contract.facts if f["role"] == ROLE_COMPONENT and _bare(f.get("line")).startswith(label + "-")
+             and (not wanted or f["period"] in wanted)]
+    if under:
+        return f": no figure of that name exists; the lines under it are {show(under)}: cite those, or leave the name out"
+    return ": no line of that name exists in the account; leave it out"
+
+
 def _bracket_spans(text: str) -> List[Tuple[int, int]]:
     return [(m.start(), m.end()) for m in re.finditer(r"（[^（）]*）|\([^()]*\)", text)]
 
@@ -1394,7 +1520,9 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             shown = ", ".join(f"{c['pct']:.1f}%" for c in pct_candidates)
             fail("PERCENT_UNMATCHED", "arithmetic",
                  f"'{span['written']}' does not match any ratio Python derived from the cited facts"
-                 + (f" (they give {shown})" if shown else " (no ratio is cited)"))
+                 + (f" (they give {shown})" if shown else " (no ratio is cited)")
+                 + "; a ratio of two other figures is not one Python derived: cite the derived ratio, or write the two amounts and leave "
+                   "the percentage out")
             continue
         mention = attached_period(text, span["start"], span["end"], pct_mentions)
         named = attached_label(masked_text, span["start"], line_names)
@@ -1457,7 +1585,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         previous_end, previous_bound = span["end"], {"line": named, "cue": cue}
     for d in cited_derived:
         if d.get("kind") == KIND_MOVEMENT and not d.get("valid", True) and any(c["item"] is d for c in pct_candidates):
-            fail("MOVEMENT_NOT_PERMITTED", "binding", f"{d['ref']}: {d.get('invalid_reason')}")
+            fail("MOVEMENT_NOT_PERMITTED", "binding", f"{d['ref']}: {d.get('invalid_reason')}{_movement_remedy(contract, d)}")
 
     # -- binding: periods -------------------------------------------------------------------
     note_dates = [d for figs in note_facts.values() for d in figs["dates"]]
@@ -1467,8 +1595,13 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         if mention["kind"] == "year" and any(mention["year"] in figs["years"] for figs in note_facts.values()):
             continue                                   # a year the note names ("2025审计费"), not a period the claim reports
         if claim_periods and not any(mention_matches(mention, p) for p in claim_periods):
+            have = next((p for p in contract.periods if mention_matches(mention, p)), None)
+            total = _total_fact(contract, have) if have else None
+            way = (f": the account has a {have} figure ({total['ref']}, {total['value'] / 1e4:,.2f}万元), so add {have} to the claim's "
+                   f"periods and cite {total['ref']}, or take the period out of the sentence" if total is not None
+                   else ": the evidence has no figure for it, take it out of the sentence" if have is None else "")
             fail("WRONG_PERIOD", "binding",
-                 f"the text names '{mention['text']}', which is not among the periods this claim declares ({', '.join(sorted(claim_periods))})")
+                 f"the text names '{mention['text']}', which is not among the periods this claim declares ({', '.join(sorted(claim_periods))}){way}")
         elif not claim_periods:
             fail("PERIODS_UNDECLARED", "binding", "the sentence names a period but the claim declares none")
             break
@@ -1479,10 +1612,13 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
     for d in cited_derived:
         end = (d.get("periods") or [None])[-1]
         if (d.get("kind") == KIND_MOVEMENT and end and latest_period and end != latest_period
-                and _has(text, _UP + _DOWN + _CHANGE_CUES) and not any(mention_matches(m, end) for m in mentioned)):
+                and _has(text, _UP + _DOWN + _CHANGE_CUES) and not any(mention_matches(m, end) for m in mentioned)
+                and not _inside_named_range(text, mentioned, end)):
+            begin = (d.get("periods") or [None])[0]
+            example = f" (e.g. {_cn_period(end)}较{_cn_period(begin)}…)" if begin else ""
             fail("MOVEMENT_END_UNSTATED", "binding",
                  f"{d['ref']} is the change into {end}, but the sentence does not name {end}: a reader takes it as the change to the "
-                 "latest balance; name the period it ends in")
+                 f"latest balance; name the period it ends in{example}")
     for item in cited:
         periods = set(item.get("periods") or ([item["period"]] if item.get("period") else []))
         if claim_periods and periods and not periods <= claim_periods:
@@ -1500,10 +1636,17 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             continue
         mention = attached_period(text, span["start"], span["end"], mentions)
         if mention is None:
+            # "较2025年末减少187.6万元，主要系当期净利润-187.6万元": 当期 and the change from an earlier period's end are the latest period
+            latest_said = (re.search(r"(?:当期|本期|本年度?|报告期|期内)[^，,。；;]{0,8}$", text[:span["start"]])
+                           or any(m["end"] <= span["start"] and re.search(r"(?:较|比|相比|相较|对比)\s*$", text[max(0, m["start"] - 3):m["start"]])
+                                  and _has(text[m["end"]:span["start"]], _UP + _DOWN) and "。" not in text[m["end"]:span["start"]]
+                                  for m in mentions))
+            if latest_said and source.get("period") == latest_declared:
+                continue
             if len(claim_periods) > 1 and source.get("role") in (ROLE_TOTAL, ROLE_COMPONENT, ROLE_SUPPORT, "sum"):
                 review("PERIOD_UNBOUND", "binding",
                        f"'{span['written']}' is not written under any period and the claim declares {len(claim_periods)}; "
-                       "put the period next to each amount, or write one claim per period")
+                       f"put the period next to each amount, or write one claim per period ({source.get('ref')} is the {', '.join(sorted(src_periods))} figure)")
             continue
         if any(mention_matches(mention, p) for p in src_periods):
             continue
@@ -1638,7 +1781,8 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
         named = attached_label(mask_mentions(text, period_mentions(text)), span["start"], labels)
         own = str(source.get("line") or "").lstrip("*＊ ").strip()
         written_own = own and (own in text[max(0, span["start"] - 60):span["start"]]
-                               or any(own[-k:] in text[max(0, span["start"] - 24):span["start"]] for k in range(4, min(len(own), 12) + 1)))
+                               or any(own[-k:] in text[max(0, span["start"] - 24):span["start"]] for k in range(4, min(len(own), 12) + 1))
+                               or _short_name_before(own, text, span["start"], named or ""))
         if named and source.get("role") == ROLE_COMPONENT and source.get("line") and _bare(source["line"]) != named and not written_own:
             own_line = next((f for f in contract.facts if f["role"] == ROLE_COMPONENT and f["period"] == source.get("period")
                              and _bare(f.get("line")) == named and f["basis"] == source.get("basis")), None)
@@ -1669,7 +1813,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
                 group = {f.get("ref") for f in contract.facts if f["role"] == ROLE_COMPONENT and _bare(f.get("line")) == label}
                 has_figure = any(f.get("nested_in") in group for f in cited_facts)
             if not has_figure and not about_note and (attached or (line_level and not as_cause)):
-                fail("LINE_NOT_CITED", "binding", f"the sentence names '{label}' but cites none of its figures")
+                fail("LINE_NOT_CITED", "binding", f"the sentence names '{label}' but cites none of its figures" + _line_remedy(contract, label, claim_periods))
     if _has(text, _NIL):
         for p in claim_periods or contract.periods:
             if p in contract.permissions and not contract.permissions[p].get("state_nil_or_first_arose", True):
@@ -1703,7 +1847,7 @@ def verify_claim(raw_claim: Dict[str, Any], contracts: Dict[str, EvidenceContrac
             {"failed": fail, "review": review}[finding[0]](*finding[1:])
     for d in cited_derived:
         if d.get("kind") == KIND_MOVEMENT and not d.get("valid", True) and not any(f.code == "MOVEMENT_NOT_PERMITTED" for f in findings):
-            fail("MOVEMENT_NOT_PERMITTED", "binding", f"{d['ref']}: {d.get('invalid_reason')}")
+            fail("MOVEMENT_NOT_PERMITTED", "binding", f"{d['ref']}: {d.get('invalid_reason')}{_movement_remedy(contract, d)}")
         if d.get("kind") in (KIND_SHARE, KIND_SUM, KIND_DIFFERENCE, KIND_ANNUALIZED) and not d.get("valid", True):
             fail("DERIVED_NOT_VALID", "binding", f"{d['ref']}: {d.get('invalid_reason')}")
 

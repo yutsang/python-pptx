@@ -550,6 +550,87 @@ class SecondRoundOfTheFourBooks(unittest.TestCase):
         self.assertIn("30,721.23万元", message)
 
 
+class ThirdRoundOfTheSixBooks(unittest.TestCase):
+    """2026-11-17, the version after the second fixes, on the same six books: the refusals the writer could not settle again."""
+    Q = ("2024-12-31", "2025-12-31", "2026-06-30")
+
+    def test_amounts_in_a_bracket_after_a_series_of_the_periods_are_that_series_again(self):
+        Q = self.Q
+        rows = [("物管", "detail", {Q[0]: 1791900, Q[1]: 1552600, Q[2]: 738600}), ("物管-物业费", "detail", {Q[0]: 1081100, Q[1]: 1073900, Q[2]: 475500}),
+                ("Total", "total", {Q[0]: 1791900, Q[1]: 1552600, Q[2]: 738600})]
+        c = build(rows, notes=[], periods=Q, account="营业成本")
+        cites = [ref(c, q, x) for x in ("物管", "物管-物业费") for q in Q]
+        head = "2024年度、2025年度及2026年1-6月物管成本分别为179.2万元、155.3万元和73.9万元，其中物业费为主要子项"
+        ok = verdict(head + "（108.1万元、107.4万元、47.6万元）。", c, cites, list(Q))
+        self.assertNotIn("WRONG_PERIOD", codes(ok), ok["findings"])
+        swapped = verdict(head + "（47.6万元、107.4万元、108.1万元）。", c, cites, list(Q))
+        self.assertIn("WRONG_PERIOD", codes(swapped), swapped["findings"])
+
+    def test_a_period_named_after_the_series_starts_the_next_statement(self):
+        rows = [("税金", "detail", {P1: 3042000, P2: 3154600}), ("Total", "total", {P1: 3042000, P2: 3154600})]
+        c = build(rows, notes=[], account="税金及附加")
+        d = cl.derive_movement(c, P1, P2)
+        cites = [ref(c, P1), ref(c, P2), d["ref"]]
+        ok = verdict("2024年度和2025年度税金及附加分别为304.2万元和315.5万元，2025年度较上年增加11.3万元。", c, cites, [P1, P2])
+        self.assertNotIn("WRONG_PERIOD", codes(ok), ok["findings"])
+        swapped = verdict("2024年度和2025年度税金及附加分别为315.5万元和304.2万元，2025年度较上年增加11.3万元。", c, cites, [P1, P2])
+        self.assertIn("WRONG_PERIOD", codes(swapped), swapped["findings"])
+
+    def test_an_amount_written_right_after_a_short_form_of_the_cited_lines_name_is_that_lines(self):
+        rows = [("仓储服务", "detail", {P2: 503764}), ("C0229华东星河实业有限公司", "detail", {P2: 162800}),
+                ("C0301北辰冷链（南方）有限公司", "detail", {P2: 189300}), ("Total", "total", {P2: 503764})]
+        c = build(rows, notes=[], periods=(P2,), account="预收款项")
+        cites = [ref(c, P2, "仓储服务"), ref(c, P2, "C0229华东星河实业有限公司"), ref(c, P2, "C0301北辰冷链（南方）有限公司")]
+        v = verdict("2025年12月31日主要为仓储服务预收，其中华东星河16.3万元、北辰冷链18.9万元。", c, cites, [P2])
+        self.assertNotIn("WRONG_LINE", codes(v), v["findings"])
+        parent = verdict("2025年12月31日仓储服务16.3万元", c, [ref(c, P2, "仓储服务"), ref(c, P2, "C0229华东星河实业有限公司")], [P2])
+        self.assertIn("WRONG_LINE", codes(parent), "a child's figure written under its parent's name is still the parent's WRONG_LINE")
+
+    def test_a_range_of_periods_names_the_period_inside_it(self):
+        Q = self.Q
+        rows = [("实收资本", "detail", {q: 96537200 for q in Q}), ("Total", "total", {q: 96537200 for q in Q})]
+        c = build(rows, notes=[], periods=Q, account="实收资本")
+        cl.standard_derived(c)
+        cites = [ref(c, q) for q in Q] + [d["ref"] for d in c.derived if d.get("kind") == cl.KIND_MOVEMENT]
+        v = verdict("2024年12月31日至2026年6月30日，实收资本各期均为9,653.7万元，无变动。", c, cites, list(Q))
+        self.assertNotIn("MOVEMENT_END_UNSTATED", codes(v), v["findings"])
+        rows2 = [("甲", "detail", {q: 1000000 + i * 100000 for i, q in enumerate(Q)}), ("Total", "total", {q: 1000000 + i * 100000 for i, q in enumerate(Q)})]
+        c2 = build(rows2, notes=[], periods=Q, account="其他应收款")
+        cl.standard_derived(c2)
+        first = next(d for d in c2.derived if d.get("kind") == cl.KIND_MOVEMENT and d["periods"][-1] == Q[1])
+        bad = verdict("较2024年末增加10.0万元", c2, [first["ref"]], list(Q))
+        message = next(f["message"] for f in bad["findings"] if f["code"] == "MOVEMENT_END_UNSTATED")
+        self.assertIn("2025年末较2024年末", message)
+
+    def test_the_current_period_and_the_change_from_an_earlier_one_are_the_latest_period(self):
+        P3 = "2026-06-30"
+        rows = [("期初未分配利润", "detail", {P2: 5000000, P3: 5000000}), ("当期净利润", "detail", {P2: 0, P3: -1876000}),
+                ("Total", "total", {P2: 5000000, P3: 3124000})]
+        c = build(rows, notes=[], periods=(P2, P3), account="未分配利润")
+        cl.standard_derived(c)
+        d = next(x for x in c.derived if x.get("kind") == cl.KIND_MOVEMENT)
+        v = verdict("较2025年末减少187.6万元，主要系当期净利润-187.6万元", c, [d["ref"], ref(c, P3, "当期净利润")], [P2, P3])
+        self.assertNotIn("PERIOD_UNBOUND", {f["code"] for f in v["findings"]}, v["findings"])
+
+    def test_a_named_line_without_a_cited_figure_is_refused_with_the_figure_to_cite(self):
+        rows = [("银行存款-人民币户", "detail", {P2: 7057600}), ("管理层调整", "detail", {P2: 3366700}), ("Total", "total", {P2: 7057600})]
+        c = build(rows, notes=[], periods=(P2,), account="货币资金")
+        v = verdict("2025年12月31日主要为银行存款-人民币户，其中含管理层调整336.7万元。", c, [ref(c, P2), ref(c, P2, "管理层调整")], [P2])
+        message = next(f["message"] for f in v["findings"] if f["code"] == "LINE_NOT_CITED")
+        self.assertIn(ref(c, P2, "银行存款-人民币户"), message)
+
+    def test_a_period_the_claim_does_not_declare_is_refused_with_the_figure_to_cite(self):
+        c = build(notes=[])
+        v = verdict("2025年12月31日余额130.0万元，高于2024年末", c, [ref(c, P2)], [P2])
+        message = next(f["message"] for f in v["findings"] if f["code"] == "WRONG_PERIOD")
+        self.assertIn(ref(c, P1), message)
+        self.assertIn("periods", message)
+
+    def test_a_movement_between_periods_of_unequal_length_is_refused_with_what_to_write_instead(self):
+        d = {"ref": "D9", "kind": cl.KIND_MOVEMENT, "periods": [P1, P2], "invalid_reason": "income-statement periods differ in length"}
+        self.assertIn("do not compare a part-year figure with a year", cl._movement_remedy(build(notes=[]), d))
+
+
 class NestedDetail(unittest.TestCase):
     """甲 includes 乙 (a nested layout): the flat sum misses the total and nothing says why."""
 

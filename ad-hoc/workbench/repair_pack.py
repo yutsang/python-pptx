@@ -103,7 +103,10 @@ def pack(session: Dict[str, Any], width: int = 140) -> List[str]:
             rounds = [r for r in s["repairs"] if not r.get("inference_repair")]
             out.append(f"  {a}: {len(rounds)} round(s) " + " -> ".join("+".join(round_codes(r)) or "?" for r in rounds)
                        + (f"; stopped: {s.get('stop')}" if s.get("stop") else ""))
-            out.extend(residual(cands[a], width))
+            left = residual(cands[a], width)
+            out.extend(left)
+            if not left and rounds:          # an account-level refusal (a required figure, a note left unaddressed) has no sentence to show
+                out.append(f"      last refusal: {str(rounds[-1].get('feedback') or '')[:600]}")
             for w in s["rewrites"][:3]:
                 if w.get("rewrote"):
                     out.append(f"      step {w.get('step')} the writer's rewrite: " + " | ".join(str(t)[:width] for t in w["rewrote"][:2]))
