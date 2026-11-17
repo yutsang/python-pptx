@@ -1337,6 +1337,46 @@ class WholeDatabookTrial(unittest.TestCase):
         self.assertIn("AMBIGUOUS_SUBJECT", row["codes"])
         self.assertIn("new 1, gone 0, recoloured 0", RS.report(result)[0])
 
+    def test_a_red_mark_that_stays_red_is_listed_with_its_refusals_its_periods_and_the_lines_it_cites(self):
+        # 2026-11-17: a recheck printed only marks that changed; one red sentence stayed red and the reason it was refused (a wrong
+        # sentence or a wrong refusal) could not be told without the figures behind it
+        import recheck_session as RS
+        tmp = tempfile.mkdtemp(prefix="recheck_red_")
+        book = os.path.join(tmp, "wb.xlsx")
+        write_book(book)
+        path = os.path.join(W.DEFAULT_DIR, f"test-recheck-red-{os.getpid()}.agent-session.json")
+
+        def load(**kw):
+            fresh = session_on(book)
+            fresh.load_params = {"workbook": book}
+            return fresh
+        try:
+            with mock.patch.object(W.SourceSession, "load", side_effect=load):
+                work = W.WorkSession.open(book, session_path=path, model=answer_policy(), budget=C.Budget(max_steps=6))
+            work.ask("应收账款期末余额是多少？")
+            work.report("把这段放入报告")
+            work.save(path)
+            saved = json.loads(Path(path).read_text(encoding="utf-8"))
+            saved["candidates"][ACCOUNT]["claims"][0]["text"] = "2024年12月31日应收账款余额130.0万元"   # the amount under the wrong year
+            Path(path).write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+            with mock.patch.object(W.SourceSession, "load", side_effect=load):
+                result = RS.recheck(book, path)
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+        row = result["accounts"][ACCOUNT]
+        self.assertEqual([m["colour"] for m in row["after"]], ["red"])
+        self.assertEqual([d["claim"] for d in row["red"]], [0])
+        detail = row["red"][0]
+        self.assertTrue(any(f.startswith("WRONG_PERIOD") for f in detail["findings"]), detail["findings"])
+        self.assertEqual(detail["binds"], ["130.0万元 -> 2024年12月31日"])
+        self.assertEqual(len(detail["cited"]), 1)
+        self.assertIn("130.00万", detail["cited"][0])
+        self.assertIn("2025-12-31", detail["cited"][0])
+        text = "\n".join(RS.report(result))
+        self.assertIn("STILL RED", text)
+        self.assertIn("amount read under:  130.0万元 -> 2024年12月31日", text)
+
     def test_a_portfolio_folder_runs_one_entity_per_portfolio_against_its_roll_up_sheet_with_one_gate(self):
         import portfolio_trial as PT
         from openpyxl import Workbook

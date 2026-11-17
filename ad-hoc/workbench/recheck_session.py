@@ -45,8 +45,37 @@ def recheck(databook: str, session: str) -> Dict[str, Any]:
             was = {m["claim"] for m in before}
             new_codes = sorted({f["code"] for n, v in enumerate(now.get("verdicts") or []) if n not in was
                                 for f in v.get("findings") or [] if f.get("severity") in ("failed", "review")})
-            out["accounts"][key] = {"before": before, "after": after, "codes": new_codes}
+            red = {m["claim"] for m in after if m["colour"] == "red"}
+            out["accounts"][key] = {"before": before, "after": after, "codes": new_codes,
+                                    "red": [red_detail(n, key, claims[n], (now.get("verdicts") or [])[n], work.source.contracts)
+                                            for n in sorted(red) if n < len(claims) and n < len(now.get("verdicts") or [])]}
     return out
+
+
+def red_detail(n: int, key: str, claim: Dict[str, Any], verdict: Dict[str, Any], contracts: Dict[str, Any]) -> Dict[str, Any]:
+    """What a person needs to tell a wrong sentence from a wrong refusal: every failed finding with its message, the period each
+    amount in the sentence is read as written under, and every fact the claim cites with its line, period and value."""
+    from fdd_utils.ai import claims as cl
+    text = str(claim.get("text") or "")
+    mentions = cl.period_mentions(text)
+    binds = []
+    for sp in cl.text_amounts(text):
+        m = cl.attached_period(text, sp["start"], sp["end"], mentions)
+        binds.append(f"{sp['written']} -> {m['text'] if m else 'no period'}")
+    cited = []
+    for ref in claim.get("cites") or []:
+        item, _owner = cl._lookup(str(ref), contracts, key)
+        if item is None:
+            cited.append(f"{ref}: not found")
+            continue
+        value = item.get("value")
+        cited.append(f"{item.get('ref') or ref} {item.get('period') or '/'.join(map(str, item.get('periods') or []))} "
+                     f"{str(item.get('line') or item.get('kind') or '')[:30]} "
+                     f"{'' if value is None else format(float(value) / 10000, ',.2f') + '万'}")
+    return {"claim": n,
+            "findings": [f"{f.get('code')}: {str(f.get('message') or '')[:300]}"
+                         for f in verdict.get("findings") or [] if f.get("severity") == "failed"],
+            "binds": binds, "cited": cited, "declared": list(claim.get("periods") or [])}
 
 
 def report(result: Dict[str, Any], width: int = 400) -> List[str]:
@@ -76,6 +105,18 @@ def report(result: Dict[str, Any], width: int = 400) -> List[str]:
                 cut = m["text"] if len(m["text"]) <= width else m["text"][:width] + "…"
                 out.append(f"  {sign} {m['colour'][0].upper()} [{m['claim']}] {m['why']}")
                 out.append(f"      {cut}")
+    # red marks that are still red: they do not appear above (nothing changed), and a person cannot judge one without its numbers
+    for key, r in rows.items():
+        for d in r.get("red") or []:
+            mark = next((m for m in r["after"] if m["claim"] == d["claim"]), None)
+            if mark is None:
+                continue
+            cut = mark["text"] if len(mark["text"]) <= width else mark["text"][:width] + "…"
+            out.append(f"STILL RED {key} [{d['claim']}] (claim declares periods {', '.join(d['declared']) or 'none'})")
+            out.append(f"      {cut}")
+            out.extend(f"    failed  {line}" for line in d["findings"])
+            out.append("    amount read under:  " + "; ".join(d["binds"]))
+            out.extend(f"    cites   {line}" for line in d["cited"])
     return out
 
 
