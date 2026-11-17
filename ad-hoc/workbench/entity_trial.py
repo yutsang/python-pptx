@@ -155,7 +155,9 @@ def code_fingerprint() -> Dict[str, Any]:
     import hashlib
     files = sorted(list((ROOT / "fdd_utils" / "agent").glob("*.py"))
                    + [ROOT / "fdd_utils" / "ai" / n for n in ("claims.py", "validator.py", "evidence_contract.py")]
-                   + [ROOT / "fdd_utils" / "workbook" / "supporting.py"]          # the tab's other tables are evidence too
+                   + [ROOT / "fdd_utils" / "workbook" / n for n in ("supporting.py",       # the tab's other tables are evidence too
+                                                                    "inspector.py", "statements.py", "schedules.py")]  # which row holds a tab's dates
+                   + [ROOT / "fdd_utils" / "financial_common.py"]                  # what a date header parses to (the 2026-11-17 label fix)
                    + [ROOT / "fdd_utils" / "report_lengths.yml"]                   # the writer's LENGTH per account
                    + [HERE / n for n in ("entity_trial.py", "agent_acceptance.py")])
     total = hashlib.sha256()
