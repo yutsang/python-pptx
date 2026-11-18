@@ -170,7 +170,8 @@ def run_book(work: Any, accounts: Optional[List[str]] = None, *, on_account: Opt
     work.deck["whole_book"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "accounts": len(keys)}     # the session's drafts are now the deck
     done = work.draft_entity(keys, on_account=on_account, on_review=on_review)
     result.rows = done["rows"]
-    result.stopped = next((r.get("error") or "" for r in done["rows"] if r.get("stop_reason") == "budget_session"), "")
+    result.stopped = next((r.get("error") or "the model-call budget of this run was reached" for r in done["rows"]
+                           if r.get("stop_reason") == "budget_session"), "")
     if overview and not result.stopped:
         try:
             written = work.write_overview("escalation", keys)

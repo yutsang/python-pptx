@@ -55,6 +55,8 @@ SUITES = [
     "test_issue_cases",
     "test_config_report",
     "test_import_audit",
+    "test_book",
+    "test_app_book",
     "test_score_review",
     "test_agent_panel",
     "test_workspace_flows",      # real workbook + archived run named by FDD_FLOW_WORKBOOK / FDD_FLOW_BASE_RUN; skipped without them
