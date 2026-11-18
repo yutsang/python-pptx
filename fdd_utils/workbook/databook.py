@@ -515,11 +515,13 @@ def _extract_normalized_data_from_excel(databook_path, mode="All", entity_name=N
     normalize_started = time.perf_counter()
     if work_items:
         import multiprocessing
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
         max_workers = max(1, min(multiprocessing.cpu_count(), len(work_items)))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = [executor.submit(_normalize_one, item) for item in work_items]
-            for future in as_completed(futures):
+            # read in the order the sheets were submitted, not the order they finished: as_completed made the account order of every
+            # run depend on thread timing (the dict below, then dfs, the writing order and the summary band's first accounts)
+            for future in futures:
                 mapping_key, sheet_name, normalized, mapping_config, resolved, err = future.result()
                 if err:
                     resolution["normalization_errors"][sheet_name] = err
