@@ -417,6 +417,53 @@ def cmd_session(args) -> int:
     return 0
 
 
+def cmd_book(args) -> int:
+    """The whole databook: every account in scope written from its own evidence, the statements' overviews, one deck."""
+    from fdd_utils.agent import book as B
+    from fdd_utils.agent.flag import agent_policy, parse_role
+    model = None
+    if args.scripted:
+        with open(args.scripted, encoding="utf-8") as fh:
+            model = ScriptedModel(json.load(fh))
+    overrides = dict(x.split("=", 1) for x in (args.mapping_override or []) if "=" in x) or None
+    work = B.open_book(args.databook, entity=args.entity or "", sheet=args.sheet, financials_from=args.financials_from,
+                       financials_sheet=args.financials_sheet, mapping_overrides=overrides, model_type=args.model or "",
+                       model_name=args.model_name, model=model,
+                       escalation=parse_role(args.escalation_model) if args.escalation_model else None,
+                       policy=agent_policy(mode=args.routing), thinking=args.thinking or "", session_path=args.session)
+    accounts = work.entity_accounts()
+    if args.limit:
+        accounts = accounts[:args.limit]
+    bar = None
+    try:
+        from tqdm import tqdm
+        bar = tqdm(total=len(accounts), desc="accounts", file=sys.stderr, dynamic_ncols=True)
+    except Exception:                                                # noqa: BLE001
+        pass
+
+    def on_account(key, turn):
+        if bar is not None:
+            bar.update(1)
+            bar.set_postfix(ok=sum(1 for c in work.source.candidates.values() if c.accepted and c.validated), calls=work.model_calls)
+
+    result = B.run_book(work, accounts, on_account=on_account, deck=not args.no_deck, out_path=args.out or "", max_calls=args.max_calls)
+    if bar is not None:
+        bar.close()
+    return _print_book(result, args)
+
+
+def _print_book(result, args) -> int:
+    if getattr(args, "json", False):
+        print(json.dumps({"accounts": result.accounts, "finished": result.finished, "marked": result.marked, "deck": result.deck_path,
+                          "delivery": result.delivery.get("status"), "stopped": result.stopped, "books": result.books()},
+                         ensure_ascii=False, indent=2, default=str))
+    else:
+        print(RULE)
+        print("\n".join(result.summary_lines(os.path.basename(args.databook))))
+    ready = bool(result.deck_path) and result.delivery.get("status") == "ready"
+    return 0 if ready else 2
+
+
 def cmd_summary(args) -> int:
     from fdd_utils.agent.tools import call_tool
     session = _session(args)
@@ -556,6 +603,21 @@ def main(argv=None) -> int:
         p.add_argument("--mapping-override", action="append", default=None, metavar="ACCOUNT=SHEET",
                        help="read ACCOUNT from SHEET (yours to set; repeatable; kept in the session file)")
 
+    b = sub.add_parser("book"); common(b)
+    b.add_argument("--model", default=None, help="local | workbench | dashscope | deepseek | openai (agent.models.primary in config.yml wins when set)")
+    b.add_argument("--model-name", default=None, help="the model within the provider, e.g. the id of Flash in the dropdown")
+    b.add_argument("--scripted", default=None, metavar="FILE", help="replay these replies instead of calling a model")
+    b.add_argument("--routing", choices=("single", "escalate"), default=None)
+    b.add_argument("--escalation-model", default=None, metavar="PROVIDER::MODEL")
+    b.add_argument("--thinking", default=None, metavar="off|on|low|medium|high")
+    b.add_argument("--limit", type=int, default=None, help="only the first N accounts in scope")
+    b.add_argument("--max-calls", type=int, default=None, help="a ceiling on model calls over the whole book (default: agent.max_calls_per_account x accounts)")
+    b.add_argument("--no-deck", action="store_true", help="write the paragraphs and stop: no overview, no deck")
+    b.add_argument("--out", default=None, metavar="DECK")
+    b.add_argument("--mapping-override", action="append", default=None, metavar="ACCOUNT=SHEET", help="read ACCOUNT from SHEET (yours to set; repeatable)")
+    b.add_argument("--session", default=None, metavar="FILE", help="keep the session in this file (figures and commentary: a path git does not track), "
+                                                                   "to ask, edit and export from it afterwards")
+    b.set_defaults(fn=cmd_book)
     s = sub.add_parser("summary"); common(s); s.set_defaults(fn=cmd_summary)
     a = sub.add_parser("ask"); common(a); model_args(a); a.add_argument("question"); session_arg(a); a.set_defaults(fn=cmd_ask)
     e = sub.add_parser("edit"); common(e); model_args(e); e.add_argument("instruction")

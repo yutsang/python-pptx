@@ -245,11 +245,29 @@ def _statement_findings(decision: DeliveryDecision, bs_is_results: Optional[Dict
                      "the BS/IS tables are built from the schedule tabs themselves; no independent Financials sheet was reconciled")
 
 
+#: the phase a run recorded for an account it could not finish (a result may carry its run's state under __run__)
+PHASE_FAILED = "FAILED"
+
+#: clause categories that mean the writer got a FACT wrong, as opposed to drawing an inference the data does not spell out
+RETRIABLE_CLAUSE_CATEGORIES = ("hallucination",)
+
+
+def count_defective_clauses(clause_reviews: Optional[List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+    """The unsupported clauses that block a deck: a number, direction or fact that cannot be tied to the data at all (category
+    "hallucination"). An unsupported clause that is an inference the deliverable wants (category "reasoning", orange in the deck) is
+    not a defect."""
+    return [
+        r for r in (clause_reviews or [])
+        if isinstance(r, dict)
+        and not r.get("supported")
+        and str(r.get("category", "")).strip().lower() in RETRIABLE_CLAUSE_CATEGORIES
+    ]
+
+
 def _account_findings(decision: DeliveryDecision, ai_results: Optional[Dict[str, Any]]) -> None:
     if ai_results is None:
         decision.add("NO_RESULTS", "blocked", "no commentary results were supplied")
         return
-    from .ai.pipeline import PHASE_FAILED, count_defective_clauses
     health = ai_results.get("__run_health__") if isinstance(ai_results, dict) else None
     if isinstance(health, dict) and health.get("zero_successful_calls"):
         decision.add("NO_MODEL_OUTPUT", "blocked",

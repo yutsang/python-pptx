@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # re-added: bound by an import in another section of the pre-split module
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 from .views import build_account_display_dataframe, build_processed_display_groups, describe_statement_period
@@ -11,7 +11,7 @@ from typing import Any, List
 import pandas as pd
 import streamlit as st
 
-from ..workbook import find_mapping_key, load_mappings
+from ..workbook import find_mapping_key
 
 
 def render_reconciliation_metrics(recon_df: pd.DataFrame):
@@ -361,11 +361,15 @@ def render_processed_view(
     with col_redo:
         st.markdown("<br>", unsafe_allow_html=True)
         redo_key = f"redo_ai_{session_state.button_click_counter}"
-        if st.button("🔄", help="Re-run AI generation", key=redo_key, use_container_width=True):
+        if st.button("🔄", help="Write the commentary again (a new paid run)", key=redo_key, use_container_width=True):
             session_state.ai_results = None
+            session_state.book_error = None
+            session_state.agent_work = None
             session_state.pptx_ready = False
             session_state.pop("pptx_download_data", None)
             session_state.pop("section_summaries", None)
+            session_state.pop("agent_last_turn", None)
+            session_state.pop("agent_last_export", None)
             session_state.button_click_counter += 1
             st.rerun()
     with col_download:
@@ -391,7 +395,6 @@ def render_processed_view(
         before_ai_section()
     render_ai_generation_section(session_state, get_model_display_name)
     render_generated_content(session_state, account_display_dfs, mappings, get_model_display_name)
-    # Off unless agent.enabled / FDD_AGENT: renders nothing then, so the app is what it was.
     from .agent_panel import render_agent_panel
     render_agent_panel(session_state)
 # --- end ui/processed.py ---

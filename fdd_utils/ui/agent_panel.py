@@ -1,9 +1,9 @@
 """The agent workbench inside the app: ask, follow up, put it in the report, review the draft, accept, export.
 
-Off unless the agent path is switched on (agent.enabled in config.yml, or FDD_AGENT=1): with it off this renders nothing
-and the app is exactly what it was. On, it is a thin face over agent/workspace.WorkSession -- every rule (what carries
-between turns, what a changed workbook invalidates, what an export refuses) lives there and is tested there; this file
-only shows it and passes clicks through.
+A thin face over agent/workspace.WorkSession -- every rule (what carries between turns, what a changed workbook invalidates, what an
+export refuses) lives there and is tested there; this file only shows it and passes clicks through. It works on the session the
+commentary run left in session_state (agent_run.WORK_KEY), so a question is answered from the evidence the run already read, and a
+draft accepted here goes into the same deck.
 
 The session lives in st.session_state for as long as the browser tab does. Nothing is written to disk unless the user
 presses "Save session", and then only to fdd_utils/output/agent_sessions/ (git-ignored).
@@ -15,7 +15,6 @@ from typing import Any, Callable, Dict, Optional
 
 import streamlit as st
 
-from ..agent.flag import agent_enabled, agent_limits, agent_policy
 
 KEY = "agent_work"
 TURN_KEY = "agent_last_turn"
@@ -23,19 +22,18 @@ EXPORT_KEY = "agent_last_export"
 
 
 def _open_work(session_state: Any):
-    """A WorkSession over what the app has loaded: the same workbook, entity, Financials source, base run and the manual mapping
-    overrides set in the app. agent.models in config.yml chooses the models when it is set; otherwise the sidebar's model."""
-    from ..agent.flag import role_config
-    from ..agent.workspace import WorkSession
+    """A WorkSession over what the app has loaded: the same workbook, entity, Financials source and the manual mapping overrides set in
+    the app (used when the page has none yet, as after the replayed demo). agent.models in config.yml chooses the models when it is
+    set; otherwise the sidebar's model."""
+    from ..agent import book as B
     rollup = session_state.get("rollup_temp_path") if session_state.get("rollup_sheet") else None
-    configured = bool(role_config(None, "primary").get("provider"))
-    return WorkSession.open(
+    return B.open_book(
         session_state.get("temp_path"), entity=session_state.get("entity_name") or "",
-        sheet=None if rollup else session_state.get("selected_sheet"),
-        financials_from=rollup, financials_sheet=session_state.get("rollup_sheet") if rollup else None,
-        base_run=session_state.get("last_run_folder"), mapping_overrides=dict(session_state.get("mapping_overrides") or {}) or None,
-        model_type="" if configured else session_state.get("model_type", "local"), model_name=None if configured else session_state.get("model_name"),
-        limits=agent_limits(), policy=agent_policy())
+        sheet=None if rollup else session_state.get("selected_sheet"), financials_from=rollup,
+        financials_sheet=session_state.get("rollup_sheet") if rollup else None,
+        mapping_overrides=dict(session_state.get("mapping_overrides") or {}) or None,
+        model_type=session_state.get("model_type", "local"), model_name=session_state.get("model_name"),
+        language=session_state.get("language") or "")
 
 
 def _show_turn(turn: Any) -> None:
@@ -96,7 +94,7 @@ def _show_candidates(work: Any, can_export: bool) -> None:
                 # shown inline: this panel is itself one expander, and Streamlit does not allow an expander inside an expander
                 st.markdown(f"**What it replaces** ({len(view['changes']['added'])} added, {len(view['changes']['removed'])} removed, {view['changes']['kept']} kept)")
                 st.markdown(view["replaces"])
-            else:
+            elif work.source.base_results:
                 st.caption("Replaces nothing: the base run has no commentary for this account.")
             for item in view["unresolved"]:
                 st.warning("Unresolved: " + item)
@@ -135,18 +133,13 @@ def _show_export(result: Optional[Dict[str, Any]]) -> None:
 
 
 def render_agent_panel(session_state: Any, factory: Optional[Callable[[Any], Any]] = None) -> None:
-    if not agent_enabled():
-        return
     if not session_state.get("temp_path") or not os.path.exists(str(session_state.get("temp_path"))):
         return
-    with st.expander("🧭 Agent workbench: investigate, put it in the report, export", expanded=bool(session_state.get(KEY))):
+    with st.expander("🧭 Agent workbench: investigate, put it in the report, export", expanded=bool(session_state.get(TURN_KEY))):
         work = session_state.get(KEY)
         if work is None:
             st.caption("An investigation session keeps what you asked, what the answers rested on, and the drafts you accept, until you close the tab. "
                        "Questions are answered by the model selected in the sidebar and are billed by the provider.")
-            if not session_state.get("last_run_folder"):
-                st.warning("There is no AI run for this workbook yet, so a deck made here would hold only the accounts you edit. "
-                           "Generate content first, or accept that an export will be refused.")
             if st.button("Start a session on this workbook", key="agent_start"):
                 with st.spinner("Reading the workbook…"):
                     try:
@@ -196,6 +189,8 @@ def render_agent_panel(session_state: Any, factory: Optional[Callable[[Any], Any
         accepted = [v for v in work.candidates_view() if v["status"] == "accepted"]
         if st.button(f"Export a deck from {len(accepted)} accepted draft(s)", key="agent_export", disabled=not accepted):
             with st.spinner("Writing the deck and checking the slides…"):
+                # the session decides: one that wrote the whole book exports every accepted draft, one over a base run its edits,
+                # and one with neither is refused in words (what to run first)
                 session_state[EXPORT_KEY] = work.export()
         _show_export(session_state.get(EXPORT_KEY))
         open_items = work.unresolved()

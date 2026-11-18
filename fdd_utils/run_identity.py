@@ -128,6 +128,28 @@ def resolve_run_folder(run: str, log_dir: str = "fdd_utils/logs") -> Optional[st
     return None
 
 
+#: what a pipeline run saved beside its results: the executive summaries it wrote, and one line per account as it finished
+SECTION_SUMMARIES_FILE = "section_summaries.json"
+
+
+def read_checkpoints(run_folder: str) -> List[Dict[str, Any]]:
+    """Every complete line of a run's checkpoint.jsonl, in order. A truncated last line (the run died mid-append) is skipped."""
+    path = os.path.join(run_folder, "checkpoint.jsonl")
+    out: List[Dict[str, Any]] = []
+    if not os.path.exists(path):
+        return out
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                continue
+    return out
+
+
 def load_run(run_folder: str) -> Dict[str, Any]:
     """results.yml, run_identity.json, section_summaries.json and each account's
     last checkpointed frame fingerprint. Absent files come back as None / {}."""
@@ -143,11 +165,8 @@ def load_run(run_folder: str) -> Dict[str, Any]:
         with open(path, encoding="utf-8") as fh:
             return json.load(fh)
 
-    from .ai.logging import PipelineRunLogger
-    from .ui.pptx_export import SECTION_SUMMARIES_FILE
-
     fingerprints: Dict[str, Optional[str]] = {}
-    for line in PipelineRunLogger.read_checkpoints(run_folder):
+    for line in read_checkpoints(run_folder):
         key = str(line.get("mapping_key") or "")
         if key:
             fingerprints[key] = line.get("fingerprint")

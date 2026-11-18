@@ -19,7 +19,7 @@ from typing import Dict, List
 # Import modules
 from fdd_utils.ui import (
     batch_extract_entity_data,
-    batch_run_ai_for_entity,
+    batch_run_book_for_entity,
     build_entity_selector_model,
     generate_pptx_presentation as render_generate_pptx_presentation,
     initialize_app_state,
@@ -887,9 +887,6 @@ def render_batch_processing_section():
     # entity using what extraction already produced, reruns again before
     # moving to the next entity. ---
     if st.session_state.get("batch_processing_in_progress"):
-        from fdd_utils.ai import SUBAGENT_SEQUENCE
-        n_stages = len(SUBAGENT_SEQUENCE)
-
         ready_slots = st.session_state.get("batch_ready_slots") or []
         rollup_temp_path = st.session_state.get("batch_rollup_temp_path_snapshot")
         batch_language = st.session_state.get("language", "Eng")
@@ -950,10 +947,8 @@ def render_batch_processing_section():
             else:  # phase == "ai"
                 extracted = st.session_state.get("batch_pending_extracted")
 
-                def _progress_cb(agent_num, agent_name, item_num, total_items_in_agent, completed_items,
-                                  key_name=None, _idx=idx, _entity=slot["entity_name"]):
-                    entity_total_steps = max(1, n_stages * total_items_in_agent)
-                    entity_fraction = min(completed_items / entity_total_steps, 1.0)
+                def _progress_cb(done_accounts, total_accounts, account, _idx=idx, _entity=slot["entity_name"]):
+                    entity_fraction = min(done_accounts / max(total_accounts, 1), 1.0)
                     overall_fraction = min((_idx + entity_fraction) / total, 1.0) if total else 1.0
                     progress_bar.progress(overall_fraction)
 
@@ -964,11 +959,9 @@ def render_batch_processing_section():
                     else:
                         eta_display = "Calculating..."
 
-                    key_display = f" | Key: {key_name}" if key_name else ""
                     status.info(
                         f"⏳ {overall_fraction:.0%} overall | Entity {_idx + 1}/{total}: {_entity} "
-                        f"— Stage {agent_num}/{n_stages}: {agent_name} | Item {item_num}/{total_items_in_agent}"
-                        f"{key_display} | ETA: {eta_display}"
+                        f"— account {done_accounts}/{total_accounts} written: {account} | ETA: {eta_display}"
                     )
 
                 status.info(f"⏳ Entity {idx + 1}/{total}: {slot['entity_name']} — running AI generation...")
@@ -976,11 +969,10 @@ def render_batch_processing_section():
                   with usage_ledger.scope(file=slot.get("file_name"), entity=slot["entity_name"]):
                     usage_ledger.record_event("ai_run", mode="batch",
                                               model=st.session_state.get("model_name") or st.session_state.get("model_type"))
-                    outcome = batch_run_ai_for_entity(
+                    outcome = batch_run_book_for_entity(
                         extracted=extracted,
                         model_type=st.session_state.get("model_type", "local"),
                         model_name=st.session_state.get("model_name"),
-                        use_multithreading=st.session_state.get("use_multithreading", True),
                         progress_callback=_progress_cb,
                     )
                 except Exception as exc:

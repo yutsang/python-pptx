@@ -316,3 +316,32 @@ def selection_without_financials(available_keys: Iterable[str]) -> SelectionResu
                 text, True, ROUTE_UNCHECKED_HISTORY, "no_independent_financials",
                 "no Financials sheet to reconcile against; the statement tables are built from these same tabs"))
     return result
+
+
+def detect_statement_mode(reconciliation: tuple[pd.DataFrame | None, pd.DataFrame | None] | None) -> str:
+    """Auto-detect whether this databook has only BS, only IS, or both
+    reconciled statements — replaces the old manual "Statement scope"
+    selectbox. A statement is "absent" when its reconciliation frame is
+    None/empty (e.g. the Financials sheet had no IS section at all), not
+    merely when few of its accounts matched cleanly — that weaker case is
+    already handled by the existing "use all dfs" fallback in the caller."""
+    if not reconciliation:
+        return "full"
+    bs_recon, is_recon = (list(reconciliation) + [None, None])[:2]
+    bs_present = bs_recon is not None and not bs_recon.empty
+    is_present = is_recon is not None and not is_recon.empty
+    if bs_present and not is_present:
+        return "bs_only"
+    if is_present and not bs_present:
+        return "is_only"
+    return "full"
+
+
+def explain_reconciliation_selection(
+    reconciliation: tuple[pd.DataFrame | None, pd.DataFrame | None] | None,
+    available_keys: Iterable[str],
+    resolution: Dict[str, Any] | None = None,
+    dfs: Dict[str, Any] | None = None,
+):
+    """Account-by-account route and reason; see workbook/selection.py."""
+    return select_reconciliation_keys(reconciliation, available_keys, resolution, dfs=dfs)

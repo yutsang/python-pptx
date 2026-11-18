@@ -585,19 +585,19 @@ class WorkSession:
     # -- export and decks --------------------------------------------------------------------------------
 
     def first_generation_plan(self) -> Dict[str, Any]:
-        """How to get a full first deck when there is no base run: the legacy pipeline writes every account (and a run this session
-        can then be bound to). The agent path does not write a whole entity from nothing yet, and a deck of a few accounts is not one."""
+        """How to get a full first deck when there is no base run: write the whole book first (book.py), which the session can then
+        export. A deck of a few accounts is not one."""
         p = self.source.load_params or {}
         workbook = p.get("workbook") or self.source.workbook_path
-        legacy = ["python", "inspect_databook.py", workbook, "--run-ai", "--export-pptx"]
+        command = ["python", "fdd_agent.py", "book", workbook, "--session", "<FILE>"]
         for flag, key in (("--entity", "entity"), ("--sheet", "sheet"), ("--financials-from", "financials_from"), ("--financials-sheet", "financials_sheet")):
             if p.get(key):
-                legacy += [flag, str(p[key])]
-        return {"why": "no base run: the agent path writes and checks single accounts; a whole entity's first draft comes from the legacy pipeline",
-                "steps": [{"what": "write the whole entity with the legacy pipeline (real model calls; the run's tokens are in usage.jsonl)",
-                           "command": " ".join(f'"{x}"' if " " in str(x) else str(x) for x in legacy)},
-                          {"what": "bind this session to that run (the run must be shown to describe this workbook: identity or every account's fingerprint)",
-                           "command": "in the session: /base-run <RUN_ID>   (or open it again with --base-run <RUN_ID>)"}],
+                command += [flag, str(p[key])]
+        return {"why": "no whole-book run under this session: it holds the accounts asked about here, and a deck of those would leave every other account out",
+                "steps": [{"what": "write the whole entity (real model calls; the run's tokens are in usage.jsonl), keeping the session",
+                           "command": " ".join(f'"{x}"' if " " in str(x) else str(x) for x in command)},
+                          {"what": "then ask, edit and export in that session, or write the book in the app and use its workbench",
+                           "command": "python fdd_agent.py export <workbook> --session <FILE>"}],
                 "not_offered": "a deck holding only the accounts edited here, presented as the report: it would leave every other account out"}
 
     def set_base_run(self, run: str) -> Dict[str, Any]:
@@ -645,6 +645,8 @@ class WorkSession:
         first_generation=True the deck is the drafts alone (draft_entity): no base text fills an account the agent did not finish;
         the delivery decision lists each missing account and blocks the deck."""
         self.ensure_fresh()
+        # a session that wrote the whole book (book.run_book) has no base run under it: its drafts are the deck
+        first_generation = first_generation or (not self.source.base_results and bool(self.deck.get("whole_book")))
         if first_generation:
             chosen = accounts or self.first_generation_accounts()
             if not chosen:

@@ -54,7 +54,7 @@ def book_cap(config: Optional[Dict[str, Any]], accounts: int) -> Optional[int]:
 def open_book(workbook: str, *, entity: str = "", sheet: Optional[str] = None, financials_from: Optional[str] = None,
               financials_sheet: Optional[str] = None, mapping_overrides: Optional[Dict[str, str]] = None, model_type: str = "",
               model_name: Optional[str] = None, language: str = "", config: Optional[Dict[str, Any]] = None, model: Any = None,
-              escalation: Any = None, limits: Any = None, policy: Any = None, budget: Any = None) -> Any:
+              escalation: Any = None, limits: Any = None, policy: Any = None, budget: Any = None, thinking: str = "", session_path: Optional[str] = None) -> Any:
     """A WorkSession over the workbook, writing with the model the caller names (the app's dropdown, --model) unless agent.models in
     config.yml names one, then that wins. `model` is a callable (a scripted writer) used instead of any provider."""
     from . import flag as F
@@ -62,13 +62,14 @@ def open_book(workbook: str, *, entity: str = "", sheet: Optional[str] = None, f
     if config is None:
         config = F._config(None)
     kwargs: Dict[str, Any] = {"budget": budget or F.agent_budget(config), "limits": limits or F.agent_limits(config),
-                              "policy": policy or F.agent_policy(config), "config": config, "prepare": None}
+                              "policy": policy or F.agent_policy(config), "config": config, "prepare": None,
+                              "thinking": thinking}
     if model is not None:
         kwargs.update(model=model, escalation=escalation, model_name=model_name or "injected")
     else:
         configured = bool(F.role_config(config, "primary").get("provider"))
         kwargs.update(model_type="" if configured else model_type, model_name=None if configured else model_name)
-    work = WorkSession.open(workbook, entity=entity or "", sheet=None if financials_from else sheet, financials_from=financials_from,
+    work = WorkSession.open(workbook, session_path=session_path, entity=entity or "", sheet=None if financials_from else sheet, financials_from=financials_from,
                             financials_sheet=financials_sheet if financials_from else None,
                             mapping_overrides=dict(mapping_overrides or {}) or None, **kwargs)
     if language:
@@ -113,6 +114,39 @@ class BookResult:
     def books(self) -> Dict[str, Any]:
         return self.work.shared.summary()
 
+    @property
+    def marked(self) -> List[str]:
+        """Drafts carried into the deck with the sentences the verifier refused marked (red or orange)."""
+        from . import tools as T
+        return T.drafts_to_mark(self.work.source)
+
+    def summary_lines(self, name: str = "") -> List[str]:
+        """What a run did, in a screenful: accounts finished, marked and not drafted, the deck and what blocks it, the books."""
+        books = self.books()
+        finished, marked = self.finished, self.marked
+        lines = [f"BOOK  {name}  source version {self.work.source.source_version}",
+                 f"accounts in scope {len(self.accounts)}   finished {len(finished)}   drafts carried with marked sentences {len(marked)}   "
+                 f"not drafted {len([a for a in self.accounts if a not in finished and a not in marked])}"]
+        if self.stopped:
+            lines.append(f"STOPPED: {self.stopped}")
+        if self.overview:
+            lines.append("executive summary written for: " + ", ".join(sorted(self.overview)))
+        elif self.overview_error:
+            lines.append(f"executive summary NOT written: {self.overview_error}")
+        if self.export is not None:
+            if self.deck_path:
+                lines.append(f"deck: {self.deck_path}   delivery: {self.delivery.get('status')}")
+                for finding in (self.delivery.get("findings") or [])[:8]:
+                    if finding.get("severity") in ("blocked", "review"):
+                        lines.append(f"  [{finding['severity']}] {finding.get('account') or 'deck'}: {str(finding.get('message'))[:160]}")
+            else:
+                lines.append(f"NO DECK: [{self.error.get('code')}] {str(self.error.get('message'))[:200]}")
+        lines.append(f"model calls {books['calls']}   charged tokens {books['charged_tokens']:,}"
+                     + (f"   cost {books['cost']:.2f} yuan" if books.get("cost") is not None else "") + f"   {self.seconds}s")
+        if self.issue_cases:
+            lines.append(f"{self.issue_cases} account(s) with a refused sentence kept as cases (free to re-check: python ad-hoc/workbench/issue_cases.py replay)")
+        return lines
+
 
 def results_for_deck(work: Any) -> Dict[str, Any]:
     """The per-account results as the deck and the app's commentary tabs read them (claims.to_legacy_result): the accepted drafts and
@@ -126,7 +160,6 @@ def run_book(work: Any, accounts: Optional[List[str]] = None, *, on_account: Opt
              issues_dir: Optional[Any] = ISSUE_DIR, max_calls: Optional[int] = None) -> BookResult:
     """Write every account in scope (or `accounts`), the overviews, and export the deck. `on_account(key, turn)` is called as each
     account finishes. Returns what was written; a model that failed or a budget that ran out is in the result, not raised."""
-    from . import flag as F
     from . import routing as R
     started = time.perf_counter()
     keys = list(accounts or work.entity_accounts())
@@ -134,6 +167,7 @@ def run_book(work: Any, accounts: Optional[List[str]] = None, *, on_account: Opt
     if cap is not None:
         work.max_model_calls = cap
     result = BookResult(work=work, accounts=keys)
+    work.deck["whole_book"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "accounts": len(keys)}     # the session's drafts are now the deck
     done = work.draft_entity(keys, on_account=on_account, on_review=on_review)
     result.rows = done["rows"]
     result.stopped = next((r.get("error") or "" for r in done["rows"] if r.get("stop_reason") == "budget_session"), "")

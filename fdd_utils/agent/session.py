@@ -402,7 +402,7 @@ class SourceSession:
         """Read the workbook (and Financials), settle which accounts are in scope,
         and build every account's contract. Deterministic; no model call."""
         from ..ai.facts import build_financials_by_key
-        from ..ui.pptx_export import batch_extract_entity_data
+        from ..workbook.entity import batch_extract_entity_data
 
         fin_sheet = financials_sheet if financials_from else (sheet or find_financials_sheet(workbook))
         refuse_hidden(financials_from or workbook, fin_sheet)   # raises HiddenSheetError

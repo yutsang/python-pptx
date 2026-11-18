@@ -1,12 +1,16 @@
+"""The commentary the agent wrote, in the app: the run that writes it, and the tabs that show it and take a request to write one account again.
+
+The run itself is fdd_utils/agent/book.py (driven by ui/agent_run.py); this file shows its progress and files what it returns in
+session_state, where the processed view, the deck export and the batch view read it. The commentary of an account is the agent's
+paragraph in the shape the deck reads (claims.to_legacy_result): the sentences, and for each one the verifier's reading of it, which the
+tabs paint red (a figure the databook does not support, or a sentence the agent read and found wrong) or orange (refused only for how its
+prose was read).
+"""
 from __future__ import annotations
 
-# re-added: bound by an import in another section of the pre-split module
-from pathlib import Path
-
-
-from .views import derive_reconciliation_matched_keys, detect_statement_mode, explain_reconciliation_selection
 import time
 import traceback
+from pathlib import Path
 from typing import Any, Dict
 
 import pandas as pd
@@ -21,33 +25,20 @@ if not hasattr(st, "fragment"):
         return func
     st.fragment = _noop_fragment  # type: ignore[attr-defined]
 
-from ..ai import (
-    FDDConfig,
-    WORKBENCH_AVAILABLE_MODELS,
-    build_highlighted_commentary_html,
-    get_default_config_path,
-    get_prompt_engine,
-    is_provider_ready,
-    load_yaml_config,
-    parse_validator_response,
-    run_ai_pipeline_with_progress,
-    run_generator_reprompt,
-)
+from ..ai import FDDConfig
+from ..ai.validator import build_highlighted_commentary_html
 from ..financial_common import extract_result_text_content, get_pipeline_result_text
 from ..financial_display_format import prepare_display_dataframe, stringify_display_dataframe
 from ..workbook import (
-    build_account_mapping_diagnostics,
-    build_workbook_preflight,
-    extract_entity_names_from_preflight,
     find_mapping_key,
     get_effective_mappings,
-    get_financial_sheet_options,
     load_mappings,
     split_accounts_by_type,
 )
+from ..workbook import remarks as _remarks
+from .views import detect_statement_mode, explain_reconciliation_selection
 
 _EMPTY_RESULT_MARKERS = {"none", "null", "nan", "", "n/a", "na"}
-_PROMPT_MANAGER = get_prompt_engine()
 
 
 def format_dataframe_for_display(df: pd.DataFrame) -> pd.DataFrame:
@@ -83,7 +74,6 @@ def build_selected_pipeline_dfs(session_state: Any) -> Dict[str, pd.DataFrame]:
             selected_dfs[account_key] = selected_df
     return selected_dfs
 
-
 def extract_result_text(result_dict: Dict[str, Any], agent_key: str) -> str:
     return extract_result_text_content((result_dict or {}).get(agent_key, ""))
 
@@ -94,6 +84,7 @@ def has_meaningful_result_text(content: Any) -> bool:
 
 
 def hydrate_nested_agent_outputs(result_dict: Dict[str, Any]) -> None:
+    """Put the commentary's text under "final" where the tabs read it (a result may carry it only inside a nested stage output)."""
     if not isinstance(result_dict, dict):
         return
     for agent_name in ("subagent_1", "subagent_2", "subagent_3", "subagent_4"):
@@ -116,17 +107,14 @@ def _result_has_pipeline_content(result: Dict[str, Any]) -> bool:
 
 
 def extract_validator_metadata(result_dict: Dict[str, Any]) -> Dict[str, object]:
+    """The verifier's reading of each sentence (clause_reviews) as the commentary tab paints it."""
     validation = result_dict.get("agent_4_validation", {})
-    if isinstance(validation, dict):
-        if isinstance(validation.get("clause_reviews"), list):
-            return {
-                "final_content": str(validation.get("final_content") or extract_result_text(result_dict, "final")).strip(),
-                "clause_reviews": validation.get("clause_reviews", []),
-                "raw_response": str(validation.get("raw_response") or validation.get("output") or ""),
-            }
-        raw_response = validation.get("raw_response") or validation.get("output")
-        if isinstance(raw_response, str) and raw_response.strip():
-            return parse_validator_response(raw_response, fallback_content=extract_result_text(result_dict, "final"))
+    if isinstance(validation, dict) and isinstance(validation.get("clause_reviews"), list):
+        return {
+            "final_content": str(validation.get("final_content") or extract_result_text(result_dict, "final")).strip(),
+            "clause_reviews": validation.get("clause_reviews", []),
+            "raw_response": str(validation.get("raw_response") or validation.get("output") or ""),
+        }
     return {"clause_reviews": [], "raw_response": ""}
 
 
@@ -134,14 +122,14 @@ def extract_account_remarks_context(df: pd.DataFrame | None, language: str) -> D
     if not isinstance(df, pd.DataFrame):
         return {}
     supporting_notes = [str(note).strip() for note in (df.attrs.get("supporting_notes") or []) if str(note).strip()]
-    rhs_rows = _PROMPT_MANAGER.filter_adjacent_detail_rows(df)
-    rhs_summary = _PROMPT_MANAGER.summarize_rhs_remarks(rhs_rows, language)
-    table_linked_remarks = _PROMPT_MANAGER.table_linked_remarks(df)
+    rhs_rows = _remarks.filter_adjacent_detail_rows(df)
+    rhs_summary = _remarks.summarize_rhs_remarks(rhs_rows, language)
+    table_linked = _remarks.table_linked_remarks(df)
     return {
         "supporting_notes": supporting_notes,
         "rhs_rows": rhs_rows,
         "rhs_summary": rhs_summary,
-        "table_linked_remarks": table_linked_remarks,
+        "table_linked_remarks": table_linked,
     }
 
 
@@ -205,9 +193,8 @@ def _run_demo_ai(
         logger.warning("Could not load demo results from %s: %s", demo_path, exc)
         all_results = {}
 
-    # Pipeline is now 3 stages: Generator → Auditor (Polish) → Validator
-    from ..ai import SUBAGENT_SEQUENCE
-    agents = [label for _, label in SUBAGENT_SEQUENCE]
+    # the simulated run shows the three stages the recorded results came from
+    agents = ["Generator", "Auditor", "Validator"]
     n_stages = len(agents)
     total_steps = n_stages * max(len(matched_keys), 1)
     tick = max(0.1, duration_s / total_steps)
@@ -233,8 +220,7 @@ def _run_demo_ai(
     # IS bullets disappeared from the export.
     alias_to_canonical: Dict[str, str] = {}
     try:
-        from fdd_utils.ai import get_prompt_engine as _get_pe
-        for canonical, entry in (_get_pe().mappings_data or {}).items():
+        for canonical, entry in (load_mappings() or {}).items():
             if not isinstance(entry, dict):
                 continue
             alias_to_canonical[canonical] = canonical
@@ -310,246 +296,106 @@ def _run_demo_ai(
     return results
 
 
+def _matched_keys(session_state: Any) -> list:
+    """The accounts the deck covers (the reconciliation selection), for the replayed demo; a real run takes them from its session."""
+    selected = build_selected_pipeline_dfs(session_state)
+    reconciliation = session_state.get("reconciliation")
+    statement_mode = detect_statement_mode(reconciliation)
+    if statement_mode in ("is_only", "bs_only"):
+        target_type = "IS" if statement_mode == "is_only" else "BS"
+        mappings = effective_mappings_from_session(session_state)
+        keys = [k for k in selected if mappings.get(find_mapping_key(k, mappings) or k, {}).get("type") == target_type]
+        session_state.reconciliation_selection = None
+        return keys or list(selected)
+    selection = explain_reconciliation_selection(reconciliation, selected.keys(), session_state.get("resolution"), dfs=selected)
+    keys = selection.admitted_keys
+    if not bool(reconciliation and any(df is not None and not df.empty for df in reconciliation)):
+        from ..workbook.selection import selection_without_financials
+        keys = list(selected)
+        selection = selection_without_financials(keys)
+    session_state.reconciliation_selection = selection
+    return keys
+
+
+def _eta(started: float, done: int, total: int) -> str:
+    if done <= 0 or total <= 0:
+        return "Calculating..."
+    left = (time.time() - started) / done * (total - done)
+    return f"{int(left // 60)}m {int(left % 60)}s"
+
+
 def render_ai_generation_section(session_state: Any, get_model_display_name) -> None:
-    # Auto-trigger: run AI automatically when data is loaded but no results yet.
-    # No button needed — user gets a Redo button in the export header instead.
-    from .pptx_export import generate_pptx_presentation, logger  # local: breaks the ai_panel<->pptx_export import cycle
-    auto_trigger = (
-        session_state.get("dfs") is not None
-        and session_state.get("ai_results") is None
-    )
-    if not auto_trigger:
+    # Auto-trigger: write the commentary automatically when data is loaded but there is none yet.
+    # No button needed; the Redo button in the export header starts it again.
+    from .pptx_export import generate_pptx_presentation
+    if not (session_state.get("dfs") is not None and session_state.get("ai_results") is None):
+        return
+    if session_state.get("book_error"):
+        # a run that failed is not started again by the next click on the page: every attempt is paid for
+        st.error(f"❌ The last run did not produce commentary: {session_state.book_error}")
+        if st.button("Try again", key="book_retry"):
+            session_state.book_error = None
+            st.rerun()
         return
 
     session_state.pptx_ready = False
-    session_state.pop("pptx_download_data", None)
-    session_state.pop("section_summaries", None)
+    for key in ("pptx_download_data", "section_summaries", "agent_work", "agent_last_turn", "agent_last_export"):
+        session_state.pop(key, None)
 
     progress_container = st.container()
-
     with progress_container:
         st.markdown("### 🔄 AI Processing Progress")
         progress_placeholder = st.empty()
         status_placeholder = st.empty()
         try:
-            results = None
-            selected_pipeline_dfs = build_selected_pipeline_dfs(session_state)
-            reconciliation = session_state.get("reconciliation")
-            statement_mode = detect_statement_mode(reconciliation)
-
-            if statement_mode in ("is_only", "bs_only"):
-                # Bypass reconciliation filter — this databook only has one
-                # statement's reconciliation data (auto-detected).
-                target_type = "IS" if statement_mode == "is_only" else "BS"
-                _mappings = effective_mappings_from_session(session_state)
-                matched_mapping_keys = [
-                    k for k in selected_pipeline_dfs
-                    if _mappings.get(find_mapping_key(k, _mappings) or k, {}).get("type") == target_type
-                ]
-                if not matched_mapping_keys:
-                    matched_mapping_keys = list(selected_pipeline_dfs.keys())
-                session_state.reconciliation_selection = None
-                status_placeholder.info(
-                    f"{'IS' if statement_mode == 'is_only' else 'BS'}-only mode: processing "
-                    f"{len(matched_mapping_keys)} schedule account(s) — reconciliation filter bypassed."
-                )
-            else:
-                selection = explain_reconciliation_selection(
-                    reconciliation,
-                    selected_pipeline_dfs.keys(),
-                    session_state.get("resolution"),
-                    dfs=selected_pipeline_dfs,
-                )
-                matched_mapping_keys = selection.admitted_keys
-                has_reconciliation_data = bool(reconciliation and any(recon_df is not None and not recon_df.empty for recon_df in reconciliation))
-                if not has_reconciliation_data:
-                    matched_mapping_keys = list(selected_pipeline_dfs.keys())
-                    from ..workbook.selection import selection_without_financials
-                    selection = selection_without_financials(matched_mapping_keys)
-                    if not matched_mapping_keys:
-                        status_placeholder.warning("No reconciliation results and no extracted schedule data available.")
-                    else:
-                        status_placeholder.info(f"No reconciliation data; proceeding with all {len(matched_mapping_keys)} extracted schedule account(s).")
-                # Filed for the delivery decision (delivery.py): which accounts were left out
-                # of the deck, and which were let in without being tied out.
-                session_state.reconciliation_selection = selection
-                if has_reconciliation_data and not matched_mapping_keys:
-                    status_placeholder.warning("No eligible matched or dynamically resolved schedule accounts were found, so AI generation was skipped.")
-                    matched_mapping_keys = []
-            if matched_mapping_keys:
-                total_items = len(matched_mapping_keys)
-                # Pipeline is now 3 stages: Generator → Auditor (Polish) → Validator
-                from ..ai import SUBAGENT_SEQUENCE
-                n_stages = len(SUBAGENT_SEQUENCE)
-                total_steps = n_stages * total_items
-
-                def update_progress(agent_num, agent_name, item_num, total_items_in_agent, completed_items, key_name=None):
-                    if agent_num > n_stages:
-                        key_display = f" | Key: {key_name}" if key_name else ""
-                        status_placeholder.info(f"🔄 Feedback Loop: {agent_name}{key_display} — refining based on validator feedback")
-                        return
-                    completed_steps = completed_items
-                    progress = min(completed_steps / total_steps, 1.0) if total_steps > 0 else 0.0
-                    progress_placeholder.progress(progress)
-                    key_display = f" | Key: {key_name}" if key_name else ""
-                    if hasattr(update_progress, "start_time"):
-                        elapsed = time.time() - update_progress.start_time
-                        if completed_steps > 0:
-                            avg_time_per_step = elapsed / completed_steps
-                            remaining_steps = total_steps - completed_steps
-                            eta_seconds = avg_time_per_step * remaining_steps
-                            status_placeholder.info(
-                                f"🔄 Running Subagent {agent_num}/{n_stages}: {agent_name} | Processing item {item_num}/{total_items_in_agent}{key_display} | Progress: {completed_steps}/{total_steps} steps | ETA: {int(eta_seconds / 60)}m {int(eta_seconds % 60)}s"
-                            )
-                        else:
-                            status_placeholder.info(
-                                f"🔄 Running Subagent {agent_num}/{n_stages}: {agent_name} | Processing item {item_num}/{total_items_in_agent}{key_display} | Progress: {completed_steps}/{total_steps} steps | ETA: Calculating..."
-                            )
-                    else:
-                        update_progress.start_time = time.time()
-                        status_placeholder.info(
-                            f"🔄 Running Subagent {agent_num}/{n_stages}: {agent_name} | Processing item {item_num}/{total_items_in_agent}{key_display} | Progress: {completed_steps}/{total_steps} steps | ETA: Calculating..."
-                        )
-
-                start_time = time.time()
-
-                # Demo-mode detection: if the uploaded filename matches the
-                # configured demo file, replay pre-baked results so the whole
-                # pipeline runs offline in a fixed amount of time.
-                _demo_cfg = (FDDConfig().config or {}).get("demo", {})
-                _demo_filename = str(_demo_cfg.get("filename") or "").strip()
-                _demo_duration = int(_demo_cfg.get("progress_duration_seconds") or 25)
-                _uploaded = str(session_state.get("uploaded_filename") or "").strip()
-                _is_demo = bool(_demo_filename and _uploaded == _demo_filename)
-
-                _demo_bs_sum = ""
-                _demo_is_sum = ""
-                if _is_demo:
-                    status_placeholder.info(
-                        f"🎬 Demo mode — replaying pre-recorded results for {total_items} accounts "
-                        f"({_demo_duration}s simulated run)…"
-                    )
-                    progress_placeholder.progress(0)
-                    results = _run_demo_ai(
-                        matched_mapping_keys,
-                        _demo_duration,
-                        progress_placeholder,
-                        status_placeholder,
-                    )
-                    _demo_bs_sum = str(results.pop("__BS_summary__", "") or "").strip()
-                    _demo_is_sum = str(results.pop("__IS_summary__", "") or "").strip()
-                else:
-                    update_progress.start_time = start_time
-                    status_placeholder.info(f"🚀 Starting AI pipeline for {total_items} accounts... | Progress: 0/{total_steps} steps | ETA: Calculating...")
-                    progress_placeholder.progress(0)
-                    # processing.max_workers in config.yml is a GLOBAL override
-                    # (applies to any provider) — was declared but never read
-                    # anywhere in the call chain until now. Leave it null to
-                    # fall through to the per-provider default instead: each
-                    # provider's own block (e.g. workbench.max_workers) can
-                    # set a validated concurrency level, or the built-in
-                    # fallback (4 local / 2 cloud) if neither is set.
-                    try:
-                        _configured_max_workers = (
-                            load_yaml_config(get_default_config_path()).get("processing", {}).get("max_workers")
-                        )
-                    except Exception:
-                        _configured_max_workers = None
-                    from ..ai.facts import financials_tieout
-                    _graph_links = financials_tieout(
-                        session_state.get("bs_is_results"),
-                        selected_pipeline_dfs,
-                        effective_mappings_from_session(session_state),
-                    )
-                    from .. import usage_ledger
-                    usage_ledger.record_event(
-                        "ai_run", mode="single", accounts=len(matched_mapping_keys or []),
-                        model=session_state.get("model_name") or session_state.get("model_type"))
-                    results = run_ai_pipeline_with_progress(
-                        mapping_keys=matched_mapping_keys,
-                        dfs=selected_pipeline_dfs,
-                        workbook_digest=(session_state.get("resolution") or {}).get("workbook_digest"),
-                        graph_links=_graph_links,
-                        model_type=session_state.get("model_type", "local"),
-                        model_name=session_state.get("model_name"),
-                        language=session_state.language,
-                        use_multithreading=session_state.get("use_multithreading", True),
-                        max_workers=_configured_max_workers,
-                        progress_callback=update_progress,
-                        user_comments=session_state.get("account_comments", {}),
-                    )
-
-            if results is None:
-                progress_placeholder.empty()
-            else:
+            started = time.time()
+            demo_cfg = (FDDConfig().config or {}).get("demo", {})
+            demo_filename = str(demo_cfg.get("filename") or "").strip()
+            is_demo = bool(demo_filename and str(session_state.get("uploaded_filename") or "").strip() == demo_filename)
+            if is_demo:
+                # the configured demo file replays recorded results: the whole flow offline, in a fixed time, with no model
+                matched = _matched_keys(session_state)
+                duration = int(demo_cfg.get("progress_duration_seconds") or 25)
+                status_placeholder.info(f"🎬 Demo mode — replaying pre-recorded results for {len(matched)} accounts ({duration}s simulated run)…")
+                progress_placeholder.progress(0)
+                results = _run_demo_ai(matched, duration, progress_placeholder, status_placeholder)
+                summaries = {name: str(results.pop(f"__{name}_summary__", "") or "").strip() for name in ("BS", "IS")}
                 session_state.ai_results = results
+                session_state.section_summaries = {k: v for k, v in summaries.items() if v}
+                generate_pptx_presentation(session_state=session_state, pptx_available=True)
+                status_placeholder.success(f"✅ Demo commentary + PPTX ready! {len(matched)} accounts.")
+            else:
+                from .. import usage_ledger
+                from . import agent_run
+                usage_ledger.record_event("ai_run", mode="single", model=session_state.get("model_name") or session_state.get("model_type"))
+                status_placeholder.info("🚀 Reading the workbook and starting the agent…")
+                progress_placeholder.progress(0)
 
-            if results is not None:
-                if results and any(
-                    has_meaningful_result_text(content)
-                    for value in results.values() if isinstance(value, dict)
-                    for content in value.values()
-                ):
-                    elapsed_ai = int(time.time() - start_time)
-                    # Generate the BS / IS executive summaries here, alongside
-                    # the account commentary, so PPTX export becomes pure XML.
-                    try:
-                        mappings = effective_mappings_from_session(session_state)
-                        is_chinese_db = (session_state.language == "Chn")
-                        section_summaries: dict[str, str] = {}
-                        # Skip section summary generation in demo mode — demo
-                        # uses a pre-baked cache and the LLM call would defeat
-                        # the demo's "no API needed" promise (and hangs when
-                        # the API is down).
-                        if _is_demo:
-                            logger.info("Demo mode: using pre-baked section summaries from demo_results.json.")
-                            if _demo_bs_sum:
-                                section_summaries["BS"] = _demo_bs_sum
-                            if _demo_is_sum:
-                                section_summaries["IS"] = _demo_is_sum
-                        else:
-                            from .pptx_export import build_section_summaries
-                            status_placeholder.info(
-                                f"✅ AI content generated ({len(results)} accounts). "
-                                "Generating grounded executive summaries…")
-                            summary_grounding: dict[str, Any] = {}
-                            section_summaries = build_section_summaries(
-                                ai_results=results,
-                                mappings=mappings,
-                                is_chinese_db=is_chinese_db,
-                                model_type=session_state.get("model_type", "local"),
-                                model_name=session_state.get("model_name"),
-                                label="interactive UI",
-                                grounding_out=summary_grounding,
-                                bs_is_results=session_state.get("bs_is_results"),
-                            )
-                            session_state.summary_grounding = summary_grounding
-                        session_state.section_summaries = section_summaries
-                    except Exception as exc:
-                        logger.warning("Section summary generation failed (PPTX will fall back to in-export AI): %s", exc)
-                        session_state.section_summaries = {}
-                    status_placeholder.info(
-                        f"✅ AI content + summaries ready ({len(results)} accounts, {int(time.time() - start_time)}s). Building PPTX…"
-                    )
-                    try:
-                        generate_pptx_presentation(
-                            session_state=session_state,
-                            pptx_available=True,
-                        )
-                    except Exception as exc:
-                        logger.warning("Eager PPTX generation failed (user can retry via Export button): %s", exc)
-                    status_placeholder.success(
-                        f"✅ AI content + PPTX ready! {len(results)} accounts processed in {int(time.time() - start_time)}s."
-                    )
-                elif results:
-                    status_placeholder.warning("⚠️ AI processing completed but no content was generated. This usually means the AI model is not properly configured.")
-                    status_placeholder.info(f"💡 AI Mode: **{get_model_display_name(session_state.get('model_type', 'local'))}** - Check configuration and try again.")
+                def progress(done: int, total: int, account: str) -> None:
+                    progress_placeholder.progress(min(done / total, 1.0) if total else 1.0)
+                    status_placeholder.info(f"🔄 Account {done}/{total} written: {account} | ETA: {_eta(started, done, total)}")
+
+                result = agent_run.run_for_state(session_state, progress_callback=progress)
+                if not result.ai_results:
+                    session_state.book_error = (result.stopped or "no account could be written; check that the model is configured "
+                                                f"({get_model_display_name(session_state.get('model_type', 'local'))}) and reachable")
+                    progress_placeholder.empty()
+                    st.rerun()
+                session_state.update(agent_run.book_state(result))
+                kept = len(result.finished)
+                note = (f" {result.issue_cases} account(s) have a sentence the verifier refused (kept as cases)." if result.issue_cases else "")
+                if result.stopped:
+                    status_placeholder.warning(f"⚠️ The run stopped early: {result.stopped}")
                 else:
-                    status_placeholder.error("❌ AI processing failed completely - no results generated. Check AI model setup.")
-                progress_placeholder.progress(1.0)
-                st.rerun()
+                    status_placeholder.success(f"✅ {kept} of {len(result.accounts)} accounts written and verified in {int(time.time() - started)}s."
+                                               + note + (" The deck is ready." if session_state.get("pptx_ready") else " The deck could not be written: use Generate PPTX."))
+            progress_placeholder.progress(1.0)
+            st.rerun()
         except Exception as exc:
+            if type(exc).__name__ in ("RerunException", "StopException"):    # st.rerun() is an exception Streamlit catches
+                raise
             progress_placeholder.empty()
+            session_state.book_error = f"{type(exc).__name__}: {exc}"
             status_placeholder.error(f"❌ Error: {exc}")
             st.code(traceback.format_exc())
 
@@ -574,8 +420,7 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
     if not has_content:
         st.warning("⚠️ AI processing completed but no content was generated.")
         st.error("**Possible causes:**")
-        st.markdown("- AI service is not running or is unreachable")
-        st.markdown("- The configured model is unavailable or not loaded")
+        st.markdown("- The model service is unreachable or the account is not configured")
         st.markdown("- API credentials or endpoint settings are invalid")
         st.markdown("- The request hit a network or rate-limit issue")
         st.info("💡 **AI Mode:** " + get_model_display_name(session_state.get("model_type", "local")))
@@ -598,7 +443,7 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
 
     @st.fragment
     def _render_commentary_fragment(detailed_content: str, clause_reviews: list):
-        """Render the final commentary + validator evidence for a single account."""
+        """Render the commentary and the verifier's reading of each sentence for a single account."""
         final_content = detailed_content
         st.markdown(build_highlighted_commentary_html(str(final_content), clause_reviews or []), unsafe_allow_html=True)
         if clause_reviews:
@@ -611,18 +456,18 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                 if isinstance(r, dict) and str(r.get("category", "")).lower() == "reasoning"
             )
             flagged_count = hallucination_count + reasoning_count
-            caption_parts = [f"Validator reviewed {len(clause_reviews)} clause(s)"]
+            caption_parts = [f"The verifier read {len(clause_reviews)} sentence(s)"]
             if hallucination_count:
-                caption_parts.append(f"{hallucination_count} hallucination(s)")
+                caption_parts.append(f"{hallucination_count} red (a figure the databook does not support, or a sentence the agent found wrong)")
             if reasoning_count:
-                caption_parts.append(f"{reasoning_count} reasoning")
+                caption_parts.append(f"{reasoning_count} orange (refused only for how its prose was read)")
             if not flagged_count:
                 caption_parts.append("all data-backed")
             st.caption("; ".join(caption_parts) + ".")
-            with st.expander("Validator evidence review", expanded=False):
+            with st.expander("Verifier's reading of each sentence", expanded=False):
                 review_rows = [
                     {
-                        "Clause": str(review.get("clause") or ""),
+                        "Sentence": str(review.get("clause") or ""),
                         "Category": str(review.get("category") or "data-backed").replace("-", " ").title(),
                         "Supported": "Yes" if bool(review.get("supported")) else "No",
                         "Reason": str(review.get("reason") or ""),
@@ -633,9 +478,8 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                 if review_rows:
                     st.dataframe(pd.DataFrame(review_rows), use_container_width=True, hide_index=True)
 
-    def create_account_agent_tabs(keys, prefix=""):
+    def create_account_tabs(keys, prefix=""):
         account_tabs = st.tabs([f"📄 {key}" for key in keys])
-        agent_map = {"subagent_1": "Generator", "subagent_2": "Auditor", "subagent_3": "Refiner", "subagent_4": "Validator", "final": "Final (Validator)"}
         for acc_idx, key in enumerate(keys):
             with account_tabs[acc_idx]:
                 result = session_state.ai_results.get(key, {})
@@ -647,82 +491,50 @@ def render_generated_content(session_state: Any, account_display_dfs, mappings: 
                 validator_metadata = extract_validator_metadata(result)
                 clause_reviews = validator_metadata.get("clause_reviews") if isinstance(validator_metadata, dict) else []
                 has_final = has_meaningful_result_text(detailed_content)
-                reprompt_mode = str(result.get("reprompt_mode") or "").strip()
-                final_label = "Final (Reprompt + validator)" if reprompt_mode == "generator_reprompt_validated" else ("Final (Generator reprompt)" if reprompt_mode == "generator_only" else "Final (Validator)")
                 if has_final:
-                    st.markdown(f"#### ✨ {final_label}")
+                    st.markdown("#### ✨ Commentary")
                     _render_commentary_fragment(detailed_content=str(detailed_content), clause_reviews=clause_reviews)
-
-                # Agent Pipeline sits directly with Validator evidence (both are
-                # "how did we get this answer" review artifacts), ahead of the
-                # source-remark background context and the reprompt control.
-                agent_contents = []
-                agent_names_list = []
-                for agent_key in ["subagent_1", "subagent_2", "subagent_3", "subagent_4"]:
-                    content = extract_result_text(result, agent_key)
-                    if has_meaningful_result_text(content):
-                        agent_name = agent_map.get(agent_key, agent_key)
-                        agent_contents.append((agent_name, str(content)))
-                        agent_names_list.append(agent_name)
-                if agent_contents:
-                    with st.expander(f"🔍 Agent Pipeline ({', '.join(agent_names_list)})", expanded=False):
-                        for content_idx, (agent_name, content) in enumerate(agent_contents):
-                            st.markdown(f"**{agent_name}:**")
-                            st.text_area(
-                                label=f"Content for {agent_name}",
-                                value=content,
-                                height=min(max(80, int(len(str(content)) / 4)), 400),
-                                key=f"{prefix}{key}_{agent_name}_pipeline",
-                                label_visibility="collapsed",
-                            )
-                            if content_idx < len(agent_contents) - 1:
-                                st.markdown("---")
-
-                if has_final:
                     render_account_remarks_context(selected_df, key, session_state.get("language", "Eng"), prefix=f"{prefix}generated_")
+                else:
+                    st.warning("No commentary was written for this account")
 
-                if not has_final and not agent_contents:
-                    st.warning("No agent outputs available for this account")
-
+                work = session_state.get("agent_work")
+                if work is None:
+                    continue
                 st.markdown("---")
-                with st.expander(f"✏️ Reprompt {key}", expanded=False):
-                    reprompt_comment = st.text_area(
-                        label=f"Reprompt guidance for {key}",
+                with st.expander(f"✏️ Write {key} again", expanded=False):
+                    guidance = st.text_area(
+                        label=f"Guidance for {key}",
                         value=session_state.account_comments.get(key, ""),
-                        placeholder="Add comments to refine this account only, then click reprompt.",
+                        placeholder="Say what to change for this account only, then click the button. Leave it empty to write it again from the evidence.",
                         key=f"{prefix}{key}_reprompt_comment",
                         height=90,
                     )
-                    session_state.account_comments[key] = reprompt_comment
-                    if st.button(f"Reprompt {key}", key=f"{prefix}{key}_reprompt_button", use_container_width=True):
+                    session_state.account_comments[key] = guidance
+                    if st.button(f"Write {key} again", key=f"{prefix}{key}_reprompt_button", use_container_width=True):
                         from .. import usage_ledger
+                        from ..agent import book as B
                         usage_ledger.record_event("reprompt", account=key)
-                        with st.spinner(f"Regenerating {key}..."):
-                            selected_pipeline_dfs = build_selected_pipeline_dfs(session_state)
-                            updated_results = run_generator_reprompt(
-                                mapping_keys=[key],
-                                # The whole workbook: the peer context and the
-                                # cross-account facts are built from it.
-                                dfs=selected_pipeline_dfs,
-                                existing_results=session_state.ai_results,
-                                model_type=session_state.get("model_type", "local"),
-                                model_name=session_state.get("model_name"),
-                                language=session_state.language,
-                                user_comments={key: reprompt_comment},
-                            )
-                            merged_results = dict(session_state.ai_results or {})
-                            merged_results.update(updated_results)
-                            session_state.ai_results = merged_results
-                            session_state.pptx_ready = False
+                        with st.spinner(f"Writing {key} again..."):
+                            rewritten = B.redraft(work, key, guidance)
+                            if rewritten:
+                                merged_results = dict(session_state.ai_results or {})
+                                merged_results[key] = rewritten
+                                session_state.ai_results = merged_results
+                                session_state.pptx_ready = False
+                            else:
+                                st.session_state["book_notice"] = f"The model did not finish {key}; the earlier text stands."
                         st.rerun()
 
+    if st.session_state.get("book_notice"):
+        st.warning(st.session_state.pop("book_notice"))
     if bs_keys:
         with ai_tabs[tab_idx]:
-            create_account_agent_tabs(bs_keys, "bs_")
+            create_account_tabs(bs_keys, "bs_")
         tab_idx += 1
     if is_keys:
         with ai_tabs[tab_idx]:
-            create_account_agent_tabs(is_keys, "is_")
+            create_account_tabs(is_keys, "is_")
         tab_idx += 1
     if other_keys:
         with ai_tabs[tab_idx]:

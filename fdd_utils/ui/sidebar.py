@@ -1,19 +1,7 @@
 from __future__ import annotations
 
 # re-added: bound by an import in another section of the pre-split module
-from ..ai import (
-    FDDConfig,
-    WORKBENCH_AVAILABLE_MODELS,
-    build_highlighted_commentary_html,
-    default_model_choice_key,
-    get_default_config_path,
-    get_prompt_engine,
-    list_model_choices,
-    load_yaml_config,
-    parse_validator_response,
-    run_ai_pipeline_with_progress,
-    run_generator_reprompt,
-)
+from ..ai import default_model_choice_key, get_default_config_path, list_model_choices, load_yaml_config
 
 
 from .state import reset_processing_session_state
@@ -27,7 +15,7 @@ from typing import Any, Callable
 
 import streamlit as st
 
-from ..workbook import clear_table_inspection_cache, clear_workbook_caches
+from ..workbook import clear_workbook_caches
 
 
 def _safe_stem(uploaded_name: str) -> str:
@@ -195,22 +183,10 @@ def render_sidebar_upload(session_state: Any, get_model_display_name: Callable[[
         if not selected.get("ready", True):
             st.caption(
                 f"⚠️ {selected.get('label')} is not configured — set its api_key "
-                f"in fdd_utils/config.yml. Falling back to the first ready provider at run time."
+                f"in fdd_utils/config.yml. A run on it stops at once (it is never sent to another provider)."
             )
         else:
             st.caption(f"🤖 AI Mode: {selected.get('label', get_model_display_name(session_state.model_type))}")
-        # Parallel processing is on by default for every provider except
-        # "local" (its server serves one request effectively serially, so
-        # concurrency just queues rather than helps) — no UI toggle needed;
-        # override globally via processing.use_multithreading in config.yml
-        # if a specific run needs to be forced sequential (e.g. to rule out
-        # a concurrency issue or stay under a strict rate limit).
-        try:
-            _proc_cfg = load_yaml_config(get_default_config_path()).get("processing", {}) or {}
-        except Exception:
-            _proc_cfg = {}
-        session_state.use_multithreading = bool(_proc_cfg.get("use_multithreading", True))
-
         st.markdown("**📁 Databook File(s)**")
         # No `type=` filter: the widget would print the accepted extensions, and
         # the admin unlock (a .txt holding today's code, see usage_ledger) is not

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 
@@ -268,34 +268,7 @@ def build_processed_display_groups(display_account_keys: List[str], mappings: Di
     }
 
 
-def detect_statement_mode(reconciliation: tuple[pd.DataFrame | None, pd.DataFrame | None] | None) -> str:
-    """Auto-detect whether this databook has only BS, only IS, or both
-    reconciled statements — replaces the old manual "Statement scope"
-    selectbox. A statement is "absent" when its reconciliation frame is
-    None/empty (e.g. the Financials sheet had no IS section at all), not
-    merely when few of its accounts matched cleanly — that weaker case is
-    already handled by the existing "use all dfs" fallback in the caller."""
-    if not reconciliation:
-        return "full"
-    bs_recon, is_recon = (list(reconciliation) + [None, None])[:2]
-    bs_present = bs_recon is not None and not bs_recon.empty
-    is_present = is_recon is not None and not is_recon.empty
-    if bs_present and not is_present:
-        return "bs_only"
-    if is_present and not bs_present:
-        return "is_only"
-    return "full"
-
-
-def explain_reconciliation_selection(
-    reconciliation: tuple[pd.DataFrame | None, pd.DataFrame | None] | None,
-    available_keys: Iterable[str],
-    resolution: Dict[str, Any] | None = None,
-    dfs: Dict[str, Any] | None = None,
-):
-    """Account-by-account route and reason; see workbook/selection.py."""
-    from ..workbook.selection import select_reconciliation_keys
-    return select_reconciliation_keys(reconciliation, available_keys, resolution, dfs=dfs)
+from ..workbook.selection import detect_statement_mode, explain_reconciliation_selection  # noqa: E402,F401  (pure functions; the workbook layer owns them)
 
 
 def derive_reconciliation_matched_keys(

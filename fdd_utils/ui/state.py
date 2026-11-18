@@ -30,9 +30,11 @@ DEFAULT_SESSION_STATE = {
     "model_type": "local",
     "model_name": None,          # specific model within the provider, e.g. GPT-5.5's id
     "model_choice_key": None,    # sidebar dropdown selection key
-    "use_multithreading": True,  # default; render_sidebar_upload resolves the real value from config.yml
     "project_name": None,
-    "last_run_folder": None,
+    # the agent's working session over this workbook (agent/workspace.py): the run that wrote the commentary, and what a later turn builds on
+    "agent_work": None,
+    # why the last run produced no commentary; while it is set the next click does not start (and pay for) another one
+    "book_error": None,
     "entity_name": None,
     "pptx_download_trigger": None,
     "button_click_counter": 0,
@@ -66,6 +68,8 @@ RESET_SESSION_KEYS = [
     "_lang_preview_path",
     "bs_is_results",
     "ai_results",
+    "agent_work",
+    "book_error",
     "reconciliation",
     "resolution",
     "entity_name",

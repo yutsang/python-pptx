@@ -35,18 +35,16 @@ Usage:
     python inspect_databook.py "inputs/"                    # scans every .xlsx in the folder,
                                                               # prints a final aggregate summary table
     python inspect_databook.py "inputs/SomeClient.databook.xlsx" --sheet Financials
-    python inspect_databook.py "inputs/" --run-ai --model workbench   # adds AI-dependent checks (see below)
     python inspect_databook.py "inputs/" --run-ai --model workbench --limit 5
-        # fast smoke test: only the first 5 mapped accounts per file go to AI, across
-        # every file in the folder — use this to sanity-check the whole batch before
-        # committing to a full (potentially hours-long) unlimited run
+        # fast smoke test: the agent writes only the first 5 accounts of each file, across
+        # every file in the folder — sanity-check the whole batch before a full run
     python inspect_databook.py "inputs/SomeClient.databook.xlsx" --dump-tab 固定资产
         # DETERMINISTIC, no AI, runs in seconds: prints raw Excel cell values next to
         # the final (unit-marker-multiplied) dfs values for ONE tab, row by row. Use
-        # this to trace a numeric-grounding 🔴 warning back to its source WITHOUT
-        # re-running the (slow, token-costing) AI pipeline — if the raw cell already
+        # this to trace a refused figure back to its source WITHOUT
+        # running the (slow, token-costing) agent — if the raw cell already
         # holds an actual-CNY-sized number but still gets multiplied by 1000, that's
-        # the extraction-side 1000x bug (item 9 class), not an AI hallucination.
+        # the extraction-side 1000x bug (item 9 class), not a wrong sentence.
     python inspect_databook.py "databooks/南通通海.xlsx" \
         --financials-from "databooks/Portfolio I.databook. 主表.xlsx" --financials-sheet 南通通海Financials
         # Some portfolios keep each sub-entity's own file free of any Financials-pattern
@@ -69,29 +67,15 @@ Usage:
         # (same as if it weren't in a portfolio at all), never a silent wrong guess.
         # Pass --no-auto-rollup to disable and fall back to old per-file default behaviour.
 
-AI-dependent checks (only with --run-ai; needs a configured provider in
-fdd_utils/config.yml, costs real tokens/time — run once per databook when
-ready to review quality, not on every edit). Only accounts that passed
-reconciliation with an included Match status go to AI — exactly mirroring
-production (fdd_utils/ui.py:derive_reconciliation_matched_keys) — so this
-never wastes tokens on tabs the real pipeline would never send, and the
-timing numbers are directly comparable across databooks/models. A tqdm
-progress bar shows live stage/account progress during the run:
-  5. Runs the full AI pipeline once and reports wall-clock time and
-     per-agent retry counts (compare qwen local vs GPT-5.5 workbench by
-     re-running with --model).
-  6. Numeric grounding sweep: extracts every number mentioned in generated
-     commentary and cross-checks it against the ground-truth dfs value at
-     1x, 1000x, 0.001x, 10000x, and 0.0001x. Flags any number that ONLY
-     matches at a non-1x scale — this is the generalized version of the
-     1000x-scaling bug fixed this session (fdd_utils/pptx.py
-     embed_financial_tables mutating bs_is_results in place). If a
-     different databook layout reintroduces a scaling bug anywhere in the
-     pipeline, this check catches it automatically instead of relying on
-     a human noticing a wrong number in a slide.
-  7. Chinese unit-label sanity check: for Chinese output, flags any
-     万元/亿元 amount that doesn't reconcile to the underlying actual-CNY
-     ground truth within tolerance — the 千元→萬元 mislabeling class of bug.
+With --run-ai the agent writes the whole book (fdd_utils/agent/book.py: the path the app takes, and `fdd_agent.py book`). It needs a
+configured provider in fdd_utils/config.yml and costs real tokens and time: run it once per databook when ready to review quality,
+not on every edit. Only the accounts reconciliation lets through are written (the same selection the app uses), every sentence is
+verified against the workbook's own figures before it can reach a deck, and a sentence the verifier refuses is carried into the deck
+marked red or orange and named in the delivery decision. --export-pptx adds the executive summaries and the deck, with the layout of
+every slide checked. A tqdm bar shows accounts finished.
+
+    python inspect_databook.py "inputs/" --run-ai --model dashscope --model-name <id> --limit 5     # a cheap first pass
+    python inspect_databook.py "inputs/X.xlsx" --run-ai --export-pptx --model dashscope --model-name <id>
 
 Output is plain text to stdout — copy/paste it back for review; nothing is
 written back to the workbook.
@@ -123,8 +107,6 @@ for _stream in (_sys.stdout, _sys.stderr):
 
 import argparse
 import io
-import json
-import logging
 import re
 import sys
 import threading
@@ -132,42 +114,14 @@ import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from itertools import combinations
-from contextlib import nullcontext, redirect_stdout
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 from tqdm import tqdm
 
-from fdd_utils.workbook import (
-    _build_indent_signal_index,
-    _cell_text,
-    _coerce_numeric,
-    _date_row_index,
-    _find_description_column,
-    _forward_fill_stage_row,
-    _infer_indent_hierarchy,
-    _is_numeric_enough,
-    _multiply_factor,
-    _select_entity_block,
-    _stage_row_index,
-    _unit_markers,
-    canonical_stage_label,
-    extract_data_from_excel,
-    extract_balance_sheet_and_income_statement,
-    find_account_in_dfs,
-    get_effective_mappings,
-    load_mappings,
-    load_workbook_frames,
-    normalize_financial_schedule,
-    parse_date,
-    PREFERRED_STAGE,
-    profile_sheet,
-    reconcile_financial_statements,
-    suggest_rollup_sheet_for_entity,
-)
-from fdd_utils.ui import build_insight_summary, derive_reconciliation_matched_keys
-from fdd_utils.financial_common import get_pipeline_result_text
+from fdd_utils.workbook import _build_indent_signal_index, _cell_text, _coerce_numeric, _date_row_index, _find_description_column, _forward_fill_stage_row, _infer_indent_hierarchy, _is_numeric_enough, _multiply_factor, _select_entity_block, _stage_row_index, _unit_markers, canonical_stage_label, extract_data_from_excel, extract_balance_sheet_and_income_statement, get_effective_mappings, load_mappings, load_workbook_frames, normalize_financial_schedule, parse_date, PREFERRED_STAGE, profile_sheet, reconcile_financial_statements, suggest_rollup_sheet_for_entity
 
 pd.set_option("display.width", 200)
 
@@ -1577,7 +1531,6 @@ def _trace_bs_is_detection_failure(
     print(buf.getvalue())
 
 
-
 def check_subtable_readiness(databook_path: str, dfs: Dict[str, pd.DataFrame]) -> None:
     """Walk the ACTUAL chain a subtable travels, and say where it stops.
 
@@ -2027,1471 +1980,59 @@ _SCALE_MAP = {
 }
 
 
-def _extract_numbers_with_scale(text: str) -> List[Tuple[float, int, int]]:
-    """Returns (value, match_start, match_end) so callers can pull the
-    surrounding sentence for a flagged number — the isolated number alone
-    ("40,378,000.00") isn't enough to tell whether it's a real hallucinated
-    scale bug or something benign; the actual written clause is."""
-    values: List[Tuple[float, int, int]] = []
-    for match in _NUMBER_RE.finditer(text or ""):
-        raw, suffix = match.group(1), (match.group(2) or "").lower()
-        if not raw or raw in (",", "."):
-            continue
-        try:
-            base = float(raw.replace(",", ""))
-        except ValueError:
-            continue
-        scale = _SCALE_MAP.get(suffix, 1)
-        values.append((base * scale, match.start(), match.end()))
-    return values
-
-
-_RATE_CONTEXT_RE = re.compile(
-    r"per\s+(?:square|sq\.?|sqm|sq\s*m)\s*(?:metre|meter|m\b)?"
-    r"|/\s*(?:sq\.?\s*m|sqm)|psm\b",
-    re.IGNORECASE,
-)
-
-
-def _is_rate_context(text: str, end: int, radius: int = 60) -> bool:
-    """A number followed (within the same sentence) by 'per square metre'
-    etc is a computed KPI (revenue / area / days), not a literal figure
-    copied from the sheet — it will never appear in the raw ground-truth
-    pool at any scale, so a coincidental scaled match is noise, not a real
-    hallucination. Searches forward (not anchored) because range clauses
-    ("from CNY0.91 to CNY0.80 per sqm per day") only put the rate phrase
-    next to the LAST number, not each one. Same false-positive class as the
-    broad subset-sum case investigated earlier (statistical coincidence
-    from wide search), which was deliberately left unfixed rather than
-    chased with more matching logic — this guard instead narrows what gets
-    searched in the first place."""
-    window = text[end:end + radius]
-    # A "." not followed by a digit ends the sentence; one that IS followed
-    # by a digit is a decimal point inside the next number (e.g. "CNY0.80"),
-    # not a sentence boundary.
-    sentence_end = re.search(r"\.(?!\d)|[。\n]", window)
-    if sentence_end:
-        window = window[:sentence_end.end()]
-    return bool(_RATE_CONTEXT_RE.search(window))
-
-
-def _context_snippet(text: str, start: int, end: int, radius: int = 50) -> str:
-    lo = max(0, start - radius)
-    hi = min(len(text), end + radius)
-    prefix = "…" if lo > 0 else ""
-    suffix = "…" if hi < len(text) else ""
-    return f"{prefix}{text[lo:hi].strip()}{suffix}"
-
-
-def _adjacent_window_sums(col_vals: List[float], max_window: int = 4) -> List[float]:
-    """Mirrors fdd_utils.ai.SourceIndex._adjacent_window_sums — commentary
-    legitimately groups a handful of neighbouring breakdown lines into one
-    figure that was never a labelled subtotal in the sheet. Bounded window,
-    not a full subset-sum search, to keep false-negative risk low."""
-    sums: List[float] = []
-    n = len(col_vals)
-    for window in range(2, max_window + 1):
-        for start in range(0, n - window + 1):
-            sums.append(sum(col_vals[start:start + window]))
-    return sums
-
-
-def _numeric_values_from_df(df: pd.DataFrame) -> List[float]:
-    values: List[float] = []
-    for col in df.columns:
-        if str(col).endswith("_formatted") or str(col).startswith("__"):
-            continue
-        col_vals: List[float] = []
-        if pd.api.types.is_numeric_dtype(df[col]):
-            col_vals = [float(v) for v in df[col].dropna().tolist() if v != 0]
-        else:
-            # prompt_analysis_df values are often pre-formatted strings
-            # (e.g. "1,234,567") rather than a numeric dtype column.
-            for v in df[col].dropna().tolist():
-                try:
-                    fv = float(str(v).replace(",", ""))
-                    if fv != 0:
-                        col_vals.append(fv)
-                except (TypeError, ValueError):
-                    continue
-        values.extend(col_vals)
-        values.extend(_adjacent_window_sums(col_vals))
-    return values
-
-
-def _matches_ground_truth(value: float, truth_values: List[float]) -> bool:
-    """Mirrors fdd_utils.ai.SourceIndex.matches() exactly, so this script's
-    independent check and the production Validator agree on what counts as
-    grounded — otherwise this script keeps re-flagging patterns (万-rounding,
-    adjacent-line subtotals) that were already fixed in production, as stale
-    false positives of its own."""
-    t = abs(value)
-    for v in truth_values:
-        a = abs(v)
-        if a == 0:
-            if round(t) == 0:
-                return True
-            continue
-        if abs(t - a) <= max(500.0, 0.05 * a):
-            return True
-    return False
-
-
-def _ground_truth_values(dfs: Dict[str, pd.DataFrame]) -> List[float]:
-    """Pulls every number the AI could plausibly have grounded its writing
-    in — NOT just dfs[key] itself. dfs[key] is `projection_df`, a
-    SINGLE-latest-period snapshot (e.g. only "2026-03-31"); multi-year
-    trend commentary ("increased from CNY384M as at 2023-12-31 to CNY709M
-    as at 2024-12-31") is generated from df.attrs["prompt_analysis_df"]
-    (see fdd_utils/ai.py _build_financial_prompt_payload / workbook.py
-    _build_prompt_analysis_df), a separate multi-period table the AI's
-    prompt actually includes under "analysis_periods". Without this, every
-    correctly-written historical-period number looks unsupported because
-    it's simply absent from the search pool, and the scale-match fallback
-    then coincidentally latches onto an unrelated same-tab line item —
-    producing a false '1000x too large/small' warning for text that was
-    actually correct. Confirmed against 3 real warnings that all turned
-    out to be exactly this false-positive pattern, not real scale bugs.
-    """
-    truth = []
-    for df in dfs.values():
-        if df is None or df.empty:
-            continue
-        truth.extend(_numeric_values_from_df(df))
-        analysis_df = df.attrs.get("prompt_analysis_df")
-        if analysis_df is not None and not analysis_df.empty:
-            truth.extend(_numeric_values_from_df(analysis_df))
-    return truth
-
-
 # Numbered form "1）...434.2万元；2）..." and the equally common run-on form
 # "主要包括房产税1,676.2万元、土地使用税368.5万元及印花税2.9万元". The second
 # was invisible to the first pattern, which is how a 10x scale error reached a
 # real deck unflagged.
-from fdd_utils.ai.validator import check_composition_adds_up, _composition_reviews  # single definition; see validator.py
-
-
-def check_numeric_grounding(mapping_key: str, generated_text: str, dfs: Dict[str, pd.DataFrame]) -> List[str]:
-    """Returns a list of warning strings for numbers that only match ground
-    truth at a non-1x scale factor (the generalized 1000x-bug detector)."""
-    truth_values = _ground_truth_values(dfs)
-    if not truth_values:
-        return []
-    warnings = []
-    for value, start, end in _extract_numbers_with_scale(generated_text):
-        if value == 0:
-            continue
-        if _is_rate_context(generated_text, end):
-            continue
-        if _matches_ground_truth(value, truth_values):
-            continue
-        for factor, label in ((1000, "1000x too small"), (0.001, "1000x too large"),
-                               (10000, "10000x too small"), (0.0001, "10000x too large")):
-            scaled = value * factor
-            if _matches_ground_truth(scaled, truth_values):
-                snippet = _context_snippet(generated_text, start, end)
-                warnings.append(
-                    f"  🔴 [{mapping_key}] number {value:,.2f} in generated text only matches "
-                    f"ground truth when scaled — looks {label} (matches {scaled:,.2f})\n"
-                    f"      context: \"{snippet}\""
-                )
-                break
-    return warnings
-
-
-def ai_input_frames(
-    path: str, entity_name: str, selected_sheet: Optional[str],
-    financials_from: Optional[str] = None,
-    fallback_dfs: Optional[Dict[str, pd.DataFrame]] = None,
-) -> Tuple[Dict[str, pd.DataFrame], str, Optional[Dict[str, Any]]]:
-    """(dfs, language, resolution) that --run-ai hands the pipeline AND the export.
-
-    process_workbook_data's dfs: the detail_analysis variant, every Indicative
-    adjusted period on the main frame -- the dict the Streamlit app hands
-    run_ai_pipeline_with_progress and then exports from. This path used to
-    pass section 1's extract_data_from_excel frames instead, which carry ONE
-    value column. Measured on four workbooks with the production renderer
-    (probe_prompt_sections.py --hash-all --feed): 0 of 96 Generator prompts
-    matched the app's, _build_peer_context returned None, and the
-    material-movement guidance reached 0 accounts in every book against 8-10
-    on the app's frames. Every CLI deck had been written from the thinner
-    prompt, and every CLI run measured a pipeline the app does not run.
-
-    The export takes the same dict because the pipeline's subtable settlement
-    edits these frames' attrs; exporting from section 1's dict would draw the
-    tables the prompts were told about from frames that never heard of it.
-    """
-    try:
-        from fdd_utils.workbook import process_workbook_data
-        # --financials-from applies here too. Left off, this call went
-        # looking for "<entity>Financials" inside the ENTITY workbook,
-        # which has no such sheet -- one bare "Error extracting financial
-        # data: Worksheet named ... not found" on stderr between sections
-        # 4b and 5, from the one call in this file that was not told where
-        # the roll-up lives. Every other caller already passes it.
-        state = process_workbook_data(temp_path=path, entity_name=entity_name,
-                                       selected_sheet=selected_sheet, debug=False,
-                                       financials_from=financials_from,
-                                       financials_sheet=selected_sheet if financials_from else None)
-    except Exception as exc:
-        print(f"\n⚠️  process_workbook_data failed ({type(exc).__name__}: {exc}). The AI run "
-              f"falls back to section 1's single-period frames, so its prompts will NOT match "
-              f"what the Streamlit app would send for this workbook.")
-        return fallback_dfs or {}, "Eng", None
-    dfs = state.get("dfs") or {}
-    _t = state.get("timings") or {}
-    if _t:
-        print("\n⏱  process_workbook_data " + f"{_t.get('total', 0):.0f}s: " + " · ".join(
-            f"{k} {v:.0f}s" for k, v in _t.items() if k != "total" and v >= 0.5))
-    _authority = state.get("financials_authority") or {}
-    if _authority:
-        print(f"\nℹ️  Deck follows Financials: {len(_authority)} account total(s) set to the Financials "
-              f"figure where the tab disagreed (the tab's detail rows are unchanged)"
-              + (":" if VERBOSE else "; --verbose lists them"))
-        for _account, _periods in (sorted(_authority.items()) if VERBOSE else ()):
-            for _period, _pair in sorted(_periods.items()):
-                print(f"    {_account} {_period}: tab {_pair['tab']:,.0f} -> Financials {_pair['financials']:,.0f}")
-    _bridged = {k: f.attrs.get("adjustment_bridge") for k, f in dfs.items()
-                if isinstance(f, pd.DataFrame) and f.attrs.get("adjustment_bridge")}
-    print(f"\nℹ️  Adjustment bridge (audit + indicative entries handed to the model): "
-          f"{len(_bridged)} of {len(dfs)} account(s)")
-    for _account, _bridge in (sorted(_bridged.items()) if VERBOSE else ()):
-        for _line in _bridge.get("lines") or []:
-            print(f"    {_account}: {_line}")
-    if not dfs:
-        print("\n⚠️  process_workbook_data returned no frames; the AI run falls back to "
-              "section 1's single-period frames (prompts will not match the app's).")
-        dfs = fallback_dfs or {}
-    return dfs, state.get("language", "Eng"), state.get("resolution")
-
-
-def run_ai_checks(
-    databook_path: str, sheet_name: Optional[str], dfs: Dict[str, pd.DataFrame],
-    entity_name: str, model_type: str, model_name: Optional[str], language: str,
-    bs_recon: Optional[pd.DataFrame], is_recon: Optional[pd.DataFrame],
-    limit: Optional[int] = None, workers: Optional[int] = None,
-    accounts: Optional[List[str]] = None,
-    resolution: Optional[Dict[str, Any]] = None,
-    resume_from: Optional[str] = None,
-    period_tieout: Optional[List[Dict[str, Any]]] = None,
-) -> Dict[str, Any]:
-    _hr("5-7. AI-DEPENDENT CHECKS (running full pipeline once — this costs real tokens/time)")
-    from fdd_utils.ai import run_ai_pipeline_with_progress, SUBAGENT_SEQUENCE
-
-    # Mirror production exactly: only accounts that passed reconciliation with
-    # an included Match status go to AI (fdd_utils/ui.py:derive_reconciliation_matched_keys).
-    # BS excludes ❌ Diff (needs human review first); IS includes it (IS recon
-    # is inherently noisier). Running every dfs tab through the LLM — including
-    # ones the real pipeline would never send — wastes tokens/time and makes
-    # the qwen-vs-GPT-5.5 timing comparison meaningless.
-    #
-    # BUT: when there's no reconciliation data at all (e.g. no literal
-    # "Financials" sheet to reconcile against), production does NOT skip AI --
-    # fdd_utils/ui.py:746-751 explicitly falls back to ALL extracted schedule
-    # accounts. derive_reconciliation_matched_keys alone can't express that
-    # (it just returns [] when both recon frames are None/empty), so replicate
-    # the fallback here too, or every no-Financials-sheet file would silently
-    # report "no accounts passed reconciliation" even though production would
-    # happily generate commentary for all of them.
-    has_reconciliation_data = bool(
-        (bs_recon is not None and not bs_recon.empty) or (is_recon is not None and not is_recon.empty)
-    )
-    from fdd_utils.ui import explain_reconciliation_selection
-    from fdd_utils.workbook.selection import selection_without_financials
-    if has_reconciliation_data:
-        selection_record = explain_reconciliation_selection((bs_recon, is_recon), dfs.keys(), None, dfs=dfs)
-        mapping_keys = selection_record.admitted_keys
-        for _d in selection_record.excluded:
-            if _d.reason != "no_activity":
-                print(f"   not sent to AI: {_d.key} -- {_d.reason}: {_d.detail}")
-        if not mapping_keys:
-            print(
-                "❌ No accounts passed reconciliation with an included Match status "
-                "(✅ Match / ⚠️ Match / ✅ Immaterial, or ❌ Diff for IS) — nothing "
-                "would be sent to AI in production either. Skipping AI-dependent checks."
-            )
-            return {"skipped": True, "reason": "no mapped accounts"}
-    else:
-        mapping_keys = list(dfs.keys())
-        selection_record = selection_without_financials(mapping_keys)
-        if not mapping_keys:
-            print("❌ No extracted schedule accounts at all — nothing to send to AI.")
-            return {"skipped": True, "reason": "no extracted accounts"}
-        print(f"ℹ️  No reconciliation data; proceeding with all {len(mapping_keys)} extracted "
-              f"schedule account(s), mirroring production's fallback (fdd_utils/ui.py:746-751).")
-    total_mapped = len(mapping_keys)
-    if accounts:
-        wanted = set(accounts)
-        found = [k for k in mapping_keys if k in wanted]
-        missing = wanted - set(found)
-        if missing:
-            print(f"⚠️  --accounts requested {sorted(missing)} but they're not in this file's "
-                  f"mapped/eligible accounts. Available: {mapping_keys}")
-        if not found:
-            print("❌ None of --accounts matched an eligible account in this file. Skipping.")
-            return {"skipped": True, "reason": "no matching --accounts"}
-        mapping_keys = found
-        print(f"--accounts: targeting only {mapping_keys} (cheap re-test, skips --limit slicing).")
-    elif limit and limit > 0 and len(mapping_keys) > limit:
-        print(f"--limit {limit}: sampling {limit} of {total_mapped} mapped accounts "
-              f"(fast smoke-test mode, not a full run).")
-        mapping_keys = mapping_keys[:limit]
-    # Mirror run_agent_stage's ACTUAL resolution chain so this print is
-    # trustworthy — it previously ignored config.yml entirely and always
-    # printed "built-in default" even when <provider>.max_workers was set,
-    # which was actively misleading (looked like the config value wasn't
-    # being picked up when it may well have been).
-    if workers:
-        effective_workers, workers_source = workers, "--workers override"
-    else:
-        from fdd_utils.ai import load_yaml_config, get_default_config_path
-        try:
-            _cfg = load_yaml_config(get_default_config_path()) or {}
-        except Exception:
-            _cfg = {}
-        # Two keys exist for one setting: the Streamlit path reads
-        # processing.max_workers and this one read <provider>.max_workers, so
-        # the same config.yml gave the UI concurrency and the CLI none. Honour
-        # both, provider first.
-        _provider_workers = (_cfg.get(model_type) or {}).get("max_workers")
-        _processing_workers = (_cfg.get("processing") or {}).get("max_workers")
-        if _provider_workers:
-            effective_workers = int(_provider_workers)
-            workers_source = f"{model_type}.max_workers in config.yml"
-        elif _processing_workers:
-            effective_workers = int(_processing_workers)
-            workers_source = "processing.max_workers in config.yml"
-        else:
-            # 4 for every provider. It was `4 if local else 2`, which is the
-            # exact INVERSE of the pipeline's own _resolve_max_workers ("local"
-            # -> 1, everything else -> 4) -- two files disagreeing about one
-            # setting, in opposite directions. The CLI's number is the one with
-            # a real measurement behind it: a 21-account local run finished 47
-            # steps in 204s at 4 workers. The pipeline's own default still
-            # stands for callers that pass nothing (the Streamlit path), so the
-            # UI and the CLI can still run a local model at different
-            # concurrencies -- worth settling, but not by quietly flipping a
-            # documented default from here.
-            effective_workers = 4
-            workers_source = "built-in default — no max_workers set in config.yml"
-    print(f"Running pipeline for {len(mapping_keys)} MAPPED accounts (of {len(dfs)} total tabs), "
-          f"model_type={model_type}, model_name={model_name}, workers={effective_workers} ({workers_source})...")
-
-    # SUBAGENT_SEQUENCE is the ACTUAL active pipeline (Generator, Auditor,
-    # Validator — Refiner is dormant, see ai.py:SUBAGENT_ALIASES comment).
-    # Hardcoding 4 here made the bar always stall at 75% (60/80) since only
-    # 3 stages ever fire a progress callback.
-    stage_count = len(SUBAGENT_SEQUENCE)
-    total_steps = stage_count * len(mapping_keys)
-    pbar = tqdm(total=total_steps, **_entity_bar_kwargs("AI pipeline"))
-    seen_step = {"n": 0}
-    progress_lock = threading.Lock()
-
-    # Per-stage wall-clock breakdown — lets you SEE whether a per-agent
-    # reasoning_effort override (e.g. Auditor set to "low") actually reduced
-    # that stage's time, not just eyeball the total. A stage is "done" the
-    # moment its last account reports completed == total_eligible; the gap
-    # since the previous stage's completion is that stage's duration.
-    stage_timing: Dict[str, float] = {}
-    stage_clock = {"last_boundary": time.time(), "seen_labels": set()}
-
-    # Stages are no longer all the same size: the Validator runs SELECTIVELY,
-    # only on accounts that assert a causal claim (ai.py's
-    # commentary_asserts_inference), so a fixed stage_count * len(mapping_keys)
-    # total left the bar stranded -- a real run finished at 53/69 (77%) with
-    # nothing wrong. Each callback reports its own stage's true size, so
-    # correct the total as soon as a stage reveals it, and count steps from
-    # the per-stage tallies instead of ai.py's uniform-stage arithmetic.
-    stage_done: Dict[int, int] = {}
-    stage_size: Dict[int, int] = {}
-
-    retries = {"started": 0, "finished": 0}
-
-    def _tqdm_progress(agent_num, agent_label, completed, total_eligible, overall_step, mapping_key):
-        with progress_lock:
-            pbar.set_postfix_str(f"{agent_label}: {mapping_key}"[:60])
-            if total_eligible == -1:
-                # A feedback-loop retry: Generator + Auditor + Validator again.
-                # The total grows when it starts and the count when it ends, so
-                # the bar never claims 100% while retries are still running.
-                retries["started" if not completed else "finished"] += 1
-                pbar.total = sum(stage_size.get(i, len(mapping_keys)) for i in range(1, stage_count + 1)) \
-                    + stage_count * retries["started"]
-                done = sum(stage_done.values()) + stage_count * retries["finished"]
-                if done > seen_step["n"]:
-                    pbar.update(done - seen_step["n"])
-                    seen_step["n"] = done
-                pbar.refresh()
-                return
-            if total_eligible:
-                stage_size[agent_num] = total_eligible
-            stage_done[agent_num] = max(stage_done.get(agent_num, 0), completed)
-            true_total = sum(
-                stage_size.get(i, len(mapping_keys)) for i in range(1, stage_count + 1)
-            ) + stage_count * retries["started"]
-            if true_total != pbar.total:
-                pbar.total = true_total
-            done = sum(stage_done.values()) + stage_count * retries["finished"]
-            delta = done - seen_step["n"]
-            if delta > 0:
-                pbar.update(delta)
-                seen_step["n"] = done
-            if agent_label not in stage_clock["seen_labels"] and completed == total_eligible and total_eligible > 0:
-                now = time.time()
-                stage_timing[agent_label] = now - stage_clock["last_boundary"]
-                stage_clock["last_boundary"] = now
-                stage_clock["seen_labels"].add(agent_label)
-
-    # A single account's API call can take 20-60s+ with nothing to report in
-    # between (no discrete progress event fires mid-call), which makes the
-    # bar look frozen even though it's working. Refresh the display every
-    # second regardless — this ticks tqdm's elapsed-time counter so it's
-    # visibly alive, without needing an actual progress-count change.
-    stop_refresh = threading.Event()
-
-    def _tick_refresh():
-        while not stop_refresh.wait(1.0):
-            with progress_lock:
-                pbar.refresh()
-
-    refresh_thread = threading.Thread(target=_tick_refresh, daemon=True)
-    refresh_thread.start()
-
-    # The pipeline already logs "[FeedbackLoop] <key>: completed with N
-    # retry(ies)" at INFO and nothing was listening, so the one number that
-    # explains a 10x slow entity was being written and thrown away. Capture it.
-    _fb_lines: List[str] = []
-
-    class _FeedbackLoopCapture(logging.Handler):
-        def emit(self, record):
-            try:
-                msg = record.getMessage()
-            except Exception:
-                return
-            if "[FeedbackLoop]" in msg:
-                _fb_lines.append(msg.replace("[FeedbackLoop] ", "").strip())
-
-    _fb_handler = _FeedbackLoopCapture()
-    _fb_handler.setLevel(logging.INFO)
-    _fb_root = logging.getLogger()
-    _fb_prev_level = _fb_root.level
-    if _fb_root.level > logging.INFO:
-        _fb_root.setLevel(logging.INFO)
-    _fb_root.addHandler(_fb_handler)
-
-    start = time.time()
-    stage_clock["last_boundary"] = start
-    try:
-        results = run_ai_pipeline_with_progress(
-            # effective_workers, NOT the raw --workers argument. Passing the
-            # argument meant None whenever the flag was omitted, and
-            # _resolve_max_workers reads None for a local model as 1 -- so the
-            # CLI printed "workers=4" and then ran the whole pipeline
-            # serially, while the Streamlit path passed its configured value
-            # and ran several accounts at once. That alone is most of why the
-            # same databook took minutes longer here than in the UI.
-            mapping_keys=mapping_keys, dfs=dfs, model_type=model_type, model_name=model_name,
-            language=language, use_multithreading=True, max_workers=effective_workers,
-            progress_callback=_tqdm_progress, resume_from=resume_from,
-            workbook_digest=(resolution or {}).get("workbook_digest"),
-            graph_links=period_tieout,
-        )
-    finally:
-        stop_refresh.set()
-        refresh_thread.join(timeout=2.0)
-        pbar.close()
-        _fb_root.removeHandler(_fb_handler)
-        _fb_root.setLevel(_fb_prev_level)
-    elapsed = time.time() - start
-    print(f"\n5. TIMING: full pipeline for {len(mapping_keys)} mapped accounts took {elapsed:.1f}s "
-          f"({elapsed / max(len(mapping_keys), 1):.1f}s/account) on {model_type}"
-          f"{'/' + model_name if model_name else ''}")
-    if stage_timing:
-        print("   Per-stage breakdown (wall-clock, all accounts in that stage together):")
-        for stage_label, stage_seconds in stage_timing.items():
-            per_account = stage_seconds / max(len(mapping_keys), 1)
-            print(f"     {stage_label:12s}: {stage_seconds:7.1f}s total, {per_account:6.1f}s/account")
-        # The breakdown above records each stage label ONCE -- the first time it
-        # reports completed == total_eligible (see stage_clock["seen_labels"]).
-        # The feedback loop then re-runs Generator/Auditor/Validator for every
-        # account it retries, and NONE of that lands in a named stage. On one
-        # real portfolio entity the three stages summed to 162s of a 2,601s run:
-        # 94% of the wall-clock was invisible while the per-account rates all
-        # looked normal. A breakdown that silently omits most of the time is
-        # worse than no breakdown, so name the remainder.
-        _named = sum(stage_timing.values())
-        _rest = elapsed - _named
-        _pct = (_rest / elapsed * 100.0) if elapsed > 0 else 0.0
-        print(f"     {'unattributed':12s}: {_rest:7.1f}s total, "
-              f"{_rest / max(len(mapping_keys), 1):6.1f}s/account   "
-              f"({_pct:.0f}% of the run -- feedback-loop retries + orchestration)")
-        if _pct >= 50.0:
-            print(f"     ⚠️  MOST of this run was NOT in the three named stages. "
-                  f"See the retry summary below.")
-    # Count off the results dict, not off _fb_lines. The capture handler above
-    # is attached to the ROOT logger, but fdd_utils/ai/logging.py sets
-    # propagate = False on the run logger, so no [FeedbackLoop] record ever
-    # reaches it -- the first real Portfolio run printed "no account reported a
-    # retry" on an entity whose own insight summary listed five. feedback_retries
-    # is what the pipeline itself recorded, and is the same field the insight
-    # summary reads, so the two lines can no longer disagree.
-    _retried = {
-        key: (content or {}).get("feedback_retries")
-        for key, content in real_accounts(results).items()
-        if (content or {}).get("feedback_retries")
-    }
-    if _retried:
-        _shown = ", ".join(f"{k}×{v}" for k, v in sorted(_retried.items())[:8])
-        print(f"   Feedback loop: {len(_retried)} account(s) retried -- {_shown}"
-              + (f" ... and {len(_retried) - 8} more" if len(_retried) > 8 else ""))
-    else:
-        print("   Feedback loop: no account reported a retry.")
-    if _fb_lines:
-        print(f"   ({len(_fb_lines)} [FeedbackLoop] log line(s) also captured)")
-
-    _hr("5b. VALIDATOR (subagent_4) ACTUAL VERDICT — the real AI's own judgment, not this "
-        "script's regex heuristic below")
-    print(
-        "This is what subagent_4 itself flagged during the real pipeline run — separate\n"
-        "from checks 6-7 below, which are an independent Python-only cross-check this\n"
-        "script performs on top. If a number was 'supported': True here, the Validator\n"
-        "itself judged it grounded; compare that against whether checks 6-7 also flag it\n"
-        "to tell apart a real Validator misjudgment from a false positive in this script.\n"
-    )
-    for key, content in real_accounts(results).items():
-        reviews = ((content or {}).get("agent_4_validation") or {}).get("clause_reviews") or []
-        if not reviews:
-            print(f"  {key}: no clause_reviews recorded (Validator may not have run / returned unparsed output).")
-            continue
-        unsupported = [r for r in reviews if not r.get("supported", True)]
-        if not unsupported:
-            print(f"  ✅ {key}: Validator reviewed {len(reviews)} clause(s), flagged 0 as unsupported.")
-            continue
-        print(f"  🔶 {key}: Validator flagged {len(unsupported)}/{len(reviews)} clause(s) as unsupported:")
-        for r in unsupported:
-            clause = str(r.get("clause", ""))[:150]
-            print(f"      category={r.get('category', '?')}  reason={r.get('reason', '?')}")
-            print(f"      clause: \"{clause}\"")
-
-    # With --accounts the point of the run is usually to read the text, not to
-    # sweep it: it is the 20-second loop for judging a prompt or an extraction
-    # change. Printing it here saves digging the same string back out of
-    # fdd_utils/output afterwards. Suppressed on a full run, where it would bury
-    # every check below under thirty bullets.
-    if accounts:
-        _hr("5c. GENERATED COMMENTARY (printed because --accounts narrowed the run)")
-        for key in (accounts or []):
-            content = (results or {}).get(key)
-            if content is None:
-                for _k, _v in (results or {}).items():
-                    if str(_k).strip() == str(key).strip():
-                        content = _v
-                        break
-            text = get_pipeline_result_text(content) if content else ""
-            print(f"\n  ── {key}")
-            if not text:
-                print("     (empty — the pipeline produced no final text for this account)")
-                continue
-            for line in str(text).splitlines() or [""]:
-                print(f"     {line}")
-
-    # -- 5d ---------------------------------------------------------------
-    # Claim contracts (M5) then the insight summary (N3). Both are internal
-    # and neither touches the text: the contract verdicts land on their own
-    # results key (never clause_reviews, which would perturb the retry gate
-    # and colour the deck) and the insight summary is not put on `results` at
-    # all, so no path exists from here into build_pptx_structured_payloads.
-    #
-    # NOTE: the in-pipeline hook (after set_final_fallbacks, gated on
-    # processing.claim_contracts.enabled) is NOT wired yet -- pipeline.py was
-    # being edited concurrently when this landed. This call is the same hook
-    # applied from outside, over the returned results, so the failure rates
-    # can be read before anything acts on them.
-    claim_tally: Dict[str, Any] = {}
-    from fdd_utils.ai.contracts import (
-        attach_claim_contracts, claim_contracts_enabled, summarise_claim_contracts,
-    )
-    _hr("5d. INSIGHT SUMMARY (internal — never enters the deck)")
-    if claim_contracts_enabled():
-        try:
-            _checked = attach_claim_contracts(results, dfs, language)
-            claim_tally = summarise_claim_contracts(_checked)
-        except Exception as _exc:
-            print(f"  (claim contracts skipped: {type(_exc).__name__}: {_exc})")
-        print("CLAIM CONTRACTS (measurement only — nothing retries or patches on these):")
-        if not claim_tally:
-            print("  No account's prompt injected any of the four instructions.")
-        for _det, _row in sorted(claim_tally.items()):
-            _rate = 100.0 * _row["passed"] / max(_row["fired"], 1)
-            print(f"  {_det:32s} fired={_row['fired']:3d}  pass={_row['passed']:3d}  "
-                  f"fail={_row['failed']:3d}  ({_rate:.0f}% carried out)")
-            if _row["failing_accounts"]:
-                print(f"      not carried out by: {', '.join(_row['failing_accounts'][:8])}"
-                      + (" ..." if len(_row["failing_accounts"]) > 8 else ""))
-        print()
-    else:
-        print("(claim contracts off — set processing.claim_contracts.enabled: true in "
-              "fdd_utils/config.yml to measure them)\n")
-
-    try:
-        _insight = build_insight_summary(
-            ai_results=results,
-            dfs=dfs,
-            mappings=get_effective_mappings(load_mappings(), resolution),
-            reconciliation=(bs_recon, is_recon),
-            resolution=resolution,
-            language=language,
-            period_tieout=period_tieout,
-        )
-    except Exception as _exc:
-        _insight = {}
-        print(f"  (insight summary failed: {type(_exc).__name__}: {_exc})")
-    if _insight:
-        print(_insight["summary"])
-        print("\nVISIBLE ISSUES (deterministic — each carries the computation it came from):")
-        if not _insight["visible_issues"]:
-            print("  (none)")
-        for _issue in _insight["visible_issues"]:
-            print(f"  [{_issue['severity']:8s}] {_issue['issue']}")
-            print(f"             basis={_issue['basis']}  "
-                  f"evidence={_issue['evidence_ids'][:4]}"
-                  + (" ..." if len(_issue["evidence_ids"]) > 4 else ""))
-        print("\nQUESTIONS FOR THE CLIENT:")
-        if not _insight["client_questions"]:
-            print("  (none)")
-        for _q in _insight["client_questions"]:
-            print(f"  - {_q}")
-        _ext = _insight["external_research"]
-        print(f"\nEXTERNAL RESEARCH NEEDED: {_ext['needed']} — {_ext['reason']}")
-        print(f"WHAT TO DO FIRST: {_insight['commentary_instruction']}")
-
-    _hr("6-7. NUMERIC GROUNDING + UNIT-LABEL SWEEP (this script's own independent check)")
-    all_warnings: List[str] = []
-    checked_count = 0
-    empty_accounts: List[str] = []
-    _accounts = real_accounts(results)
-    for key, content in _accounts.items():
-        # "final" is the pipeline's actual output field (fdd_utils/ai.py
-        # get_pipeline_result_text) — NOT "final_content", which only exists
-        # inside the raw agent_4_validation sub-dict, not at this top level.
-        text = get_pipeline_result_text(content)
-        if not text:
-            empty_accounts.append(key)
-            continue
-        checked_count += 1
-        all_warnings.extend(check_numeric_grounding(key, text, {key: dfs.get(key)} if key in dfs else dfs))
-        # With the sentence, so a flag can be judged from the pasted output
-        # alone -- compact mode hides 5b, where the clause otherwise appears.
-        for _review in _composition_reviews(text):
-            all_warnings.append(f"[{key}] {_review.get('reason')}\n    「{str(_review.get('clause') or '')[:240]}」")
-    print(f"Checked {checked_count} of {len(_accounts)} account(s) with non-empty output.")
-    if empty_accounts:
-        print(
-            f"⚠️  {len(empty_accounts)} account(s) came back with EMPTY final output — this is a\n"
-            f"   real missing-commentary problem, not a test artifact (these would render as\n"
-            f"   blank/missing bullets in the actual PPTX). Likely cause for a reasoning model:\n"
-            f"   the account's max_tokens budget was consumed entirely by hidden reasoning\n"
-            f"   tokens with nothing left for the visible answer (see agents.*.max_tokens and\n"
-            f"   workbench.reasoning_effort in config.yml).\n"
-            f"   Empty accounts: {empty_accounts}"
-        )
-    if all_warnings:
-        print(f"Found {len(all_warnings)} suspicious number(s):")
-        for w in all_warnings:
-            print(w)
-    else:
-        print("✅ No numbers found that only match ground truth at a non-1x scale factor.")
-
-    # Full legal names in the commentary. Checked HERE as well as on the
-    # exported deck, because it is a property of the generated text, not of
-    # the layout -- reporting it at this stage says whether a prompt change
-    # took effect without needing an export at all. The reference deck writes
-    # the short form throughout and reserves the legal name for the first
-    # mention of a specific contract counterparty; a repeated full name costs
-    # most of a line each time.
-    # Report what will SHIP, not what the model first wrote. The raw `final`
-    # text is pre-normalisation; shorten_company_names runs on the way into
-    # the deck. Checking the raw text said "8 still written out" on a run
-    # whose exported deck contained none -- a false alarm about my own fix.
-    from inspect_pptx import _full_legal_names
-    from fdd_utils.pptx import shorten_company_names
-    raw_hits, shipped_hits = {}, {}
-    for key in mapping_keys:
-        text = str((results.get(key) or {}).get("final") or "")
-        if _full_legal_names(text):
-            raw_hits[key] = _full_legal_names(text)
-        survived = _full_legal_names(shorten_company_names(text))
-        if survived:
-            shipped_hits[key] = survived
-    print()
-    if shipped_hits:
-        total = sum(len(v) for v in shipped_hits.values())
-        print(f"📛 {total} full legal name(s) SURVIVE into the deck, in {len(shipped_hits)} account(s):")
-        for key, names in shipped_hits.items():
-            print(f"    {key}: " + "; ".join(repr(n) for n in names[:4]))
-    else:
-        print("✅ No full legal names survive into the deck.")
-    if raw_hits:
-        stripped = sum(len(v) for v in raw_hits.values()) - sum(len(v) for v in shipped_hits.values())
-        print(f"   ({stripped} written by the model, removed automatically by "
-              f"shorten_company_names — the prompt does not have to win this argument.)")
-
-    # 6c. Two accounts side by side, and what the arithmetic found that the
-    # text never says (fdd_utils/ai/consistency.py). Report-only: nothing
-    # retries or patches on these yet.
-    _hr("6c. CROSS-ACCOUNT CONSISTENCY (report-only)")
-    try:
-        from fdd_utils.ai.consistency import cross_account_findings
-        _run_record = results.get("__run__") if isinstance(results, dict) else None
-        _graph_facts = (_run_record or {}).get("facts") if isinstance(_run_record, dict) else None
-        cross_findings = cross_account_findings(results, dfs, _graph_facts)
-    except Exception as _exc:
-        cross_findings = []
-        print(f"  (cross-account pass failed: {type(_exc).__name__}: {_exc})")
-    _uncovered = [f for f in cross_findings if f["code"] == "OBSERVATION_UNCOVERED"]
-    _crossref = [f for f in cross_findings if f["code"] == "CROSS_REF_AMOUNT"]
-    print(f"⚖️  cross-account: {len(_uncovered)} analyst observation(s) no commentary mentions "
-          f"({sum(1 for f in _uncovered if f['severity'] == 'high')} high), "
-          f"{len(_crossref)} amount(s) written against another account that are not its figures")
-    for _f in cross_findings:
-        print(f"⚖️  [{_f['severity']:6s}] {'、'.join(_f['accounts'])}: {_f['detail']}")
-
-    return {
-        "skipped": False,
-        "total_mapped": total_mapped,
-        "ran": len(mapping_keys),
-        "elapsed": elapsed,
-        "empty_accounts": empty_accounts,
-        "grounding_warnings": len(all_warnings),
-        "stage_timing": stage_timing,
-        "results": results,
-        "selection": selection_record,
-        # 5d. Internal only. Deliberately kept OUT of `results` so there is no
-        # path from here into the deck -- build_pptx_structured_payloads is
-        # handed `results`, never this dict.
-        "claim_contracts": claim_tally,
-        "insight_summary": _insight,
-        "cross_account": cross_findings,
-    }
 
 
 # ---------------------------------------------------------------------------
 # 8-9. PPTX export + log analysis + layout inspection
 # ---------------------------------------------------------------------------
 
-class _ListLogHandler(logging.Handler):
-    def __init__(self):
-        super().__init__(level=logging.INFO)
-        self.records: List[logging.LogRecord] = []
-
-    def emit(self, record: logging.LogRecord) -> None:
-        self.records.append(record)
-
-
-_MEASUREMENT_RE = re.compile(r"Text measurement \[(ENG|CHI)\]: (client-metrics|system-font)(?: \(([^)]+)\))?")
-_PPTX_STAGE_RE = re.compile(r"\[PPTX\] ([\w_ ]+?): ([\d.]+)s")
-
-
-def export_and_inspect_pptx(
-    databook_path: str, sheet_name: Optional[str], dfs: Dict[str, pd.DataFrame], ai_results: Dict[str, Any],
-    language: str, model_type: str, out_path: str, model_name: Optional[str] = None,
-    financials_from: Optional[str] = None,
-    offline_summaries: Optional[Dict[str, str]] = None,
-    selection: Any = None,
-    identity_ok: Optional[bool] = None,
-    identity_note: str = "",
-    extra_findings: Optional[List[Any]] = None,
-) -> Dict[str, Any]:
-    """Runs the FULL remaining pipeline (build payloads -> export .pptx),
-    captures every [PPTX] stdout line and fdd_utils.pptx logger record
-    emitted during that export, parses them for the signals that matter
-    (measurement source per language, per-stage timing, any WARNING/ERROR),
-    then runs inspect_pptx.py's own geometry checks against the resulting
-    file — all in one pass, no separate manual export+inspect steps."""
-    _hr("8. PPTX EXPORT (build payloads -> export .pptx, capturing logs)")
-    from fdd_utils.pptx import build_pptx_structured_payloads, export_pptx_from_structured_data_combined
-    from fdd_utils.pptx.helpers import _rendered_bullet_label
-    from fdd_utils.workbook import find_mapping_key
-    from fdd_utils.workbook import synthesize_balance_sheet_and_income_statement
-    import inspect_pptx as _inspect_pptx
-
-    mappings = get_effective_mappings(load_mappings(), None)
-    if sheet_name:
-        # The Financials sheet may live in a sibling roll-up ("主表"), not in
-        # this entity's own workbook -- that is the whole point of
-        # --financials-from. Section 4's reconciliation already honoured it;
-        # this call did not, so it went looking for e.g. "南通通海Financials"
-        # inside 南通通海.xlsx, which has no such sheet. The lookup raised,
-        # bs_is_results came back empty, and every slide in all seven decks
-        # was exported with NO balance-sheet or income-statement table --
-        # visible only as "Skipping BS table — bs_df empty=True" and
-        # table=False on every slide.
-        bs_is_results = extract_balance_sheet_and_income_statement(
-            workbook_path=financials_from or databook_path, sheet_name=sheet_name, debug=False,
-        )
-        if isinstance(bs_is_results, dict):
-            bs_is_results["statement_source"] = "financials"
-    else:
-        # Mirrors process_workbook_data's fallback (fdd_utils/workbook.py) --
-        # no literal Financials sheet, so build the BS/IS summary purely
-        # from the mapped schedule tabs instead of skipping the embed.
-        bs_is_results = synthesize_balance_sheet_and_income_statement(dfs, mappings)
-        bs_is_results["statement_source"] = "synthesized"
-        print("ℹ️  No Financials sheet — using a synthesized BS/IS built from the mapped schedule tabs.")
-    # The delivery decision (fdd_utils/delivery.py): ready / review_required / blocked,
-    # taken from what the run left behind. The deck is exported either way, as a
-    # labelled draft; the label is the file name, a sidecar and the document properties.
-    from fdd_utils.delivery import banner as _delivery_banner, decide_delivery, labelled_path
-    delivery = decide_delivery(selection=selection, ai_results=ai_results, bs_is_results=bs_is_results,
-                               identity_ok=identity_ok, identity_note=identity_note,
-                               extra_findings=extra_findings)
-    out_path = labelled_path(out_path, delivery)
-    print(_delivery_banner(delivery))
-    payloads = build_pptx_structured_payloads(ai_results, mappings, bs_is_results=bs_is_results, dfs=dfs)
-    print(f"BS items: {len(payloads['BS'])}, IS items: {len(payloads['IS'])}")
-
-    # Which accounts the AI wrote commentary for but that never reached a
-    # slide. This runs BEFORE the export, so pptx.py's own drop warning is
-    # outside the log handler section 8b attaches -- a real 投资收益 vanished
-    # silently across three runs, visible only as "IS items: 5". Reported
-    # here with the evidence the drop was judged on, since re-running the AI
-    # to find out costs 10 minutes.
-    _shipped = {
-        str(item.get("mapping_key") or "")
-        for statement_items in payloads.values() for item in statement_items
-    }
-    _dropped = []
-    for _account_key in ai_results or {}:
-        if str(_account_key).startswith("__"):
-            # Run-level sentinel, not an account. The pipeline files its health
-            # tally under __run_health__ in the same dict (the demo path uses
-            # __BS_summary__ the same way), and these have no mappings.yml entry
-            # by design -- without this guard every run reports one phantom
-            # dropped account.
-            continue
-        _mk = find_mapping_key(_account_key, mappings)
-        if not _mk:
-            # No entry in mappings.yml at all. build_pptx_structured_payloads
-            # skips these outright, so the account's commentary is generated,
-            # paid for, and thrown away. The first version of this report
-            # filtered on the SAME lookup and so was blind to exactly the
-            # accounts it existed to surface -- 投资收益 appears nowhere in
-            # mappings.yml and was reported as "every account reached the
-            # deck" three runs running.
-            _dropped.append((f"{_account_key} (NOT IN mappings.yml — add it there)",
-                             None, None, None))
-            continue
-        if _mk in _shipped:
-            continue
-        if (mappings.get(_mk, {}) or {}).get("type") not in {"BS", "IS"}:
-            continue
-        _df = dfs.get(_account_key) if dfs else None
-        _attrs = getattr(_df, "attrs", {}) or {}
-        _dropped.append((_mk, _attrs.get("any_period_nonzero_by_description"),
-                         _attrs.get("prompt_analysis_stage"),
-                         list(getattr(_df, "columns", [])) or None))
-    _dropped_before_export = list(_dropped)
-    if _dropped:
-        print(f"\n⚠️  {len(_dropped)} account(s) had commentary generated but were DROPPED "
-              f"before the deck (paid-for AI output that never ships):")
-        for _mk, _any, _stage, _cols in _dropped:
-            print(f"    {_mk}: any_period_nonzero={_any}")
-            print(f"        analysis stage={_stage}  projection columns={_cols}")
-    else:
-        print("✅ Every account with commentary reached the deck.")
-
-    template_path = str(Path(__file__).parent / "fdd_utils" / "template.pptx")
-    is_chinese = (language == "Chi")
-
-    # Write the executive summaries BEFORE export. The exporter makes no LLM
-    # call of its own (an in-export call was reported to hang 10+ min on a
-    # flaky API), so without this the band falls back to splicing each
-    # account's opening sentence -- which is why the summary could read as a
-    # verbatim copy of the page's first bullet. The batch UI path has always
-    # done this; the CLI never did, so a --run-ai --export-pptx deck has
-    # never carried a real AI summary.
-    from fdd_utils.ui import build_section_summaries
-    _summary_started_at = time.perf_counter()
-    _summary_grounding = {}
-    if offline_summaries is not None:
-        # --from-run: the summaries the run already wrote, never a new model call.
-        section_summaries = dict(offline_summaries)
-        print(f"\nExecutive summaries reused from the run: {sorted(section_summaries) or 'NONE'}"
-              + ("" if {"BS", "IS"} <= set(section_summaries)
-                 else "  (missing ones use the exporter's deterministic page summary)"))
-    else:
-        section_summaries = build_section_summaries(
-            ai_results=ai_results,
-            mappings=mappings,
-            is_chinese_db=is_chinese,
-            model_type=model_type,
-            model_name=model_name,
-            label=Path(databook_path).stem,
-            grounding_out=_summary_grounding,
-            bs_is_results=bs_is_results,
-        )
-        print(f"\nExecutive summaries generated: {sorted(section_summaries) or 'NONE (band will use the spliced fallback)'}"
-              f"  [{time.perf_counter() - _summary_started_at:.1f}s]")
-    for _stmt, _grounding in sorted(_summary_grounding.items()):
-        _dropped = len(_grounding.get("dropped_sentences") or [])
-        if _grounding.get("ungrounded"):
-            print(f"  ⚠️  {_stmt} summary NOT grounded ({_grounding['ungrounded']}) -- exported unchecked")
-            continue
-        print(
-            f"  {_stmt} summary grounding: "
-            f"{_grounding.get('checked_amounts', 0)} amount(s) checked against "
-            f"{_grounding.get('pool_facts', 0)} facts; "
-            f"{_dropped} unsupported sentence(s) removed"
-        )
-        for _gone in (_grounding.get("dropped_sentences") or []):
-            print(f"      removed: {str(_gone.get('sentence'))[:160]}")
-            print(f"        why:   {str(_gone.get('reason'))[:200]}")
-    # Report-only (consistency.py): a summary clause whose direction the
-    # account's own balances contradict. Grounding above checks amounts only.
-    try:
-        from fdd_utils.ai.consistency import summary_direction_findings
-        for _f in summary_direction_findings(section_summaries, dfs or {}):
-            print(f"⚖️  [{_f['severity']:6s}] {'、'.join(_f['accounts'])}: {_f['detail']}")
-    except Exception as _exc:
-        print(f"  (summary direction check skipped: {type(_exc).__name__}: {_exc})")
-
-    # Every fdd_utils.pptx.* module sets its OWN logger to WARNING at import,
-    # and a child's level wins over the parent's -- so raising only the parent
-    # captured nothing, which is why "Text measurement [...]" never appeared and
-    # why a silent executive-summary fallback stayed silent. Raise the children
-    # too, and put them back afterwards.
-    pptx_logger = logging.getLogger("fdd_utils.pptx")
-    handler = _ListLogHandler()
-    prev_level = pptx_logger.level
-    _child_levels = {}
-    for _name, _lg in list(logging.Logger.manager.loggerDict.items()):
-        if _name.startswith("fdd_utils.pptx.") and isinstance(_lg, logging.Logger):
-            _child_levels[_name] = _lg.level
-            _lg.setLevel(logging.INFO)
-    pptx_logger.addHandler(handler)
-    pptx_logger.setLevel(logging.INFO)
-    stdout_buf = io.StringIO()
-    try:
-        with redirect_stdout(stdout_buf):
-            export_pptx_from_structured_data_combined(
-                template_path=template_path,
-                bs_data=payloads["BS"], is_data=payloads["IS"],
-                output_path=out_path,
-                financials_from=financials_from,
-                project_name=Path(databook_path).stem,
-                language="Chinese" if is_chinese else "english",
-                temp_path=databook_path, selected_sheet=sheet_name,
-                is_chinese_databook=is_chinese, bs_is_results=bs_is_results,
-                model_type=model_type,
-                pre_generated_summaries=section_summaries,
-                mappings=mappings,
-                delivery=delivery,
-            )
-    finally:
-        pptx_logger.removeHandler(handler)
-        pptx_logger.setLevel(prev_level)
-        for _name, _lvl in _child_levels.items():
-            logging.getLogger(_name).setLevel(_lvl)
-    captured_stdout = stdout_buf.getvalue()
-    print(captured_stdout, end="")
-
-    _hr("8b. EXPORT LOG ANALYSIS")
-    measurement_sources: Dict[str, str] = {}
-    warnings_seen: List[str] = []
-    for rec in handler.records:
-        msg = rec.getMessage()
-        m = _MEASUREMENT_RE.search(msg)
-        if m:
-            measurement_sources[m.group(1)] = m.group(2) + (f" ({m.group(3)})" if m.group(3) else "")
-        if rec.levelno >= logging.WARNING:
-            warnings_seen.append(f"[{rec.levelname}] {msg}")
-
-    stage_times: Dict[str, float] = {}
-    for m in _PPTX_STAGE_RE.finditer(captured_stdout):
-        stage_times[m.group(1).strip()] = float(m.group(2))
-
-    if measurement_sources:
-        for lang, source in measurement_sources.items():
-            marker = "✅" if source.startswith("client-metrics") else "⚠️"
-            print(f"  {marker} {lang} measurement source: {source}")
-        if any(not s.startswith("client-metrics") for s in measurement_sources.values()):
-            print("  ⚠️  At least one language measured with a system-font fallback, not the "
-                  "repo-shipped/client metrics.json — check pptx.commentary_packing."
-                  "font_metrics_path_eng/chi and use_pillow_text_fitting in config.yml.")
-    else:
-        print("  ℹ️  No 'Text measurement [...]' log line captured. That line is emitted once "
-              "per language on first measurement, so this usually just means logging didn't "
-              "propagate — section 9 below reports the measurement source it actually observed "
-              "in the deck; trust that over this line.")
-        print("      (This used to blame use_pillow_text_fitting: false. That setting no longer "
-              "has a reader — the accurate path is taken whenever a shape is available — so it "
-              "was reporting a cause that could not happen.)")
-
-    if stage_times:
-        print("  Export stage timing:")
-        for stage, secs in stage_times.items():
-            print(f"    {stage}: {secs:.2f}s")
-
-    if warnings_seen:
-        print(f"  {len(warnings_seen)} WARNING/ERROR log line(s) during export:")
-        for w in warnings_seen:
-            print(f"    {w}")
-    else:
-        print("  ✅ No WARNING/ERROR log lines during export.")
-
-    # The .pptx is KEPT on disk, not written to a temp file -- print where, so
-    # it can actually be opened and eyeballed. Every automated check below is a
-    # geometry/metrics check; none of them substitute for looking at the deck.
-    print(f"\n  📄 PPTX SAVED: {Path(out_path).resolve()}")
-
-    _hr("9. PPTX LAYOUT INSPECTION (L/R collision, table overlap, overflow, fill ratio)")
-    pptx_config = _inspect_pptx._load_config(None)
-    layout = _inspect_pptx.inspect_pptx(out_path, pptx_config)
-
-    population = analyze_population_fill(
-        payloads=payloads, template_path=template_path, language=language, model_type=model_type,
-    )
-
-    return {
-        "out_path": out_path,
-        "delivery": delivery.to_dict(),
-        "measurement_sources": measurement_sources,
-        "export_warnings": warnings_seen,
-        "stage_times": stage_times,
-        "layout": layout,
-        "population": population,
-        "dropped_accounts": [str(d[0]) for d in _dropped_before_export],
-        "payload_labels": {
-            statement: [_rendered_bullet_label(item, is_chinese) for item in items]
-            for statement, items in payloads.items()
-        },
-    }
-
-
-def _write_run_identity(path: str, ai_summary: Dict[str, Any], **identity: Any) -> None:
-    """run_identity.json next to the run's results.yml, so --from-run can prove
-    later that this commentary was written from this workbook."""
-    results = (ai_summary or {}).get("results") or {}
-    run_folder = ((results.get("__run__") or {}).get("run_folder")) if isinstance(results, dict) else None
-    if not run_folder:
-        return
-    try:
-        from fdd_utils import run_identity
-        accounts = [k for k in results if not str(k).startswith("__")]
-        written = run_identity.write_identity(
-            str(run_folder), run_identity.build_identity(workbook=path, entity=identity.pop("entity_name"),
-                                                         accounts=accounts, **identity))
-        if written:
-            print(f"🪪 run identity saved: {written}  (re-export later with --from-run "
-                  f"{Path(str(run_folder)).name.replace('run_', '')})")
-    except Exception as exc:
-        print(f"  (run identity not saved: {type(exc).__name__}: {exc})")
-
-
-def _write_run_selection(ai_summary: Dict[str, Any]) -> None:
-    """selection.json in the run folder: which accounts reconciliation sent to the
-    model and which it left out, so a later --from-run deck carries the same
-    delivery findings as the original."""
-    results = (ai_summary or {}).get("results") or {}
-    run_folder = ((results.get("__run__") or {}).get("run_folder")) if isinstance(results, dict) else None
-    selection = (ai_summary or {}).get("selection")
-    if not run_folder or selection is None:
-        return
-    try:
-        from fdd_utils.workbook.selection import save_selection
-        save_selection(str(run_folder), selection)
-    except Exception as exc:
-        print(f"  (account selection not saved: {type(exc).__name__}: {exc})")
-
-
-#: Layout findings that fail an offline re-export, by the text inspect_pptx
-#: writes for them -- the three CLAUDE.md names plus a collapsed L/R page.
-_REEXPORT_BLOCKING = (
-    ("overflow", "OVERFLOW RISK"),
-    ("placeholder_leak", "PLACEHOLDER LEAKED"),
-    ("table_overlap", "table overlaps"),
-    ("lr_collision", "L/R collision"),
-)
-
-
-def _classify_layout_warning(detail: str) -> str:
-    for kind, needle in _REEXPORT_BLOCKING:
-        if needle.lower() in detail.lower():
-            return kind
-    for kind, needle in (("under_filled", "under-filled"), ("autofit_shrink", "AUTOFIT SHRINK"),
-                         ("full_legal_name", "FULL LEGAL NAME"), ("summary", "summary"), ("table", "table")):
-        if needle.lower() in detail.lower():
-            return kind
-    return "other"
-
-
-def reexport_from_run(
-    path: str, run: str, ai_dfs: Dict[str, pd.DataFrame], language: str, selected_sheet: Optional[str],
-    entity_name: str, *, financials_from: Optional[str], financials_sheet: Optional[str], out_path: str,
-    model_type: str, model_name: Optional[str], summary_fallback: bool = False,
-    allow_unverified: bool = False,
-) -> Dict[str, Any]:
-    """Lay out a previous run's commentary again with the current code, no model calls.
-
-    For layout, packing and table work: the text stays fixed between attempts,
-    so a change in the deck is the change in the code. Checked first, and each
-    failure named in the verdict:
-
-      * identity -- run_identity.json's workbook/Financials hashes, entity,
-        sheet and language against this invocation (runs that predate it, or
-        were started from the app, have none: noted, and the per-account
-        check below carries the proof);
-      * data -- each account's frame fingerprint, taken after the same
-        subtable settlement the pipeline does, against its last checkpoint
-        line. A workbook edited since the run fails here, account by account;
-      * summaries -- section_summaries.json, or --summary-fallback for the
-        exporter's deterministic page summary;
-      * model calls -- AIClient.get_response is blocked for the whole export;
-        any attempt is recorded and fails the run;
-      * the deck -- no overflow, placeholder leak, table-over-text or
-        collapsed L/R page; every account with commentary on a slide; at
-        least one content slide.
-
-    Verdict PASS / FAIL / UNVERIFIED (--allow-unverified got past an identity
-    or data mismatch). Written to <deck>.reexport.json next to the deck.
-    """
-    _hr(f"5R. OFFLINE RE-EXPORT FROM RUN {run} (no model calls)")
-    from fdd_utils import run_identity
-    from fdd_utils.ai.evidence import frame_fingerprint
-    from fdd_utils.ai.pipeline import settle_subtable_selection
-
-    report: Dict[str, Any] = {"run": run, "verdict": "FAIL", "problems": [], "notes": [],
-                              "deck": str(Path(out_path).resolve())}
-    report_path = Path(out_path).with_suffix(".reexport.json")
-
-    def _finish() -> Dict[str, Any]:
-        mismatch = report.pop("_identity_mismatch", False)
-        if not report["problems"]:
-            report["verdict"] = "UNVERIFIED" if mismatch else "PASS"
-        try:
-            report_path.write_text(json.dumps(report, ensure_ascii=False, indent=1, default=str),
-                                   encoding="utf-8")
-        except Exception as exc:
-            print(f"  (report not written: {exc})")
-        print(f"\nRE-EXPORT VERDICT: {report['verdict']}  ({len(report['problems'])} problem(s), "
-              f"{len(report.get('provider_call_attempts') or [])} model call(s) attempted)")
-        for problem in report["problems"]:
-            print(f"  ❌ {problem}")
-        for note in report["notes"]:
-            print(f"  ℹ️  {note}")
-        print(f"  report: {report_path.resolve()}")
-        return report
-
-    folder = run_identity.resolve_run_folder(run)
-    if not folder:
-        report["problems"].append(f"no run folder with a results.yml for {run!r} under fdd_utils/logs")
-        return _finish()
-    report["run_folder"] = folder
-    loaded = run_identity.load_run(folder)
-    results = loaded["results"]
-    accounts = [k for k, v in results.items() if not str(k).startswith("__") and isinstance(v, dict)]
-    run_accounts = list((((results.get("__run__") or {}).get("state") or {}).get("accounts") or {})) or accounts
-    settle_subtable_selection([k for k in run_accounts if k in ai_dfs], ai_dfs)
-
-    current = run_identity.build_identity(
-        workbook=path, entity=entity_name, sheet=selected_sheet, financials_from=financials_from,
-        financials_sheet=financials_sheet, language=language, model_type=model_type,
-        model_name=model_name, accounts=accounts)
-    saved = loaded["identity"]
-    report["identity"] = {"run": saved, "now": current}
-    mismatches: List[str] = []
-    if saved:
-        mismatches += [f"identity differs -- {m}" for m in run_identity.compare_identity(saved, current)]
-    else:
-        report["notes"].append("the run has no run_identity.json (started from the app, or before it "
-                               "existed): only the per-account data fingerprints prove its source")
-    fingerprints = loaded["fingerprints"]
-    missing = [k for k in accounts if k not in ai_dfs]
-    changed = [k for k in accounts if k in ai_dfs and fingerprints.get(k)
-               and fingerprints[k] != frame_fingerprint(ai_dfs[k])]
-    unprinted = [k for k in accounts if k in ai_dfs and not fingerprints.get(k)]
-    mismatches += [f"account not in this workbook's frames: {k}" for k in missing]
-    mismatches += [f"account data differs from the run's (fingerprint): {k}" for k in changed]
-    if unprinted and not saved:
-        mismatches.append(f"{len(unprinted)} account(s) carry no data fingerprint and the run no identity "
-                          f"file, so nothing ties them to this workbook: {', '.join(unprinted[:8])}")
-    report["accounts"] = {"in_run": len(accounts), "fingerprint_matched": len(accounts) - len(missing)
-                          - len(changed) - len(unprinted), "changed": changed, "missing": missing,
-                          "no_fingerprint": unprinted}
-    print(f"  run folder: {folder}")
-    print(f"  accounts: {len(accounts)} in the run, {report['accounts']['fingerprint_matched']} with matching "
-          f"data, {len(changed)} changed, {len(missing)} missing, {len(unprinted)} without a fingerprint")
-    if mismatches and not allow_unverified:
-        report["problems"] += mismatches
-        report["problems"].append("not re-exported: the commentary may not describe this workbook "
-                                  "(--allow-unverified to lay it out anyway)")
-        return _finish()
-    if mismatches:
-        report["notes"] += mismatches
-        report["_identity_mismatch"] = True
-
-    summaries = loaded["summaries"]
-    if summaries:
-        report["summaries"] = {stmt: "saved" for stmt in summaries}
-    elif summary_fallback:
-        summaries = {}
-        report["summaries"] = "deterministic page summary (--summary-fallback)"
-        report["notes"].append("no saved executive summary: the band uses the exporter's deterministic "
-                               "page summary, so it differs from the original deck")
-    else:
-        report["problems"].append("the run saved no executive summary (section_summaries.json); "
-                                  "pass --summary-fallback to use the deterministic page summary")
-        return _finish()
-
-    pptx_summary: Optional[Dict[str, Any]] = None
-    with run_identity.offline_provider_block() as attempts:
-        try:
-            with _compact("8-10 PPTX export + layout",
-                          keep=("DROPPED", "⚠️", "OVERFLOW RISK", "OVERLAPS REAL TEXT",
-                                "LEAKED", "warning(s) found")):
-                from fdd_utils.delivery import Finding
-                from fdd_utils.workbook.selection import load_selection
-                saved_selection = load_selection(folder)
-                pptx_summary = export_and_inspect_pptx(
-                    path, selected_sheet, ai_dfs, results, language, model_type, out_path,
-                    model_name=model_name, financials_from=financials_from, offline_summaries=summaries,
-                    selection=saved_selection,
-                    # an --allow-unverified re-export is a layout preview of text that may not
-                    # describe this workbook: never a deliverable
-                    identity_ok=not bool(report.get("_identity_mismatch")),
-                    identity_note="; ".join(report.get("notes") or [])[:300],
-                    extra_findings=([] if saved_selection is not None else [Finding(
-                        "SELECTION_UNKNOWN", "review",
-                        "this run saved no account-selection record (it predates delivery control), so which "
-                        "accounts were left out of it cannot be told")]),
-                )
-        except Exception as exc:
-            report["problems"].append(f"export failed: {type(exc).__name__}: {exc}")
-    report["provider_call_attempts"] = list(attempts)
-    if attempts:
-        report["problems"].append(f"{len(attempts)} model call(s) attempted during the re-export "
-                                  f"(blocked; first: {attempts[0]})")
-    report["environment"] = {"run": {k: (saved or {}).get(k) for k in ("code_revision", "config_sha256",
-                                                                         "template_sha256")},
-                             "now": run_identity.environment_fingerprint()}
-    if not pptx_summary:
-        return _finish()
-    report["pptx"] = {"out_path": pptx_summary.get("out_path")}
-    layout = pptx_summary.get("layout") or {}
-    by_kind: Dict[str, List[str]] = {}
-    for detail in layout.get("warning_details") or []:
-        by_kind.setdefault(_classify_layout_warning(str(detail)), []).append(str(detail))
-    report["layout"] = {"total_slides": layout.get("total_slides"), "content_slides": layout.get("content_slides"),
-                        "warnings_by_kind": by_kind}
-    for kind, _needle in _REEXPORT_BLOCKING:
-        for detail in by_kind.get(kind, []):
-            report["problems"].append(f"layout {kind}: {detail}")
-    if not layout.get("content_slides"):
-        report["problems"].append("the deck has no content slide this project's template names")
-    for dropped in pptx_summary.get("dropped_accounts") or []:
-        report["problems"].append(f"commentary never reached the deck: {dropped}")
-    try:
-        from pptx import Presentation
-        _deck = Presentation(out_path)
-        # Which tables were drawn, by their title band and data-row count, so a
-        # pasted verdict says which account a table warning is about and how
-        # long each table came out.
-        tables = [(index, shape.table.cell(0, 0).text.strip(), len(shape.table.rows) - 2)
-                  for index, slide in enumerate(_deck.slides, 1) for shape in slide.shapes
-                  if getattr(shape, "has_table", False)]
-        report["layout"]["tables"] = [{"slide": i, "title": t, "data_rows": n} for i, t, n in tables]
-        print("  tables drawn: " + " · ".join(f"s{i} {t or '(untitled)'} {n}行" for i, t, n in tables))
-        deck_text = "\n".join(shape.text_frame.text for slide in _deck.slides
-                              for shape in slide.shapes if getattr(shape, "has_text_frame", False))
-        absent = [label for labels in (pptx_summary.get("payload_labels") or {}).values()
-                  for label in labels if f"■ {label}" not in deck_text]
-        report["accounts"]["absent_from_deck"] = absent
-        for label in absent:
-            report["problems"].append(f"account has no bullet in the deck: {label}")
-    except Exception as exc:
-        report["notes"].append(f"deck coverage not checked: {type(exc).__name__}: {exc}")
-    return _finish()
-
-
-def analyze_population_fill(
-    payloads: Dict[str, List[Dict[str, Any]]], template_path: str, language: str, model_type: str,
-) -> Dict[str, Any]:
-    """Deep population/fill (text-box "utilisation") diagnostic, on top of
-    what section 9's layout check already reports.
-
-    For each statement (BS/IS), computes the THEORETICAL BEST fill ratio —
-    total content-lines needed divided by total capacity across exactly the
-    slots the packer actually used — so a genuinely low ceiling here means
-    the content itself doesn't reach the target regardless of packing
-    quality (not a packing bug). Then, for every slot boundary, checks
-    whether the first account of the NEXT slot would have fit into the
-    PREVIOUS slot's remaining space; if it would, this does NOT stop at
-    that naive local check (which produces false positives — see below) —
-    it replays the DP's own lexicographic penalty formula for both the
-    actual assignment and the alternative (moving that account back), and
-    only reports a genuine gap if the alternative's total penalty is
-    actually LOWER. A naive "would it fit locally" check is necessary but
-    not sufficient: moving an account into an earlier slot can make a
-    LATER slot's fill worse by more than it helps the earlier one, in
-    which case the packer's original choice is already optimal even though
-    it looks like a gap at a glance.
-    """
-    from fdd_utils.pptx import PowerPointGenerator
-
-    gen = PowerPointGenerator(template_path, "chinese" if language == "Chi" else "english", model_type=model_type)
-    gen.load_template()
-    is_chinese = (language == "Chi")
-    max_slides = int(gen.pptx_settings.get("max_commentary_slides_per_statement", 4) or 4)
-
-    _hr("10. POPULATION / FILL DIAGNOSTIC (theoretical ceiling + rigorous boundary check)")
-
-    # start_slide must match apply_structured_data_to_slides' real call sites
-    # (BS=1, IS=5) — using the wrong one would resolve slot shapes against the
-    # OTHER statement's slides. Continuation slides (every slide after the
-    # first of a statement) also need their commentary box expanded to absorb
-    # the coSummaryShape area FIRST, exactly as apply_structured_data_to_slides
-    # does before it calls _distribute_content_across_slots — skipping this
-    # understates capacity on every slide but the first and makes the fill
-    # ratios / gap check below not match what the real export actually did.
-    start_slides = {"BS": 1, "IS": 1 + max_slides}
-    report: Dict[str, Any] = {}
-    for statement_type in ("BS", "IS"):
-        items = payloads.get(statement_type) or []
-        if not items:
-            continue
-        start_slide = start_slides[statement_type]
-        first_slide_idx = start_slide - 1
-        for offset in range(1, max_slides):
-            cont_idx = first_slide_idx + offset
-            if cont_idx >= len(gen.presentation.slides):
-                break
-            gen._expand_commentary_to_cover_summary(gen.presentation.slides[cont_idx])
-
-        target_fill = float(gen._packing_settings(statement_type).get("target_fill_min_ratio", 0.95) or 0.95)
-        print(f"\n  [{statement_type}] target_fill_min_ratio = {target_fill:.0%} "
-              f"(every slot except the last-used one is scored against this)")
-        # Prepare the items EXACTLY as apply_structured_data_to_slides does
-        # before it packs. Skipping this measured different text from the one
-        # that actually ships -- normalisation and shorten_company_names both
-        # run in there -- so section 10 and section 9 reported different fill
-        # for the same box (95% vs 101% on a real slide 1). A diagnostic that
-        # disagrees with the render it is describing is worse than none.
-        # _plan_slot_distribution, not _distribute_content_across_slots: the
-        # export pulls presentation-table accounts out of the packing pool and
-        # appends them to their own slots afterwards, so packing every account
-        # models a layout that never ships. On a real deck this reported an IS
-        # page as 100% full with 4 accounts where the deck held one account at
-        # 33%, then declared "no genuine packing gaps" about it.
-        items = gen._prepare_structured_data_for_slides(items)
-        dist = gen._plan_slot_distribution(
-            items, max_slides=max_slides, start_slide=start_slide,
-            statement_type=statement_type, is_chinese_databook=is_chinese,
-        )
-        if not dist:
-            print("    (no slots used)")
-            continue
-
-        sample_shape = None
-        for slide in gen.presentation.slides:
-            for alt_name in ("textMainBullets", "textMainBullets_L", "textMainBullets_R"):
-                shape = gen.find_shape_by_name(slide.shapes, alt_name)
-                if shape:
-                    sample_shape = shape
-                    break
-            if sample_shape:
-                break
-
-        def _shape_for(slide_idx: int, slot_name: str):
-            actual_slide_idx = start_slide - 1 + slide_idx
-            slide = gen.presentation.slides[actual_slide_idx]
-            return gen._resolve_commentary_slot_shape(slide, slot_name) or sample_shape
-
-        slot_rows = []
-        total_used = 0.0
-        total_cap = 0.0
-        for slide_idx, slot_name, accts in dist:
-            if not accts:
-                continue
-            shape = _shape_for(slide_idx, slot_name)
-            is_chi_slot = any(bool(a.get("is_chinese")) for a in accts)
-            cap = gen._calculate_max_lines_for_textbox(shape, is_chinese=is_chi_slot, slot_name=slot_name, statement_type=statement_type)
-            used = gen._compute_slot_used_lines(accts, slot_name, slot_shape=shape, statement_type=statement_type)
-            slot_rows.append({
-                "slide_idx": slide_idx, "actual_slide_num": start_slide + slide_idx, "slot_name": slot_name,
-                "shape": shape, "accounts": accts, "cap": cap, "used": used, "is_chinese": is_chi_slot,
-            })
-            total_used += used
-            total_cap += cap
-
-        ceiling = (total_used / total_cap) if total_cap else 0.0
-        print(f"    {len(slot_rows)} slot(s) used, {total_used:.1f}/{total_cap:.0f} total lines "
-              f"-> theoretical best fill if perfectly redistributed: {ceiling:.0%}")
-
-        genuine_gaps = []
-        for idx, row in enumerate(slot_rows):
-            names = [a.get("mapping_key", "?") for a in row["accounts"]]
-            fill = row["used"] / row["cap"] if row["cap"] else 0.0
-            print(f"      slide {row['actual_slide_num']} ({row['slot_name']}): {row['used']:.1f}/{row['cap']} "
-                  f"= {fill:.0%}  accts={names}")
-            if idx + 1 >= len(slot_rows):
-                continue
-            nxt = slot_rows[idx + 1]
-            if not nxt["accounts"]:
-                continue
-            first_next = nxt["accounts"][0]
-            remaining = row["cap"] - row["used"]
-            # Recompute the FULL list's used-lines (not a bare single-account
-            # _calculate_content_lines call) so a category-header increment
-            # on first_next is correctly included -- the same accounting
-            # _rebalance_underfilled_boundaries (the active fix in pptx.py)
-            # uses. A naive single-account cost silently under-counts by the
-            # ~1-line header cost whenever first_next starts a new category,
-            # which produced false "genuine gap" positives on tight margins.
-            alt_cur_used = gen._compute_slot_used_lines(
-                row["accounts"] + [first_next], row["slot_name"],
-                slot_shape=row["shape"], statement_type=statement_type,
-            )
-            cost_here = alt_cur_used - row["used"]
-            if alt_cur_used > row["cap"]:
-                continue  # doesn't even fit locally -- not a candidate, gap is real/unavoidable
-
-            # Locally it WOULD fit -- but that alone is a false-positive-prone
-            # check. Replay the DP's own lexicographic penalty for both the
-            # current assignment and the alternative (move first_next back
-            # into this slot, remove its cost from the next slot) to see
-            # which is genuinely better.
-            is_last_cur = (idx == len(slot_rows) - 1)
-            is_last_nxt = (idx + 1 == len(slot_rows) - 1)
-            cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (row["used"] / row["cap"]))
-            nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (nxt["used"] / nxt["cap"]))
-            current_total = cur_penalty + nxt_penalty
-
-            alt_nxt_used = gen._compute_slot_used_lines(
-                nxt["accounts"][1:], nxt["slot_name"],
-                slot_shape=nxt["shape"], statement_type=statement_type,
-            )
-            alt_cur_penalty = 0.0 if is_last_cur else max(0.0, target_fill - (alt_cur_used / row["cap"]))
-            alt_nxt_penalty = 0.0 if is_last_nxt else max(0.0, target_fill - (alt_nxt_used / nxt["cap"]))
-            alt_total = alt_cur_penalty + alt_nxt_penalty
-
-            if alt_total < current_total - 1e-9:
-                genuine_gaps.append((row, nxt, first_next, cost_here, remaining, current_total, alt_total))
-                print(f"        *** GENUINE GAP: '{first_next.get('mapping_key')}' (costs {cost_here:.2f}, "
-                      f"remaining {remaining:.2f}) -- moving it back lowers total penalty "
-                      f"{current_total:.3f} -> {alt_total:.3f} ***")
-
-        report[statement_type] = {
-            "slots": len(slot_rows), "total_used": total_used, "total_cap": total_cap,
-            "ceiling": ceiling, "genuine_gaps": len(genuine_gaps),
-        }
-
-    if not any(v.get("genuine_gaps") for v in report.values()):
-        print("\n  ✅ No genuine packing gaps found — every boundary is either a hard fit "
-              "limit or already at the DP's own optimum.")
-    return report
-
 
 # ---------------------------------------------------------------------------
+
+def run_agent_book(path: str, sheet: Optional[str], entity_name: str, model_type: str, model_name: Optional[str], *,
+                   limit: Optional[int] = None, accounts: Optional[List[str]] = None, export_pptx: bool = False,
+                   out_path: Optional[str] = None, financials_from: Optional[str] = None,
+                   financials_sheet: Optional[str] = None) -> Dict[str, Any]:
+    """--run-ai: the agent writes the book from the workbook's own evidence (fdd_utils/agent/book.py, the path the app takes) and every
+    sentence is checked against the workbook before it can reach a deck. Real model calls: costs time and tokens.
+
+    --limit takes the first N accounts in scope, --accounts names them; the deck (and the executive summaries written for it) only with
+    --export-pptx. Returns the numbers the final summary table prints, and the results the deck was made from."""
+    from fdd_utils.agent import book as B
+    work = B.open_book(path, entity=entity_name or "", sheet=None if financials_from else sheet, financials_from=financials_from,
+                       financials_sheet=financials_sheet if financials_from else None, model_type=model_type, model_name=model_name)
+    keys = work.entity_accounts()
+    if accounts:
+        wanted = [(a, work.source.resolve_account(a)) for a in accounts]
+        if [a for a, k in wanted if not k]:
+            print(f"⚠️  not found among the accounts in scope: {[a for a, k in wanted if not k]}")
+        keys = [k for _a, k in wanted if k]
+    elif limit:
+        keys = keys[:limit]
+    if not keys:
+        return {"skipped": True, "reason": "no account in scope"}
+    bar = tqdm(total=len(keys), **_entity_bar_kwargs("accounts", unit="acct"))
+
+    def on_account(key: str, turn: Any) -> None:
+        bar.update(1)
+        bar.set_postfix(ok=sum(1 for c in work.source.candidates.values() if c.accepted and c.validated), calls=work.model_calls)
+
+    try:
+        result = B.run_book(work, keys, on_account=on_account, overview=export_pptx, deck=export_pptx, out_path=out_path or "")
+    finally:
+        bar.close()
+    for line in result.summary_lines(Path(path).name):
+        print(line)
+    books = result.books()
+    return {"skipped": False, "ran": len(result.finished), "total_mapped": len(keys), "elapsed": result.seconds, "marked": len(result.marked),
+            "calls": books["calls"], "charged_tokens": books["charged_tokens"], "cost": books.get("cost"), "results": result.ai_results,
+            "deck": result.deck_path or None, "delivery": result.delivery, "layout": result.deck.get("layout"), "stopped": result.stopped,
+            "issue_cases": result.issue_cases}
+
 
 def _resolve_financials_sheets(xl: pd.ExcelFile, path: str) -> List[str]:
     """Exact 'Financials' match wins. Otherwise look for a multi-entity
@@ -3558,12 +2099,10 @@ def inspect_one(*args, **kwargs) -> Dict[str, Any]:
 
 def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool,
                  model_type: str, model_name: Optional[str], limit: Optional[int] = None,
-                 workers: Optional[int] = None, dump_tab_name: Optional[str] = None,
+                 dump_tab_name: Optional[str] = None,
                  accounts: Optional[List[str]] = None, export_pptx: bool = False,
                  pptx_out_dir: Optional[str] = None, financials_from: Optional[str] = None,
-                 financials_sheet: Optional[str] = None, resume_from: Optional[str] = None,
-                 from_run: Optional[str] = None, summary_fallback: bool = False,
-                 allow_unverified: bool = False) -> Dict[str, Any]:
+                 financials_sheet: Optional[str] = None) -> Dict[str, Any]:
     _hr(f"INSPECTING: {path}")
     _file_started = time.perf_counter()
     _CAPTURE.times = []
@@ -3719,213 +2258,24 @@ def _inspect_one(path: str, sheet: Optional[str], entity_name: str, run_ai: bool
     if combined_is_recon is not None:
         summary["is_match"] = combined_is_recon["Match"].value_counts().to_dict()
 
-    if not run_ai:
-        # The extraction-side half of the insight summary, free and offline.
-        # Everything it reads -- reconciliation breaks, resolution scores near
-        # the floor, unresolved sheets, unmapped accounts, untied breakdown
-        # tables -- exists before any LLM call, and having to pay for a
-        # 12-minute run to see it would make it useless as a pre-flight check.
-        # The AI-sourced half (clause defects, retries, claim contracts) is
-        # simply absent here; build_insight_summary omits, never fakes.
-        _hr("5d. INSIGHT SUMMARY — EXTRACTION HALF (internal; no AI ran, "
-            "so nothing text-side is included)")
-        try:
-            _pre = build_insight_summary(
-                ai_results={}, dfs=dfs,
-                mappings=get_effective_mappings(load_mappings(), extraction_resolution or None),
-                reconciliation=(combined_bs_recon, combined_is_recon),
-                resolution=extraction_resolution or None,
-                period_tieout=period_tieout,
-            )
-            print(_pre["summary"])
-            for _issue in _pre["visible_issues"]:
-                print(f"  [{_issue['severity']:8s}] {_issue['issue']}")
-                print(f"             basis={_issue['basis']}")
-            if not _pre["visible_issues"]:
-                print("  (no deterministic finding on the extraction side)")
-            if _pre["client_questions"]:
-                print("\nQUESTIONS FOR THE CLIENT:")
-                for _q in _pre["client_questions"]:
-                    print(f"  - {_q}")
-            summary["insight_summary"] = _pre
-        except Exception as _exc:
-            print(f"  (insight summary failed: {type(_exc).__name__}: {_exc})")
-
-    if run_ai or from_run:
-        # sheet_names is legitimately [] here when no Financials-like sheet was
-        # found (see above) -- process_workbook_data's selected_sheet and
-        # run_ai_checks's sheet_name (which it never actually uses -- see
-        # run_ai_checks's signature) both tolerate None just fine.
+    if run_ai:
+        # sheet_names is legitimately [] here when no Financials-like sheet was found: the agent then writes every extracted schedule
+        # account (production's "no reconciliation data" fallback) and the deck's delivery decision says the statements were not reconciled
         selected_sheet_for_ai = sheet_names[0] if sheet_names else None
-        # Section 5d's insight summary reads resolution scores and
-        # unresolved_sheets; the same call also yields the language and the
-        # frames the pipeline reads -- see ai_input_frames for why those are
-        # not section 1's `dfs`.
-        _frames_started = time.perf_counter()
-        ai_dfs, language, resolution_for_insight = ai_input_frames(
-            path, entity_name, selected_sheet_for_ai,
-            financials_from=financials_from, fallback_dfs=dfs,
-        )
-        _section_times().append(("process_workbook_data", time.perf_counter() - _frames_started))
-        if from_run:
-            Path(pptx_out_path).parent.mkdir(parents=True, exist_ok=True)
-            summary["reexport"] = reexport_from_run(
-                path, from_run, ai_dfs, language, selected_sheet_for_ai, entity_name,
-                financials_from=financials_from, financials_sheet=financials_sheet,
-                out_path=pptx_out_path, model_type=model_type, model_name=model_name,
-                summary_fallback=summary_fallback, allow_unverified=allow_unverified,
-            )
-            if isinstance(summary["reexport"].get("pptx"), dict):
-                summary["pptx"] = summary["reexport"]["pptx"]
-            _total = time.perf_counter() - _file_started
-            summary["timings"] = list(_section_times())
-            print(f"TIME {_total:.0f}s: " + " · ".join(f"{label} {secs:.0f}s" for label, secs in _section_times()))
-            return summary
-        # --accounts narrows the run to read the commentary itself (5c), so
-        # nothing is hidden then.
-        _ai_quiet = nullcontext() if accounts else _compact(
-            "5-7 AI checks",
-            keep=("TIMING", "Feedback loop:", "category=hallucination", "suspicious number", "⚖️"),
-            keep_next=("clause:", "[", "「"))
-        with _ai_quiet:
-            ai_summary = run_ai_checks(
-                path, selected_sheet_for_ai, ai_dfs, entity_name, model_type, model_name, language,
-                combined_bs_recon, combined_is_recon, limit=limit, workers=workers,
-                accounts=accounts, resolution=resolution_for_insight, resume_from=resume_from,
-                period_tieout=period_tieout,
-            )
+        ai_summary = run_agent_book(
+            path, selected_sheet_for_ai, entity_name, model_type, model_name, limit=limit, accounts=accounts,
+            export_pptx=export_pptx, out_path=pptx_out_path, financials_from=financials_from, financials_sheet=financials_sheet)
         summary["ai"] = ai_summary
-        _record_scorecard(path, model_type, model_name, ai_summary)
-        _write_run_identity(path, ai_summary, entity_name=entity_name, sheet=selected_sheet_for_ai,
-                            financials_from=financials_from, financials_sheet=financials_sheet,
-                            language=language, model_type=model_type, model_name=model_name)
-        _write_run_selection(ai_summary)
-
-        if export_pptx and not ai_summary.get("skipped") and ai_summary.get("results"):
-            out_path = pptx_out_path            # resolved and lock-checked up front
-            Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-            try:
-                with _compact("8-10 PPTX export + layout",
-                              keep=("DROPPED", "⚠️", "⚖️", "OVERFLOW RISK", "OVERLAPS REAL TEXT",
-                                    "LEAKED", "GENUINE GAP", "warning(s) found")):
-                    pptx_summary = export_and_inspect_pptx(
-                        path, selected_sheet_for_ai, ai_dfs, ai_summary["results"], language,
-                        model_type, out_path, model_name=model_name,
-                        financials_from=financials_from,
-                        selection=ai_summary.get("selection"),
-                    )
-                summary["pptx"] = pptx_summary
-                out_path = pptx_summary.get("out_path", out_path)  # carries the delivery label
-                # Repeated dead-last: section 9/10 print a lot after the export,
-                # and the path is useless if it's buried thousands of lines up.
-                print(f"\n📄 Open this to eyeball-check the deck:\n   {Path(out_path).resolve()}")
-                print(f"   delivery: {pptx_summary['delivery']['status']}\n")
-            except Exception as exc:
-                print(f"\n❌ PPTX export/inspect FAILED: {type(exc).__name__}: {exc}")
-                import traceback
-                traceback.print_exc()
-                summary["pptx"] = {"status": f"FAILED: {exc}"}
+        if ai_summary.get("deck"):
+            Path(ai_summary["deck"]).parent.mkdir(parents=True, exist_ok=True)
+            summary["pptx"] = {"out_path": ai_summary["deck"], "delivery": ai_summary["delivery"], "layout": ai_summary.get("layout") or {}}
+            # Repeated dead-last: the report prints a lot after the export, and the path is useless buried thousands of lines up.
+            print(f"\n📄 Open this to eyeball-check the deck:\n   {Path(ai_summary['deck']).resolve()}")
+            print(f"   delivery: {ai_summary['delivery'].get('status')}\n")
     _total = time.perf_counter() - _file_started
     summary["timings"] = list(_section_times())
     print(f"TIME {_total:.0f}s: " + " · ".join(f"{label} {secs:.0f}s" for label, secs in _section_times()))
     return summary
-
-
-SCORECARD_PATH = Path("fdd_utils/logs/scorecard.jsonl")
-
-
-def scorecard_row(path: str, model_type: str, model_name: Optional[str],
-                  ai_summary: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """One line per databook per AI run: how much of the deck can go out as written.
-
-    The target is "most files at 90+", not one file at 100, so every run is
-    scored the same way and kept. An account is CLEAN when the model wrote it
-    (no fallback bullet, no error text, not empty) and the verifier found no
-    hallucination in it; "reasoning" flags do not count against it -- they are
-    marked inferences, highlighted in the deck for the reader, which is what
-    the deliverable wants. score = clean / accounts run.
-    """
-    if not ai_summary or ai_summary.get("skipped"):
-        return None
-    results = ai_summary.get("results") or {}
-    health = results.get("__run_health__") or {}
-    degraded = set(health.get("accounts_on_fallback_bullet") or []) | set(health.get("accounts_on_error_text") or []) \
-        | set(ai_summary.get("empty_accounts") or [])
-    accounts = [k for k in results if not str(k).startswith("__")]
-    hallucinated, reasoning, retried = [], 0, 0
-    for key in accounts:
-        entry = results.get(key) or {}
-        reviews = ((entry.get("agent_4_validation") or {}).get("clause_reviews")) or []
-        bad = [r for r in reviews if isinstance(r, dict) and r.get("supported") is False]
-        if any(r.get("category") == "hallucination" for r in bad):
-            hallucinated.append(key)
-        reasoning += sum(1 for r in bad if r.get("category") != "hallucination")
-        retried += int(entry.get("feedback_retries") or 0)
-    clean = [k for k in accounts if k not in degraded and k not in hallucinated]
-    import datetime
-    import subprocess
-    try:
-        commit = subprocess.run(["git", "rev-parse", "--short", "HEAD"], capture_output=True, text=True,
-                                timeout=5, cwd=str(Path(__file__).resolve().parent)).stdout.strip()
-    except Exception:
-        commit = ""
-    if not commit:
-        # git not callable from Python on the run machine (the first Portfolio I
-        # scorecard came back with an empty commit on all seven rows): read it
-        # off .git directly.
-        try:
-            git_dir = Path(__file__).resolve().parent / ".git"
-            head = (git_dir / "HEAD").read_text().strip()
-            ref = head.split(" ", 1)[1] if head.startswith("ref:") else ""
-            sha = (git_dir / ref).read_text().strip() if ref and (git_dir / ref).exists() else (
-                next((line.split()[0] for line in (git_dir / "packed-refs").read_text().splitlines()
-                      if ref and line.endswith(ref)), "") if ref else head)
-            commit = sha[:7]
-        except Exception:
-            commit = ""
-    return {
-        "time": datetime.datetime.now().isoformat(timespec="seconds"),
-        "commit": commit,
-        "file": Path(path).name,
-        "model": model_name or model_type,
-        "accounts": len(accounts),
-        "clean": len(clean),
-        "score": round(100.0 * len(clean) / len(accounts), 1) if accounts else 0.0,
-        "hallucination_accounts": sorted(hallucinated),
-        "degraded_accounts": sorted(degraded),
-        "reasoning_flags": reasoning,
-        "composition_warnings": ai_summary.get("grounding_warnings", 0),
-        "retries": retried,
-        "calls_failed": health.get("calls_failed", 0),
-        "elapsed_s": round(float(ai_summary.get("elapsed") or 0), 1),
-        # Report-only quality signals (6c), not part of the score: what the
-        # arithmetic found that no commentary says, and amounts written
-        # against the wrong account.
-        "uncovered_high": sum(1 for f in (ai_summary.get("cross_account") or [])
-                              if f.get("code") == "OBSERVATION_UNCOVERED" and f.get("severity") == "high"),
-        "uncovered": sum(1 for f in (ai_summary.get("cross_account") or [])
-                         if f.get("code") == "OBSERVATION_UNCOVERED"),
-        "cross_ref": sum(1 for f in (ai_summary.get("cross_account") or [])
-                         if f.get("code") == "CROSS_REF_AMOUNT"),
-    }
-
-
-def _record_scorecard(path: str, model_type: str, model_name: Optional[str], ai_summary: Dict[str, Any]) -> None:
-    row = scorecard_row(path, model_type, model_name, ai_summary)
-    if not row:
-        return
-    try:
-        SCORECARD_PATH.parent.mkdir(parents=True, exist_ok=True)
-        with SCORECARD_PATH.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
-    except Exception as exc:
-        print(f"(scorecard not written: {exc})")
-    print(f"\nSCORE {row['score']:.0f}/100 — {row['clean']}/{row['accounts']} account(s) clean; "
-          f"hallucination in {len(row['hallucination_accounts'])}, degraded {len(row['degraded_accounts'])}, "
-          f"{row['reasoning_flags']} highlighted inference(s). Appended to {SCORECARD_PATH}.")
-    for _label, _names in (("hallucination", row["hallucination_accounts"]), ("degraded", row["degraded_accounts"])):
-        if _names:
-            print(f"  {_label}: {', '.join(_names)}")
 
 
 def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
@@ -3948,66 +2298,32 @@ def _print_final_summary(summaries: List[Dict[str, Any]], run_ai: bool) -> None:
             if ai.get("skipped"):
                 ai_str = f"skipped ({ai.get('reason', '?')})"
             elif ai:
-                empty_n = len(ai.get("empty_accounts") or [])
                 ai_str = (
-                    f"{ai.get('ran', 0)}/{ai.get('total_mapped', 0)} ran, "
-                    f"{ai.get('elapsed', 0):.0f}s, "
-                    f"{empty_n} empty, {ai.get('grounding_warnings', 0)} 🔴"
+                    f"{ai.get('ran', 0)}/{ai.get('total_mapped', 0)} finished, {ai.get('marked', 0)} marked, "
+                    f"{ai.get('calls', 0)} calls, {ai.get('elapsed', 0):.0f}s"
+                    + (f", {ai['cost']:.2f} yuan" if ai.get("cost") is not None else "")
                 )
-        stage_timing = ((s.get("ai") or {}).get("stage_timing")) or {}
-        stage_str = (
-            ", ".join(f"{label}={secs / max((s.get('ai') or {}).get('ran', 1), 1):.1f}s/acct"
-                      for label, secs in stage_timing.items())
-            if stage_timing else "-"
-        )
         scaling_n = s.get("scaling_mismatch_tabs", 0)
         row = {
             "file": s.get("file", "?"),
             "tabs": f"{s.get('tabs_parsed', '?')}/{s.get('total_sheets', '?')}",
             "scaling": f"{scaling_n} tab(s) ⚠️" if scaling_n else "-",
-            "BS": bs_str, "IS": is_str, "AI": ai_str, "stage s/acct": stage_str,
+            "BS": bs_str, "IS": is_str, "AI": ai_str,
         }
         if "pptx" in s:
             pptx = s["pptx"]
-            if "status" in pptx:
-                row["pptx"] = pptx["status"]
-            else:
-                layout = pptx.get("layout") or {}
-                sources = pptx.get("measurement_sources") or {}
-                src_str = ",".join(f"{k}={v}" for k, v in sources.items()) or "?"
-                row["pptx"] = (
-                    f"{layout.get('content_slides', '?')} slides, "
-                    f"{layout.get('total_warnings', 0)} layout ⚠️"
-                    + (f", src={src_str}" if VERBOSE else "")
-                )
-                population = pptx.get("population") or {}
-                if population:
-                    row["population"] = ", ".join(
-                        f"{stmt}={info.get('ceiling', 0):.0%} ceiling"
-                        + (f" ({info['genuine_gaps']} gap!)" if info.get("genuine_gaps") else "")
-                        for stmt, info in population.items()
-                    )
+            layout = pptx.get("layout") or {}
+            warnings = len(layout.get("problems_on_touched_slides") or []) + int(layout.get("warnings_elsewhere") or 0)
+            row["pptx"] = (f"{layout.get('content_slides', '?')} slides, {warnings} layout ⚠️, delivery {(pptx.get('delivery') or {}).get('status')}")
         rows.append(row)
     df = pd.DataFrame(rows)
     if not VERBOSE:
-        df = df.drop(columns=[c for c in ("tabs", "scaling", "BS", "IS", "stage s/acct") if c in df.columns])
+        df = df.drop(columns=[c for c in ("tabs", "scaling", "BS", "IS") if c in df.columns])
     print(df.to_string(index=False))
     if run_ai:
-        total_empty = sum(len((s.get("ai") or {}).get("empty_accounts") or []) for s in summaries)
-        total_warnings = sum((s.get("ai") or {}).get("grounding_warnings", 0) for s in summaries)
-        print(f"\nAcross all files: {total_empty} empty account(s) total, {total_warnings} grounding warning(s) total.")
-        if total_empty == 0 and total_warnings == 0:
-            print("✅ Nothing flagged across the whole batch.")
-        pptx_summaries = [s.get("pptx") for s in summaries if "pptx" in s and "status" not in (s.get("pptx") or {})]
-        if pptx_summaries:
-            total_layout_warnings = sum((p.get("layout") or {}).get("total_warnings", 0) for p in pptx_summaries)
-            total_genuine_gaps = sum(
-                info.get("genuine_gaps", 0)
-                for p in pptx_summaries
-                for info in (p.get("population") or {}).values()
-            )
-            print(f"Across all PPTX exports: {total_layout_warnings} layout warning(s), "
-                  f"{total_genuine_gaps} genuine packing gap(s) total.")
+        ais = [s.get("ai") or {} for s in summaries]
+        print(f"\nAcross all files: {sum(a.get('ran', 0) for a in ais)} of {sum(a.get('total_mapped', 0) for a in ais)} accounts finished, "
+              f"{sum(a.get('marked', 0) for a in ais)} drafts carried with marked sentences, {sum(a.get('calls', 0) for a in ais)} model calls.")
 
 
 # Real naming convention confirmed against a live databooks/ folder (Project
@@ -4161,32 +2477,9 @@ def main() -> int:
                          "from `path` as normal. Requires --financials-sheet. Only valid when "
                          "`path` is a single file.")
     ap.add_argument("--entity-workers", type=int, default=1, metavar="N",
-                    help="run N DATABOOKS at once when `path` is a folder (default 1, one after "
-                         "another). Note this is NOT the account concurrency -- accounts inside "
-                         "one databook already run --workers at a time, and that is the setting "
-                         "worth reaching for first. This is a SECOND level on top of it, so the "
-                         "model sees up to N x --workers calls at once; opt in only when the "
-                         "endpoint has the headroom. Each databook keeps its own progress bar "
-                         "row and its report is printed whole in FILE order.")
-    ap.add_argument("--resume", default=None, metavar="RUN_ID",
-                    help="with --run-ai: seed every stage a previous run completed from its "
-                         "checkpoint.jsonl (fdd_utils/logs/run_<RUN_ID>/), so only the stages it "
-                         "did not reach are paid for again. A run that died at the eighteenth "
-                         "account used to restart from zero. One databook at a time.")
-    ap.add_argument("--from-run", default=None, metavar="RUN_ID",
-                    help="OFFLINE re-export, zero model calls: lay out the commentary and executive "
-                         "summaries a previous run already produced (fdd_utils/logs/run_<RUN_ID>/) with "
-                         "the CURRENT payload/packing/PPTX code, then inspect the deck. The run's workbook "
-                         "identity and per-account data fingerprints are checked first; any model call is "
-                         "blocked and fails the check. Implies --export-pptx; not with --run-ai. Exits 1 "
-                         "unless the verdict is PASS. Writes <deck>.reexport.json.")
-    ap.add_argument("--summary-fallback", action="store_true",
-                    help="with --from-run: when the run saved no executive summary (runs before "
-                         "section_summaries.json existed), use the exporter's deterministic page "
-                         "summary instead of failing. The summary band then differs from the original deck.")
-    ap.add_argument("--allow-unverified", action="store_true",
-                    help="with --from-run: re-export even when the run's identity or an account's data "
-                         "fingerprint does not match this workbook. The verdict says UNVERIFIED.")
+                    help="run N DATABOOKS at once when `path` is a folder (default 1, one after another). With --run-ai each databook "
+                         "keeps its own progress bar row and its report is printed whole in FILE order; the model sees up to N calls "
+                         "at once, so opt in only when the endpoint has the headroom.")
     ap.add_argument("--financials-sheet", default=None, metavar="SHEET_NAME",
                     help="sheet name within --financials-from to use as the Financials summary "
                          "(e.g. '南通通海Financials'). No auto-matching by entity name -- named "
@@ -4198,31 +2491,21 @@ def main() -> int:
                          "whether a numeric grounding warning is a real 1000x extraction bug "
                          "for that tab rather than re-running the AI pipeline to check. "
                          "Only valid when path is a single file.")
-    ap.add_argument("--run-ai", action="store_true", help="also run checks 5-7 (real AI calls, costs time/tokens)")
+    ap.add_argument("--run-ai", action="store_true",
+                    help="the agent writes the whole book (fdd_utils/agent/book.py, the path the app takes) and checks every sentence "
+                         "against the workbook: real model calls, costs time and tokens")
     ap.add_argument("--model", default="local", help="model_type for --run-ai: local | workbench | dashscope | deepseek | openai")
     ap.add_argument("--model-name", default=None, help="specific model id within the provider (e.g. GPT-5.5's id)")
     ap.add_argument("--limit", type=int, default=None,
-                    help="with --run-ai, cap how many mapped accounts per file go to AI "
-                         "(fast smoke-test across many files; omit for a full run)")
-    ap.add_argument("--workers", type=int, default=None,
-                    help="with --run-ai, concurrent worker threads per pipeline stage. "
-                         "Built-in default is 4 for local, 2 for everything else (rate-limit "
-                         "caution) — override here to test a higher value, e.g. --workers 4 "
-                         "on workbench if you've already validated the gateway handles it.")
+                    help="with --run-ai, only the first N accounts in scope per file "
+                         "(a cheap smoke test across many files; omit for a full run)")
     ap.add_argument("--accounts", default=None,
-                    help="with --run-ai, comma-separated mapping-key names to run instead of "
-                         "the first N (--limit) or all accounts — e.g. --accounts "
-                         "固定资产,长期待摊费用 to cheaply re-test specific accounts that a prior "
-                         "run flagged, instead of paying for a full/limit-N run again. "
-                         "Overrides --limit.")
+                    help="with --run-ai, comma-separated account names to write instead of all (or the "
+                         "first --limit) — e.g. --accounts 固定资产,长期待摊费用 to cheaply re-test "
+                         "accounts a prior run marked. Overrides --limit.")
     ap.add_argument("--export-pptx", action="store_true",
-                    help="requires --run-ai: also build PPTX payloads from the AI results just "
-                         "produced, export a real .pptx, capture its export log, and run the "
-                         "L/R-collision + table-overlap + overflow + fill-ratio layout checks "
-                         "against it, then a population/fill deep diagnostic (per-statement "
-                         "theoretical fill ceiling + rigorous DP-penalty boundary check for "
-                         "genuine packing gaps vs already-optimal assignments) — the whole "
-                         "generation+population+report pipeline in one run.")
+                    help="requires --run-ai: also write the executive summaries and export the deck from what the agent wrote (the "
+                         "delivery decision labels the file; the layout of every slide is checked)")
     ap.add_argument("--pptx-out", default=None, metavar="DIR",
                     help="with --export-pptx, directory to write <databook>.preview.pptx into "
                          "(default: a pptx_previews/ folder next to the input file).")
@@ -4275,14 +2558,9 @@ def main() -> int:
     except Exception as _exc:
         print(f"Per-account subtables: could not resolve setting ({_exc})")
 
-    if args.from_run and args.run_ai:
-        print("❌ --from-run re-exports a previous run's commentary with no model calls; drop --run-ai.")
-        return 1
-    if args.from_run:
-        args.export_pptx = True
-    if args.export_pptx and not args.run_ai and not args.from_run:
-        print("❌ --export-pptx needs commentary: --run-ai to generate it, or --from-run <RUN_ID> to "
-              "re-export a previous run's offline.")
+    if args.export_pptx and not args.run_ai:
+        print("❌ --export-pptx needs commentary: add --run-ai (the agent writes it), or open a saved agent session with "
+              "fdd_agent.py export --session FILE to export its drafts again with no model call.")
         return 1
 
     if bool(args.financials_from) != bool(args.financials_sheet):
@@ -4342,11 +2620,9 @@ def main() -> int:
         print(f"Found {len(files)} databook(s) in {target}: {[f.name for f in files]}")
         if args.run_ai and not args.limit:
             print(
-                f"⚠️  --run-ai with no --limit on {len(files)} files will run EVERY mapped "
-                f"account in EVERY file — based on a private reference workbook (20 accounts, ~15-20 min\n"
-                f"   on workbench), a full batch across all files could take a long time. "
-                f"Consider --limit 5 for a first pass across everything, then a full,\n"
-                f"   unlimited run on just the file(s) that need a closer look."
+                f"⚠️  --run-ai with no --limit on {len(files)} files writes EVERY account in scope in EVERY file: "
+                f"real model calls for each. Consider --limit 5 for a first pass across everything,\n"
+                f"   then a full run on just the file(s) that need a closer look."
             )
         if not args.no_auto_rollup:
             print("\nAuto-detecting Portfolio I/II/III roll-up ('主表') Financials sources...")
@@ -4395,13 +2671,11 @@ def main() -> int:
     def _run_one(f) -> Dict[str, Any]:
         auto_hit = auto_rollup_targets.get(f)
         return inspect_one(str(f), args.sheet, args.entity, args.run_ai, args.model,
-                           args.model_name, limit=args.limit, workers=args.workers,
+                           args.model_name, limit=args.limit,
                            dump_tab_name=args.dump_tab, accounts=accounts_filter,
                            export_pptx=args.export_pptx, pptx_out_dir=args.pptx_out,
                            financials_from=args.financials_from or (str(auto_hit[0]) if auto_hit else None),
-                           financials_sheet=args.financials_sheet or (auto_hit[1] if auto_hit else None),
-                           resume_from=args.resume, from_run=args.from_run,
-                           summary_fallback=args.summary_fallback, allow_unverified=args.allow_unverified)
+                           financials_sheet=args.financials_sheet or (auto_hit[1] if auto_hit else None))
 
     def _failed(f, exc) -> Dict[str, Any]:
         print(f"\n❌ FAILED inspecting {f}: {type(exc).__name__}: {exc}")
@@ -4431,14 +2705,9 @@ def main() -> int:
         if outer is not None:
             outer.close()
     else:
-        total = entity_workers * max(1, int(args.workers or 1)) if args.run_ai else entity_workers
         print(f"\nRunning {len(files)} databook(s) {entity_workers} at a time"
-              + (f" x {args.workers} account worker(s) = up to {total} concurrent AI call(s)"
-                 if args.run_ai else "")
+              + (f" = up to {entity_workers} concurrent model call(s)" if args.run_ai else "")
               + ". Each entity's output is printed whole, in file order, as it finishes.")
-        if args.run_ai and total > 8:
-            print(f"  ⚠️  {total} concurrent calls is a lot for one model endpoint. If the run comes "
-                  f"out SLOWER than sequential, the server is queueing -- lower --entity-workers.")
         proxy = _PerEntityStdout(sys.stdout)
         sys.stdout = proxy
 
@@ -4568,10 +2837,6 @@ def main() -> int:
                   f"entity, and its\n     own slides carry no commentary. The preview file is "
                   f"still on disk.")
         print("\n     (the per-entity previews are kept as well)")
-    if args.from_run:
-        verdicts = [str((entry.get("reexport") or {}).get("verdict") or "FAIL")
-                    for entry in summaries if isinstance(entry, dict)]
-        return 0 if verdicts and all(v == "PASS" for v in verdicts) else 1
     return 0
 
 

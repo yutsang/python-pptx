@@ -374,10 +374,22 @@ class Decks(unittest.TestCase):
         self.assertFalse(out["ok"])
         self.assertEqual(out["error"]["code"], "NO_BASE_COMMENTARY")
         plan = out["error"]["first_generation"]
-        self.assertIn("--run-ai --export-pptx", plan["steps"][0]["command"])
+        self.assertIn("fdd_agent.py book", plan["steps"][0]["command"])
         self.assertIn("--entity", plan["steps"][0]["command"])
-        self.assertIn("/base-run", plan["steps"][1]["command"])
+        self.assertIn("--session", plan["steps"][0]["command"])
+        self.assertIn("fdd_agent.py export", plan["steps"][1]["command"])
         self.assertIn("not_offered", plan)
+
+    def test_a_session_that_wrote_the_whole_book_exports_its_drafts_without_a_base_run(self):
+        work, _ = self._work()
+        work.ask("应收账款期末余额是多少？")
+        work.report("把这段放入报告")
+        work.deck["whole_book"] = {"at": "2026-11-19T00:00:00", "accounts": 1}
+        with mock.patch.object(T, "call_tool") as call:
+            call.return_value = T.ToolResult(tool="export_first_generation", ok=True, data={"path": "x.pptx", "delivery": {"status": "ready"}})
+            out = work.export()
+        self.assertEqual(call.call_args.args[1], "export_first_generation")
+        self.assertTrue(out["ok"], out)
 
     def test_a_base_run_that_does_not_describe_the_workbook_is_refused_at_export(self):
         work, _ = self._work()

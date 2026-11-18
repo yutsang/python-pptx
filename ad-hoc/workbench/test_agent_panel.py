@@ -60,12 +60,12 @@ class Panel(unittest.TestCase):
     def run_app(self):
         return AppTest.from_function(app, kwargs={"work": self.work, "path": self.book}, default_timeout=20).run()
 
-    def test_while_the_agent_path_is_off_the_panel_renders_nothing(self):
-        os.environ["FDD_AGENT"] = "0"
-        at = self.run_app()
-        self.assertFalse(at.exception)
-        self.assertEqual(len(at.expander), 0)
-        self.assertEqual(len(at.button), 0)
+    def test_the_panel_is_there_whatever_FDD_AGENT_says(self):
+        for value in ("0", "1"):
+            os.environ["FDD_AGENT"] = value                               # the switch is gone: the agent is the app's one path
+            at = self.run_app()
+            self.assertFalse(at.exception)
+            self.assertEqual(len(at.expander), 1)
 
     def test_ask_then_put_it_in_the_report_then_the_draft_is_shown_accepted_with_what_is_open(self):
         os.environ["FDD_AGENT"] = "1"
@@ -102,9 +102,9 @@ class Panel(unittest.TestCase):
         at.button(key="agent_report").click().run()
         at.button(key="agent_export").click().run()
         self.assertTrue(any("NO_BASE_COMMENTARY" in e.value for e in at.error), [e.value for e in at.error])
-        # the refusal says how to get a whole first deck: the legacy command, then binding the session to that run
-        self.assertTrue(any("--run-ai --export-pptx" in c.value for c in at.code), [c.value for c in at.code])
-        self.assertTrue(any("/base-run" in c.value for c in at.code))
+        # the refusal says how to get a whole first deck: write the whole book, keeping the session, then export from it
+        self.assertTrue(any("fdd_agent.py book" in c.value for c in at.code), [c.value for c in at.code])
+        self.assertTrue(any("fdd_agent.py export" in c.value for c in at.code))
 
     def test_overrides_a_partial_update_and_a_doubtful_base_run_are_shown(self):
         os.environ["FDD_AGENT"] = "1"

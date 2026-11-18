@@ -2,7 +2,6 @@ from __future__ import annotations
 
 
 from .config import FDDConfig, normalize_language_code
-from .prompts import get_prompt_engine
 import os
 import time
 import math
@@ -82,7 +81,6 @@ class AIClient:
             language=language,
             model_type=model_type,
         )
-        self.prompt_engine = get_prompt_engine()
         self.model_type = self.config_manager.model_type
         self.full_config = self.config_manager.config
         self.data_format = self.config_manager.get_default_data_format()
@@ -204,14 +202,6 @@ class AIClient:
         """Get config-backed settings for a specific pipeline agent."""
         return self.config_manager.get_agent_config(agent_name or self.agent_name)
     
-    def load_prompts(self, agent_name: Optional[str] = None) -> tuple:
-        agent = agent_name or self.agent_name
-        try:
-            return self.prompt_engine.get_agent_defaults(agent, self.language)
-        except Exception as e:
-            self.logger.error(f"Error loading prompts for {agent}: {e}")
-            return '', ''
-
     @staticmethod
     def _read_cache_usage(usage: Any) -> Dict[str, Optional[int]]:
         """Read whatever prompt-cache counters the provider happened to send.
@@ -585,7 +575,7 @@ class AIClient:
             )
         started = time.time()
         if system_prompt is None:
-            system_prompt, _ = self.load_prompts()
+            system_prompt = ""
         resolved = {
             "temperature": temperature if temperature is not None else self.temperature,
             "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
@@ -700,7 +690,7 @@ class AIClient:
         
         # Load system prompt if not provided
         if system_prompt is None:
-            system_prompt, _ = self.load_prompts()
+            system_prompt = ""
         
         # Prepare messages
         messages = [
