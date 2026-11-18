@@ -44,6 +44,15 @@ def agent_budget(config: Optional[Dict[str, Any]] = None) -> Budget:
         max_rejections=int(block.get("max_rejections", defaults.max_rejections)))
 
 
+def max_calls_per_account(config: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """agent.max_calls_per_account (default 40, 0 = no cap): the runaway guard of a whole book is this times its accounts (book.py). It is
+    far above what an account needs (a write, a repair or two, a read of a sentence's binding); it is there for a loop that does not end."""
+    value = (_config(config).get("agent") or {}).get("max_calls_per_account")
+    if value in (None, ""):
+        return 40
+    return int(value) or None
+
+
 def agent_max_model_calls(config: Optional[Dict[str, Any]] = None) -> Optional[int]:
     """A hard cap on model calls over one working session (agent.max_model_calls); None means no cap."""
     value = (_config(config).get("agent") or {}).get("max_model_calls")

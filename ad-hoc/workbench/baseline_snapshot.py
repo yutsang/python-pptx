@@ -23,6 +23,7 @@ import argparse
 import glob
 import hashlib
 import json
+import shutil
 import sys
 import time
 import warnings
@@ -180,6 +181,42 @@ def scripted_part(book: str) -> Dict[str, Any]:
     return out
 
 
+def book_part(book: str) -> Dict[str, Any]:
+    """The same scripted flow through the product path (fdd_utils/agent/book.py, which the app and fdd_agent.py book use), in the
+    fields scripted_part reads from the trial's report: it must equal it, for the app and the trial write the same deck."""
+    import tempfile
+    import entity_trial
+    from fdd_utils.agent import book as B
+    from fdd_utils.agent.flag import agent_budget
+    with tempfile.TemporaryDirectory(prefix="baseline_book_") as tmp:
+        # the trial works on a copy named after its arm and the deck's title is the workbook's name: the same name here
+        copy = Path(tmp) / "flash.xlsx"
+        shutil.copyfile(book, copy)
+        work = B.open_book(str(copy), model=entity_trial.ScriptedWriter("flash"), model_name="scripted-flash")
+        result = B.run_book(work, issues_dir=None, out_path=str(Path(tmp) / "book.pptx"))
+        data = result.deck
+        findings: Dict[str, int] = {}
+        for f in (data.get("delivery") or {}).get("findings") or []:
+            findings[f.get("code")] = findings.get(f.get("code"), 0) + 1
+        from fdd_utils.agent import tools as T
+        from fdd_utils.ai import claims as cl
+        marked = {"accounts": 0, "red": 0, "orange": 0}
+        for key in T.drafts_to_mark(work.source):
+            marked["accounts"] += 1
+            for v in work.source.candidates[key].outcome.get("verdicts") or []:
+                if v.get("verdict") in ("failed", "unverified"):
+                    red = any(f.get("severity") == "failed" and f.get("dimension") in cl._RED_DIMENSIONS for f in v.get("findings") or [])
+                    marked["red" if red else "orange"] += 1
+        out: Dict[str, Any] = {"accounts": len(result.accounts), "ok": sum(1 for r in result.rows if r.get("ok")),
+                               "delivery": (data.get("delivery") or {}).get("status"), "findings": findings, "marked": marked,
+                               "export_error": result.error.get("code"),
+                               "deck": deck_digest(result.deck_path) if result.deck_path and Path(result.deck_path).exists() else None}
+        saved = work.to_dict()
+        out["session"] = sha({k: [c.get("claims"), (c.get("outcome") or {}).get("by_code"), c.get("accepted")]
+                              for k, c in sorted(((saved.get("source") or saved).get("candidates") or saved.get("candidates") or {}).items())})
+    return out
+
+
 def snapshot(only: str = "", was: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     books: Dict[str, Any] = {}
     for sha_book, book in local_books().items():
@@ -190,7 +227,8 @@ def snapshot(only: str = "", was: Optional[Dict[str, Any]] = None) -> Dict[str, 
         work = open_work(book)
         files = ((was or {}).get("books", {}).get(name, {}).get("sessions", {}).get("files")) if was else None
         books[name] = {"contracts": contracts_part(work), "generated": generated_part(work.source.contracts, name),
-                       "sessions": sessions_part(work, book, sha_book, files), "scripted": scripted_part(book)}
+                       "sessions": sessions_part(work, book, sha_book, files), "scripted": scripted_part(book),
+                       "book": book_part(book)}
     import entity_trial
     return {"code": entity_trial.code_fingerprint()["short"], "taken": time.strftime("%Y-%m-%d %H:%M:%S"), "books": books}
 
@@ -215,6 +253,13 @@ def diff(a: Dict[str, Any], b: Dict[str, Any], limit: int = 12) -> List[str]:
         for field in ("accounts", "ok", "delivery", "findings", "marked", "export_error", "session"):
             if sx.get(field) != sy.get(field):
                 lines.append(f"{name}: SCRIPTED {field} was {sx.get(field)}  now {sy.get(field)}")
+        # the product path (book.py) writes what the trial writes: the fresh one is held to the saved trial's, field by field
+        sb = y.get("book") or {}
+        for field in ("accounts", "ok", "delivery", "findings", "marked", "export_error", "session"):
+            if sb and sb.get(field) != sx.get(field):
+                lines.append(f"{name}: BOOK PATH {field} is {sb.get(field)}, the saved trial's is {sx.get(field)}")
+        if sb and (sb.get("deck") or {}).get("sha") != (sx.get("deck") or {}).get("sha"):
+            lines.append(f"{name}: BOOK PATH deck differs from the saved trial's deck")
         dx, dy = sx.get("deck"), sy.get("deck")
         if (dx or {}).get("sha") != (dy or {}).get("sha"):
             slides = [i + 1 for i, (p, q) in enumerate(zip((dx or {}).get("per_slide", []), (dy or {}).get("per_slide", []))) if p != q]
