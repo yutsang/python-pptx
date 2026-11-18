@@ -188,7 +188,8 @@ def book_part(book: str) -> Dict[str, Any]:
     import entity_trial
     from fdd_utils.agent import book as B
     from fdd_utils.agent.flag import agent_budget
-    with tempfile.TemporaryDirectory(prefix="baseline_book_") as tmp:
+    tmp = tempfile.mkdtemp(prefix="baseline_book_")          # not a TemporaryDirectory: on Windows a workbook still held open would fail its removal
+    try:
         # the trial works on a copy named after its arm and the deck's title is the workbook's name: the same name here
         copy = Path(tmp) / "flash.xlsx"
         shutil.copyfile(book, copy)
@@ -214,6 +215,8 @@ def book_part(book: str) -> Dict[str, Any]:
         saved = work.to_dict()
         out["session"] = sha({k: [c.get("claims"), (c.get("outcome") or {}).get("by_code"), c.get("accepted")]
                               for k, c in sorted(((saved.get("source") or saved).get("candidates") or saved.get("candidates") or {}).items())})
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     return out
 
 

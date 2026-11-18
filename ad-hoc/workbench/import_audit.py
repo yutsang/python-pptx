@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import os
 import importlib.util
 import sys
 from pathlib import Path
@@ -24,9 +25,14 @@ LOCAL_DIRS = [ROOT, ROOT / "ad-hoc" / "workbench"]
 
 
 def py_files() -> Iterator[Path]:
-    for path in sorted(ROOT.rglob("*.py")):
-        if not any(part in SKIP_DIRS for part in path.relative_to(ROOT).parts):
-            yield path
+    """Every .py file of the repo itself: not a virtual environment (whatever it is called: it holds a pyvenv.cfg), not site-packages, not
+    scratch or output folders."""
+    for folder, dirs, files in os.walk(ROOT):
+        here = Path(folder)
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and d != "site-packages" and not (here / d / "pyvenv.cfg").exists())
+        for name in sorted(files):
+            if name.endswith(".py"):
+                yield here / name
 
 
 def module_name(path: Path) -> str:
@@ -38,7 +44,10 @@ def module_name(path: Path) -> str:
 
 def imports_of(path: Path) -> Iterator[Tuple[str, List[str], int]]:
     """(absolute module, names taken from it, line) for every import in the file, at any depth."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError, ValueError):
+        return                                                              # a file that does not parse has no imports to check here
     me = module_name(path)
     package = me if path.name == "__init__.py" else me.rpartition(".")[0]
     for node in ast.walk(tree):
@@ -141,7 +150,10 @@ def method_audit() -> Dict[str, List[str]]:
         if not rel.startswith("fdd_utils/"):
             continue
         module = importlib.import_module(module_name(path))
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError, ValueError):
+            continue
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
