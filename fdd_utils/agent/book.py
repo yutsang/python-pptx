@@ -8,9 +8,10 @@ from the finished paragraphs, and one deck is exported from the accepted paragra
 rejected sentences marked red or orange, the account named in the delivery decision, which blocks). No text from an earlier run fills an
 account the agent did not finish.
 
-Cost control. A model call is paid for. The runaway guard of one book is agent.max_calls_per_account (default 40) times the accounts, not
-agent.max_model_calls, which belongs to one ask or edit session; neither is a quota (a cap that stops a model midway costs the run again).
-Every other cap in the agent block (tokens, seconds, cost) applies as it does everywhere.
+Cost control. A model call is paid for. The runaway guards of one book are agent.max_calls_per_account (default 40) and
+agent.max_tokens_per_account (default 120000) times the accounts, not agent.max_model_calls and agent.max_session_tokens, which belong to one
+ask or edit session; none of them is a quota (a cap that stops a model midway costs the run again). The caps on seconds, cost and
+escalations in the agent block apply as they do everywhere.
 """
 from __future__ import annotations
 
@@ -48,6 +49,13 @@ def book_cap(config: Optional[Dict[str, Any]], accounts: int) -> Optional[int]:
     """The runaway guard on model calls for a book of this many accounts (the overviews and a review pass count as two more), or None."""
     from .flag import max_calls_per_account
     per = max_calls_per_account(config)
+    return per * (accounts + 2) if per else None
+
+
+def book_token_cap(config: Optional[Dict[str, Any]], accounts: int) -> Optional[int]:
+    """The runaway guard on charged tokens for a book of this many accounts (two more for the overviews and a review), or None."""
+    from .flag import max_tokens_per_account
+    per = max_tokens_per_account(config)
     return per * (accounts + 2) if per else None
 
 
@@ -157,7 +165,7 @@ def results_for_deck(work: Any) -> Dict[str, Any]:
 
 def run_book(work: Any, accounts: Optional[List[str]] = None, *, on_account: Optional[Callable[..., Any]] = None,
              on_review: Optional[Callable[..., Any]] = None, overview: bool = True, deck: bool = True, out_path: str = "",
-             issues_dir: Optional[Any] = ISSUE_DIR, max_calls: Optional[int] = None) -> BookResult:
+             issues_dir: Optional[Any] = ISSUE_DIR, max_calls: Optional[int] = None, max_tokens: Optional[int] = None) -> BookResult:
     """Write every account in scope (or `accounts`), the overviews, and export the deck. `on_account(key, turn)` is called as each
     account finishes. Returns what was written; a model that failed or a budget that ran out is in the result, not raised."""
     from . import routing as R
@@ -166,6 +174,8 @@ def run_book(work: Any, accounts: Optional[List[str]] = None, *, on_account: Opt
     cap = max_calls if max_calls is not None else book_cap(work.config, len(keys))
     if cap is not None:
         work.max_model_calls = cap
+    tokens = max_tokens if max_tokens is not None else book_token_cap(work.config, len(keys))
+    work.shared.limits.max_tokens = tokens          # a book's guard replaces the session cap of an ask or edit (None: no cap)
     result = BookResult(work=work, accounts=keys)
     work.deck["whole_book"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "accounts": len(keys)}     # the session's drafts are now the deck
     done = work.draft_entity(keys, on_account=on_account, on_review=on_review)

@@ -137,6 +137,7 @@ agent:
   max_rejections: 3        # answers the gate may send back before the run stops
   max_model_calls: 60      # hard cap on model calls over one ASK or EDIT session (the app's workbench panel, --session); 0 = no cap
   max_calls_per_account: 40  # runaway guard of a WHOLE BOOK: this times its accounts (the app's run, fdd_agent.py book); 0 = no cap
+  max_tokens_per_account: 120000   # the same, for charged tokens. A book is not held to max_session_tokens below: a cap that stops a model half way costs the run again
   # -- which model answers, and one budget over all of them (agent/routing.py) ---------------------------------------------
   routing: single          # single | escalate. escalate: a second model takes over a turn after `escalate_after` consecutive
                            # failures the first model could have repaired from the evidence it had. Never for missing evidence or
@@ -144,8 +145,8 @@ agent:
   escalate_after: 2
   max_escalations: 1       # per turn
   handoff_max_tokens: 3000 # size of the task state the second model starts from (it does not get the conversation)
-  # Caps over a whole working session: every model, every turn, every retry. Tokens count what the provider reported where it
-  # reported, the estimate where it did not. 0 = no cap.
+  # Caps over one ASK or EDIT session (the app's workbench panel, --session): every model, every turn, every retry. Tokens count what the
+  # provider reported where it reported, the estimate where it did not. 0 = no cap. A whole book is held to the per-account guards above.
   max_session_tokens: 400000
   max_session_seconds: 0
   max_session_escalations: 0

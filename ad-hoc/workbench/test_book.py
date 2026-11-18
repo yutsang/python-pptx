@@ -87,6 +87,18 @@ class RunBook(unittest.TestCase):
         B.run_book(explicit, overview=False, deck=False, issues_dir=None, max_calls=3)
         self.assertEqual(explicit.max_model_calls, 3)
 
+    def test_a_book_is_held_to_the_per_account_token_guard_not_the_session_cap_of_an_ask(self):
+        self.assertEqual(B.book_token_cap({}, 10), 120_000 * 12)
+        self.assertEqual(B.book_token_cap({"agent": {"max_tokens_per_account": 5000}}, 10), 60_000)
+        self.assertIsNone(B.book_token_cap({"agent": {"max_tokens_per_account": 0}}, 10))
+        work = two_account_work(finishes_one_account, config={"agent": {"max_session_tokens": 400_000, "max_tokens_per_account": 7000}})
+        work.shared.limits.max_tokens = 400_000                       # what agent_limits reads from max_session_tokens
+        B.run_book(work, overview=False, deck=False, issues_dir=None)
+        self.assertEqual(work.shared.limits.max_tokens, 7000 * 4, "the session cap of 400,000 is replaced for a book")
+        explicit = two_account_work(finishes_one_account)
+        B.run_book(explicit, overview=False, deck=False, issues_dir=None, max_tokens=1234)
+        self.assertEqual(explicit.shared.limits.max_tokens, 1234)
+
     def test_the_run_stops_and_says_so_when_the_cap_is_reached_and_nothing_is_raised(self):
         work = two_account_work(finishes_one_account)
         result = B.run_book(work, overview=False, deck=False, issues_dir=None, max_calls=1)
@@ -114,6 +126,24 @@ class RunBook(unittest.TestCase):
             kept = list(Path(folder).rglob("*.json"))
         self.assertEqual(result.issue_cases, 1)
         self.assertEqual(len(kept), 1)
+
+
+class CommandLine(unittest.TestCase):
+    def test_fdd_agent_book_runs_the_same_book_and_prints_its_summary(self):
+        import contextlib
+        import io
+        import fdd_agent
+        work = two_account_work(finishes_one_account)
+        out = io.StringIO()
+        with mock.patch.object(B, "open_book", return_value=work) as opened, contextlib.redirect_stdout(out):
+            code = fdd_agent.main(["book", "wb.xlsx", "--model", "dashscope", "--model-name", "m", "--no-deck", "--max-calls", "50", "--max-tokens", "90000"])
+        text = out.getvalue()
+        self.assertEqual(opened.call_args.kwargs["model_type"], "dashscope")
+        self.assertEqual(opened.call_args.kwargs["model_name"], "m")
+        self.assertIn("accounts in scope 2   finished 1", text)
+        self.assertIn("drafts carried with marked sentences 1", text)
+        self.assertEqual(code, 2, "no deck was asked for, so nothing is ready to deliver")
+        self.assertEqual((work.max_model_calls, work.shared.limits.max_tokens), (50, 90000))
 
 
 class AppState(unittest.TestCase):

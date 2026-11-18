@@ -37,6 +37,16 @@ def max_calls_per_account(config: Optional[Dict[str, Any]] = None) -> Optional[i
     return int(value) or None
 
 
+def max_tokens_per_account(config: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    """agent.max_tokens_per_account (default 120000, 0 = no cap): the runaway guard on the tokens a whole book may charge is this times its
+    accounts (book.py). A normal account charges a small fraction of it. agent.max_session_tokens is for one ask or edit session and is not
+    applied to a book: a cap that stops a model half way costs the run again."""
+    value = (_config(config).get("agent") or {}).get("max_tokens_per_account")
+    if value in (None, ""):
+        return 120_000
+    return int(value) or None
+
+
 def agent_max_model_calls(config: Optional[Dict[str, Any]] = None) -> Optional[int]:
     """A hard cap on model calls over one working session (agent.max_model_calls); None means no cap."""
     value = (_config(config).get("agent") or {}).get("max_model_calls")

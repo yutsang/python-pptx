@@ -432,7 +432,7 @@ def cmd_book(args) -> int:
             bar.update(1)
             bar.set_postfix(ok=sum(1 for c in work.source.candidates.values() if c.accepted and c.validated), calls=work.model_calls)
 
-    result = B.run_book(work, accounts, on_account=on_account, deck=not args.no_deck, out_path=args.out or "", max_calls=args.max_calls)
+    result = B.run_book(work, accounts, on_account=on_account, deck=not args.no_deck, out_path=args.out or "", max_calls=args.max_calls, max_tokens=args.max_tokens)
     if bar is not None:
         bar.close()
     return _print_book(result, args)
@@ -592,6 +592,7 @@ def main(argv=None) -> int:
     b.add_argument("--thinking", default=None, metavar="off|on|low|medium|high")
     b.add_argument("--limit", type=int, default=None, help="only the first N accounts in scope")
     b.add_argument("--max-calls", type=int, default=None, help="a ceiling on model calls over the whole book (default: agent.max_calls_per_account x accounts)")
+    b.add_argument("--max-tokens", type=int, default=None, help="a ceiling on charged tokens over the whole book (default: agent.max_tokens_per_account x accounts)")
     b.add_argument("--no-deck", action="store_true", help="write the paragraphs and stop: no overview, no deck")
     b.add_argument("--out", default=None, metavar="DECK")
     b.add_argument("--mapping-override", action="append", default=None, metavar="ACCOUNT=SHEET", help="read ACCOUNT from SHEET (yours to set; repeatable)")

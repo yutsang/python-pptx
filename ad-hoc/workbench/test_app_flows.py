@@ -41,11 +41,15 @@ class Flows(unittest.TestCase):
         cls.data = Path(WORKBOOK).read_bytes()
 
     def app(self, uploads, run_for_state=None, batch_entity=None):
+        import tempfile
         import streamlit as st
         from streamlit.testing.v1 import AppTest
         import fdd_utils.ui as ui
         from fdd_utils.ui import agent_run
-        patches = [mock.patch.object(st, "file_uploader", side_effect=lambda *a, **k: uploads if k.get("key") == "file_uploader" else None)]
+        out = tempfile.TemporaryDirectory(prefix="app_flows_")
+        self.addCleanup(out.cleanup)
+        patches = [mock.patch.object(agent_run, "OUTPUT_DIR", Path(out.name)),         # the decks go to a folder this test throws away
+                   mock.patch.object(st, "file_uploader", side_effect=lambda *a, **k: uploads if k.get("key") == "file_uploader" else None)]
         if run_for_state:
             patches.append(mock.patch.object(agent_run, "run_for_state", side_effect=run_for_state))
         if batch_entity:
@@ -63,10 +67,12 @@ class Flows(unittest.TestCase):
 
     def test_single_file_process_then_the_commentary_run_then_the_deck_and_the_banner(self):
         from fdd_utils.agent import book as B
+        from fdd_utils.ui import agent_run
 
         def scripted_run(session_state, *, progress_callback=None):
             work = self.scripted_work(session_state.get("temp_path"))
-            return B.run_book(work, issues_dir=None, on_account=lambda key, turn: progress_callback and progress_callback(1, 1, key))
+            return B.run_book(work, issues_dir=None, out_path=agent_run.deck_out_path("single"),
+                              on_account=lambda key, turn: progress_callback and progress_callback(1, 1, key))
         at = self.app([Upload("databook.xlsx", self.data)], run_for_state=scripted_run)
         at.run()
         self.assertFalse(at.exception, at.exception)

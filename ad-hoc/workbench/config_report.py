@@ -184,7 +184,8 @@ def effective(config: Dict[str, Any]) -> List[str]:
              "seed_facts": flag.seed_facts(config), "review_meaning": flag.review_meaning(config)}
     lines.append("agent flags: " + "  ".join(f"{k}={v}" for k, v in flags.items()))
     lines.append(f"agent budget: {flag.agent_budget(config)}  max_model_calls (one ask/edit session)={flag.agent_max_model_calls(config)}  "
-                 f"max_calls_per_account (a whole book)={flag.max_calls_per_account(config)}")
+                 f"max_calls_per_account (a whole book)={flag.max_calls_per_account(config)}  "
+                 f"max_tokens_per_account (a whole book)={flag.max_tokens_per_account(config)}")
     return lines
 
 

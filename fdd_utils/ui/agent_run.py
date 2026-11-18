@@ -6,11 +6,21 @@ fdd_utils/agent/book.py, the same path `fdd_agent.py book` and the trials take.
 from __future__ import annotations
 
 import os
+import re
+import time
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+OUTPUT_DIR = Path(__file__).resolve().parents[1] / "output"
 #: the key the working session lives under in session_state (the agent workbench panel reads the same one)
 WORK_KEY = "agent_work"
+
+
+def deck_out_path(entity_name: Any) -> str:
+    """Where the app writes an entity's deck: fdd_utils/output/<entity>_<time>.pptx, as it always has (the delivery label is added to the name)."""
+    entity = re.sub(r"[^\w\-_]", "_", str(entity_name or "")).strip("_") or "Entity"
+    return str(OUTPUT_DIR / f"{entity}_{time.strftime('%Y%m%d_%H%M%S')}.pptx")
 
 
 def book_state(result: Any) -> Dict[str, Any]:
@@ -47,10 +57,10 @@ def run_for_state(session_state: Any, *, progress_callback: Optional[Callable[..
         mapping_overrides=dict(session_state.get("mapping_overrides") or {}) or None,
         model_type=session_state.get("model_type", "local"), model_name=session_state.get("model_name"),
         language=session_state.get("language") or "")
-    return _run(work, progress_callback)
+    return _run(work, progress_callback, deck_out_path(session_state.get("entity_name") or session_state.get("project_name")))
 
 
-def _run(work: Any, progress_callback: Optional[Callable[..., Any]]) -> Any:
+def _run(work: Any, progress_callback: Optional[Callable[..., Any]], out_path: str = "") -> Any:
     from ..agent import book as B
     accounts = work.entity_accounts()
     done = [0]
@@ -60,7 +70,7 @@ def _run(work: Any, progress_callback: Optional[Callable[..., Any]]) -> Any:
         if progress_callback is not None:
             progress_callback(done[0], len(accounts), key)
 
-    return B.run_book(work, accounts, on_account=on_account)
+    return B.run_book(work, accounts, on_account=on_account, out_path=out_path)
 
 
 def run_for_entity(*, extracted: Dict[str, Any], model_type: str = "local", model_name: Optional[str] = None,
@@ -79,7 +89,7 @@ def run_for_entity(*, extracted: Dict[str, Any], model_type: str = "local", mode
         financials_sheet=internal["financials_sheet"] if financials_from else None, mapping_overrides=internal.get("mapping_overrides"),
         model_type=model_type, model_name=model_name, language=internal["effective_language"])
     accounts = work.entity_accounts()
-    book = _run(work, progress_callback)
+    book = _run(work, progress_callback, deck_out_path(entity_name))
     if not book.deck_path:
         result.update(status="failed", error=f"no deck was written: [{book.error.get('code')}] {str(book.error.get('message') or book.stopped)[:300]}")
         return result
@@ -109,7 +119,7 @@ def export_deck(session_state: Any) -> Dict[str, Any]:
     work = session_state.get(WORK_KEY)
     if work is None:
         return {"ok": False, "error": {"code": "NO_SESSION", "message": "generate the commentary first"}}
-    exported = work.export(first_generation=True)
+    exported = work.export(out_path=deck_out_path(session_state.get("entity_name") or session_state.get("project_name")), first_generation=True)
     data = exported.get("data") or {}
     path = str(data.get("path") or "")
     if path and os.path.exists(path):

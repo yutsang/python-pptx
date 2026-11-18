@@ -278,6 +278,10 @@ class Flag(unittest.TestCase):
         self.assertEqual(max_calls_per_account({"agent": {"max_calls_per_account": 12, "max_model_calls": 60}}), 12)
         self.assertEqual(agent_max_model_calls({"agent": {"max_calls_per_account": 12, "max_model_calls": 60}}), 60)
         self.assertIsNone(max_calls_per_account({"agent": {"max_calls_per_account": 0}}), "0 means no cap")
+        from fdd_utils.agent.flag import max_tokens_per_account
+        self.assertEqual(max_tokens_per_account({}), 120_000)
+        self.assertEqual(max_tokens_per_account({"agent": {"max_session_tokens": 400000, "max_tokens_per_account": 9000}}), 9000)
+        self.assertIsNone(max_tokens_per_account({"agent": {"max_tokens_per_account": 0}}))
 
 
 if __name__ == "__main__":
