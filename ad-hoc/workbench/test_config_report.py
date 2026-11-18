@@ -183,5 +183,106 @@ class DropIgnoredBlocks(unittest.TestCase):
             self.assertTrue(cr.drop_ignored_blocks(cfg).startswith("NOT CHANGED"))
 
 
+COMPANY = '''# header comment
+default:
+  ai_provider: "workbench"
+processing:
+  # why this is off
+  read_cell_styles: false   # slow once
+  feedback_loop:
+    enabled: false
+    max_retries: 1
+  enabled: true
+analysis:
+  variance_threshold_pct: 30
+'''
+COMPANY_EXAMPLE = COMPANY.replace("read_cell_styles: false", "read_cell_styles: true") + '''
+# The agent block
+# stays off until switched on
+agent:
+  enabled: false
+  max_model_calls: 60   # runaway guard
+
+dashscope:
+  api_key: ""
+'''
+
+
+class SetOneValue(unittest.TestCase):
+    def one(self, assignment: str, text: str = COMPANY):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.yml"
+            cfg.write_text(text, encoding="utf-8")
+            result = cr.set_value(cfg, assignment)
+            return result, cfg.read_text(encoding="utf-8"), len(list(Path(tmp).glob("config.yml.bak-*")))
+
+    def test_one_line_changes_its_comment_stays_and_a_nested_key_of_the_same_name_is_not_touched(self):
+        result, after, kept = self.one("processing.read_cell_styles=true")
+        self.assertTrue(result.startswith("CHANGED"), result)
+        self.assertEqual(after, COMPANY.replace("read_cell_styles: false", "read_cell_styles: true"))
+        self.assertEqual(kept, 1)
+        result, after, _ = self.one("processing.enabled=false")
+        self.assertTrue(result.startswith("CHANGED"), result)
+        self.assertEqual(after, COMPANY.replace("  enabled: true", "  enabled: false"), "the direct child, not feedback_loop.enabled")
+
+    def test_a_setting_two_levels_down_is_found_by_its_path(self):
+        result, after, _ = self.one("processing.feedback_loop.enabled=true")
+        self.assertTrue(result.startswith("CHANGED"), result)
+        self.assertEqual(after, COMPANY.replace("    enabled: false", "    enabled: true"))
+        result, after, _ = self.one("processing.feedback_loop.max_retries=3")
+        self.assertEqual(after, COMPANY.replace("max_retries: 1", "max_retries: 3"), result)
+
+    def test_what_it_will_not_do_it_says_and_leaves_the_file_alone(self):
+        for assignment, start in (("processing.read_cell_styles=false", "already set"), ("processing.nothing=1", "NOT CHANGED"),
+                                  ("processing=1", "NOT CHANGED"),
+                                  ("dashscope.api_key=x", "NOT CHANGED"), ("processing.read_cell_styles=[1]", "NOT CHANGED")):
+            result, after, kept = self.one(assignment)
+            self.assertTrue(result.startswith(start), (assignment, result))
+            self.assertEqual((after, kept), (COMPANY, 0), assignment)
+
+    def test_a_section_written_twice_is_refused(self):
+        result, after, _ = self.one("default.ai_provider=dashscope", COMPANY + "default:\n  ai_provider: x\n")
+        self.assertTrue(result.startswith("NOT CHANGED"), result)
+
+
+class Backups(unittest.TestCase):
+    def test_two_edits_in_one_command_keep_the_original_in_the_first_copy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "config.yml"
+            cfg.write_text(COMPANY, encoding="utf-8")
+            cr.set_value(cfg, "processing.read_cell_styles=true")
+            cr.set_value(cfg, "processing.feedback_loop.max_retries=3")
+            copies = sorted(Path(tmp).glob("config.yml.bak-*"))
+            held = {c.name: c.read_text(encoding="utf-8") for c in copies}
+        self.assertEqual(len(copies), 2)
+        self.assertIn(COMPANY, held.values(), "one copy is the file as it was before any edit")
+
+
+class AddSection(unittest.TestCase):
+    def run_it(self, names, text: str = COMPANY):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg, ex = Path(tmp) / "config.yml", Path(tmp) / "config.example.yml"
+            cfg.write_text(text, encoding="utf-8")
+            ex.write_text(COMPANY_EXAMPLE, encoding="utf-8")
+            result = cr.add_sections(cfg, ex, names)
+            data, dups = cr.load(cfg)
+            return result, cfg.read_text(encoding="utf-8"), data, dups
+
+    def test_the_block_and_its_comment_are_appended_and_nothing_else_moves(self):
+        result, after, data, dups = self.run_it(["agent"])
+        self.assertTrue(result.startswith("ADDED agent"), result)
+        self.assertTrue(after.startswith(COMPANY.rstrip("\n")))
+        self.assertIn("# The agent block\n# stays off until switched on\nagent:\n  enabled: false\n  max_model_calls: 60   # runaway guard", after)
+        self.assertEqual((data["agent"], data["processing"]["read_cell_styles"], dups), ({"enabled": False, "max_model_calls": 60}, False, []))
+        self.assertNotIn("dashscope", after, "only the block asked for, not what follows it in the example")
+
+    def test_a_block_the_file_has_a_credential_block_and_an_unknown_name_are_left_out(self):
+        result, after, _data, _ = self.run_it(["analysis", "dashscope", "nothing"])
+        self.assertTrue(result.startswith("NOT CHANGED"), result)
+        self.assertEqual(after, COMPANY)
+        for word in ("already in your file", "credentials", "no such block"):
+            self.assertIn(word, result)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,8 @@ aligned by reading one short report from each.
     python ad-hoc/workbench/config_report.py                      read-only report (paste it back)
     python ad-hoc/workbench/config_report.py --set-flash-default  also make Flash the model a new session starts on (backs up first)
     python ad-hoc/workbench/config_report.py --drop-ignored-blocks  delete the earlier copy of a top-level key written twice (backs up first)
+    python ad-hoc/workbench/config_report.py --add-section agent  append that block from the example to a file that lacks it (backs up first)
+    python ad-hoc/workbench/config_report.py --set processing.read_cell_styles=true  change one existing setting by its one line (backs up first)
     python ad-hoc/workbench/config_report.py --section agent pptx also every value of those sections (--verbose: every difference)
 
 What the report holds:
@@ -27,6 +29,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import hashlib
+import json
 import os
 import platform
 import re
@@ -218,6 +221,18 @@ def flash_ids(config: Dict[str, Any]) -> List[str]:
             and "flash" in str(e.get("id")).lower()]
 
 
+def _backup(path: Path) -> Path:
+    """A copy of the file under a name nothing else has: two edits in one command land in the same second, and the second must not
+    overwrite the copy of the original with a copy of the first edit."""
+    stamp = f"{datetime.datetime.now():%Y%m%d-%H%M%S}"
+    target, n = path.with_name(f"{path.name}.bak-{stamp}"), 1
+    while target.exists():
+        n += 1
+        target = path.with_name(f"{path.name}.bak-{stamp}-{n}")
+    shutil.copyfile(path, target)
+    return target
+
+
 def starts_on(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """The dropdown entry a new session starts on, as the app resolves it."""
     from fdd_utils.ai import list_model_choices
@@ -227,19 +242,33 @@ def starts_on(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     return next((c for c in choices if c["key"] == key), None)
 
 
+def _replace_in_block(lines: List[str], path: List[str], rendered: str) -> Tuple[Optional[int], str]:
+    """The index of the one line that holds the setting at <path> (['processing', 'read_cell_styles'], or deeper), found by walking the
+    indentation from the last copy of the top-level key, and what that line would read with the value changed to <rendered>
+    (a trailing comment stays)."""
+    blocks = [blk for blk in top_blocks(lines) if blk[0] == path[0]]
+    if not blocks:
+        return None, f"no top-level '{path[0]}:' block found"
+    _k, lo, hi = blocks[-1]
+    walked, child = path[0], ""
+    for key in path[1:]:
+        child = next((re.match(r"^(\s+)", lines[i]).group(1) for i in range(lo + 1, hi)
+                      if lines[i].strip() and lines[i][0] in " \t" and not lines[i].lstrip().startswith("#")), None)
+        if child is None:
+            return None, f"'{walked}' has no settings under it"
+        found = [i for i in range(lo + 1, hi) if re.match(rf"^{re.escape(child)}{re.escape(key)}:(\s|$)", lines[i])]
+        if len(found) != 1:
+            return None, f"expected one '{key}:' line directly under {walked}, found {len(found)}"
+        line = found[0]
+        end = next((j for j in range(line + 1, hi) if lines[j].strip() and not lines[j].lstrip().startswith("#")
+                    and len(lines[j]) - len(lines[j].lstrip()) <= len(child)), hi)
+        lo, hi, walked = line, end, f"{walked}.{key}"
+    comment = re.search(r"\s+#.*$", lines[lo])
+    return lo, f'{child}{path[-1]}: {rendered}{comment.group(0) if comment else ""}\n'
+
+
 def _replace_in_default(lines: List[str], key: str, value: str) -> Tuple[Optional[int], str]:
-    """The index of the one '<key>:' line inside the top-level default: block and what it would read after the change."""
-    start = next((i for i, ln in enumerate(lines) if re.match(r"^default:\s*(#.*)?$", ln)), None)
-    if start is None:
-        return None, "no top-level 'default:' block found"
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() and not lines[i].startswith((" ", "\t", "#"))), len(lines))
-    idx = [i for i in range(start + 1, end) if re.match(rf"^\s+{key}:\s", lines[i])]
-    if len(idx) != 1:
-        return None, f"expected one '{key}:' line inside default:, found {len(idx)}"
-    old = lines[idx[0]]
-    indent = re.match(r"^(\s+)", old).group(1)
-    comment = re.search(r"\s+#.*$", old)
-    return idx[0], f'{indent}{key}: "{value}"{comment.group(0) if comment else ""}\n'
+    return _replace_in_block(lines, ["default", key], f'"{value}"')
 
 
 def set_flash_default(path: Path) -> str:
@@ -264,8 +293,7 @@ def set_flash_default(path: Path) -> str:
         return (f"already set: default.ai_provider = {provider}, default.model = {target}" if now and now["model_name"] == target
                 else f"NOT CHANGED: the two lines already say {provider} / {target} but a new session starts on {now['label'] if now else 'nothing'} "
                      "(is Flash listed: false, or the provider missing from the file?)")
-    backup = path.with_name(f"{path.name}.bak-{datetime.datetime.now():%Y%m%d-%H%M%S}")
-    shutil.copyfile(path, backup)
+    backup = _backup(path)
     for i, new in edits:
         lines[i] = new
     path.write_text("".join(lines), encoding="utf-8")
@@ -327,8 +355,7 @@ def drop_ignored_blocks(path: Path) -> str:
     drop = [(key, s, e) for key, s, e in blocks if (s, e) != last[key]]
     if not drop:
         return "NOT CHANGED: could not find the earlier block in the text"
-    backup = path.with_name(f"{path.name}.bak-{datetime.datetime.now():%Y%m%d-%H%M%S}")
-    shutil.copyfile(path, backup)
+    backup = _backup(path)
     kept = [ln for i, ln in enumerate(lines) if not any(s <= i < e for _k, s, e in drop)]
     path.write_text("".join(kept), encoding="utf-8")
     try:
@@ -340,6 +367,112 @@ def drop_ignored_blocks(path: Path) -> str:
         return f"RESTORED from {backup.name}: the file read differently after the removal"
     return ("REMOVED " + ", ".join(f"the earlier '{k}' block (lines {s + 1}-{e})" for k, s, e in drop)
             + f"; what the app reads is unchanged (copy kept as {backup.name})")
+
+
+def _render(value: Any) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return repr(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def set_value(path: Path, assignment: str) -> str:
+    """--set section.key=value (any depth, dots between): change one existing setting (a true/false, a number or a
+    word), by that one line. The file is read again afterwards and put back from the copy unless that setting is the only thing that moved."""
+    if "=" not in assignment or "." not in assignment.split("=", 1)[0]:
+        return "NOT CHANGED: write it as section.key=value, for example processing.read_cell_styles=true"
+    dotted, raw = assignment.split("=", 1)
+    dotted = dotted.strip()
+    parts = dotted.split(".")
+    if "[" in dotted or not all(parts):
+        return "NOT CHANGED: name the setting as section.key (or section.key.key); a list entry cannot be set this way"
+    try:
+        value = yaml.safe_load(raw)
+    except yaml.YAMLError:
+        return f"NOT CHANGED: cannot read {raw!r} as a value"
+    if isinstance(value, (dict, list)) or value is None:
+        return "NOT CHANGED: only a true/false, a number or a word can be set this way"
+    if secret(dotted, value):
+        return "NOT CHANGED: that setting holds a credential or a host: edit it by hand"
+    before, dups = load(path)
+    if parts[0] in {d for d, _n in dups}:
+        return f"NOT CHANGED: '{parts[0]}' is written twice in the file; settle that first (--drop-ignored-blocks)"
+    current: Any = before
+    for part in parts:
+        current = current.get(part, KeyError) if isinstance(current, dict) else KeyError
+        if current is KeyError:
+            return f"NOT CHANGED: {dotted} is not in your file (the code default applies); add the line by hand"
+    if isinstance(current, (dict, list)):
+        return f"NOT CHANGED: {dotted} holds more than one value"
+    if current == value and type(current) is type(value):
+        return f"already set: {dotted} = {_render(value)}"
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    i, new = _replace_in_block(lines, parts, _render(value))
+    if i is None:
+        return f"NOT CHANGED: {new}"
+    backup = _backup(path)
+    lines[i] = new
+    path.write_text("".join(lines), encoding="utf-8")
+    try:
+        after, _ = load(path)
+    except yaml.YAMLError:
+        shutil.copyfile(backup, path)
+        return f"RESTORED from {backup.name}: the file did not read after the edit"
+    flat_a, flat_b = flatten(before), flatten(after)
+    changed = sorted(k for k in set(flat_a) | set(flat_b) if flat_a.get(k) != flat_b.get(k))
+    got: Any = after
+    for part in parts:
+        got = got.get(part, KeyError) if isinstance(got, dict) else KeyError
+    if changed != [dotted] or got != value or type(got) is not type(value):
+        shutil.copyfile(backup, path)
+        return f"RESTORED from {backup.name}: the read-back moved {changed}"
+    return f"CHANGED {dotted}: {_render(current)} -> {_render(value)} (one line; copy kept as {backup.name})"
+
+
+#: blocks that hold credentials or hosts: never copied from the example by a tool
+_CREDENTIAL_SECTIONS = {"dashscope", "workbench", "local", "deepseek", "openai"}
+
+
+def add_sections(path: Path, example_path: Path, names: List[str]) -> str:
+    """--add-section agent: append the example's top-level block (with the comment lines above it) to a file that lacks it, so the file
+    says what the code would assume. Left alone when the file already has the key. Read back, and put back from the copy on any difference."""
+    before, dups_before = load(path)
+    example, _ = load(example_path)
+    ex_lines = example_path.read_text(encoding="utf-8").splitlines(keepends=True)
+    ex_blocks = {key: (s, e) for key, s, e in top_blocks(ex_lines)}
+    notes, add = [], []
+    for name in names:
+        if name in _CREDENTIAL_SECTIONS:
+            notes.append(f"{name}: NOT ADDED (it holds credentials or hosts: yours, by hand)")
+        elif name in before:
+            notes.append(f"{name}: already in your file, left alone")
+        elif name not in ex_blocks:
+            notes.append(f"{name}: NOT ADDED (config.example.yml has no such block)")
+        else:
+            add.append(name)
+    if not add:
+        return "NOT CHANGED: " + "; ".join(notes)
+    text = path.read_text(encoding="utf-8")
+    chunk = []
+    for name in add:
+        s, e = ex_blocks[name]
+        c = s
+        while c > 0 and ex_lines[c - 1].startswith("#"):
+            c -= 1
+        chunk.append("".join(ex_lines[c:e]).rstrip("\n") + "\n")
+    backup = _backup(path)
+    path.write_text(text.rstrip("\n") + "\n\n" + "\n".join(chunk), encoding="utf-8")
+    try:
+        after, dups = load(path)
+    except yaml.YAMLError:
+        after, dups = None, [("unreadable", 0)]
+    expected = dict(before)
+    expected.update({name: example[name] for name in add})
+    if after != expected or {k for k, _n in dups} != {k for k, _n in dups_before}:
+        shutil.copyfile(backup, path)
+        return f"RESTORED from {backup.name}: the file read differently after the append"
+    return ("ADDED " + ", ".join(add) + f" from config.example.yml (copy kept as {backup.name})" + ("; " + "; ".join(notes) if notes else ""))
 
 
 def top(path: str) -> str:
@@ -407,6 +540,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--example", default=str(ROOT / "fdd_utils" / "config.example.yml"))
     ap.add_argument("--set-flash-default", action="store_true")
     ap.add_argument("--drop-ignored-blocks", action="store_true", help="delete the earlier copy of a top-level key written twice")
+    ap.add_argument("--add-section", nargs="+", default=[], metavar="NAME", help="append these top-level blocks from the example to a file that lacks them (agent, analysis)")
+    ap.add_argument("--set", dest="assignments", nargs="+", default=[], metavar="SECTION.KEY=VALUE", help="change one existing setting by its one line")
     ap.add_argument("--verbose", action="store_true", help="list every missing / different / only-here setting")
     ap.add_argument("--section", nargs="*", default=[], help="list every value of these top-level sections (agent, dashscope, processing, ...)")
     args = ap.parse_args(argv)
@@ -418,6 +553,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(drop_ignored_blocks(path) + "\n")
     if args.set_flash_default:
         print(set_flash_default(path) + "\n")
+    if args.add_section:
+        print(add_sections(path, Path(args.example), args.add_section) + "\n")
+    for assignment in args.assignments:
+        print(set_value(path, assignment) + "\n")
     print(report(path, Path(args.example), verbose=args.verbose, section=args.section))
     return 0
 
