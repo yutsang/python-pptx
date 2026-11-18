@@ -265,6 +265,9 @@ if __name__ == "__main__":
     import os
     if os.environ.get("PYTHONHASHSEED") != "0":
         # the deck's summary band takes its accounts in an order that follows the process's string hashing: pin it, or two runs of
-        # the same code differ (found 2026-11-18); a snapshot compares what the code does, not which seed it drew
-        os.execve(sys.executable, [sys.executable] + sys.argv, dict(os.environ, PYTHONHASHSEED="0"))
+        # the same code differ (found 2026-11-18); a snapshot compares what the code does, not which seed it drew.
+        # Not os.execve: on Windows that starts the new process and ends this one at once, so the shell prompt came back
+        # and the output of the real run arrived after it (found 2026-11-19 on the company machine). Wait for the child.
+        import subprocess
+        raise SystemExit(subprocess.run([sys.executable] + sys.argv, env=dict(os.environ, PYTHONHASHSEED="0")).returncode)
     raise SystemExit(main())

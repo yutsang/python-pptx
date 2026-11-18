@@ -33,6 +33,7 @@ for_test/
 # Add any other input/output file types as needed
 fdd_utils/config.json
 fdd_utils/config.yml
+fdd_utils/config.yml.bak-*
 fdd_utils/logs/
 fdd_utils/output/
 python-pptx-hr/hr_utils/hr_config.yml

@@ -3,7 +3,8 @@ aligned by reading one short report from each.
 
     python ad-hoc/workbench/config_report.py                      read-only report (paste it back)
     python ad-hoc/workbench/config_report.py --set-flash-default  also make Flash the model a new session starts on (backs up first)
-    python ad-hoc/workbench/config_report.py --section agent      also every value of one section (--verbose: every difference)
+    python ad-hoc/workbench/config_report.py --drop-ignored-blocks  delete the earlier copy of a top-level key written twice (backs up first)
+    python ad-hoc/workbench/config_report.py --section agent pptx also every value of those sections (--verbose: every difference)
 
 What the report holds:
     FILE        which config.yml is read, its size and age, duplicate top-level keys (YAML keeps only the last one, silently)
@@ -16,8 +17,10 @@ What the report holds:
 
 A value is masked (shown as set / empty and its length) when its key is api_key, api_base, charge_code, region_override, header_names,
 a token or a secret, or when it looks like a URL or a key. Nothing else is masked, so a pasted report holds no credential, no host and
-no client name. --set-flash-default edits one line (default.model) of the file it reports on, after copying it to config.yml.bak-<time>,
-and reads the file back; it refuses when it cannot find exactly one Flash model in the dashscope list.
+no client name. --set-flash-default edits two lines (default.ai_provider and default.model) of the file it reports on, after copying it to
+config.yml.bak-<time>, reads the file back and checks that a new session now starts on Flash; it refuses when it cannot find exactly one Flash
+model in the dashscope list, and puts the copy back when anything else moved. --drop-ignored-blocks does the same for a top-level key
+written twice: the app already reads only the last copy, so removing the earlier one changes nothing the app does (the report says what it held).
 """
 from __future__ import annotations
 
@@ -113,7 +116,7 @@ def section_hashes(flat: Dict[str, Any]) -> Dict[str, Tuple[str, int]]:
     for path, value in sorted(flat.items()):
         if secret(path, value):
             continue
-        parts.setdefault(re.split(r"[.\[]", path, 1)[0], []).append(f"{path}={value!r}")
+        parts.setdefault(re.split(r"[.\[]", path, maxsplit=1)[0], []).append(f"{path}={value!r}")
     return {k: (hashlib.sha256("\n".join(v).encode("utf-8")).hexdigest()[:8], len(v)) for k, v in parts.items()}
 
 
@@ -215,45 +218,135 @@ def flash_ids(config: Dict[str, Any]) -> List[str]:
             and "flash" in str(e.get("id")).lower()]
 
 
+def starts_on(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """The dropdown entry a new session starts on, as the app resolves it."""
+    from fdd_utils.ai import list_model_choices
+    from fdd_utils.ai.config import default_model_choice_key
+    choices = list_model_choices(config)
+    key = default_model_choice_key(config, choices)
+    return next((c for c in choices if c["key"] == key), None)
+
+
+def _replace_in_default(lines: List[str], key: str, value: str) -> Tuple[Optional[int], str]:
+    """The index of the one '<key>:' line inside the top-level default: block and what it would read after the change."""
+    start = next((i for i, ln in enumerate(lines) if re.match(r"^default:\s*(#.*)?$", ln)), None)
+    if start is None:
+        return None, "no top-level 'default:' block found"
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() and not lines[i].startswith((" ", "\t", "#"))), len(lines))
+    idx = [i for i in range(start + 1, end) if re.match(rf"^\s+{key}:\s", lines[i])]
+    if len(idx) != 1:
+        return None, f"expected one '{key}:' line inside default:, found {len(idx)}"
+    old = lines[idx[0]]
+    indent = re.match(r"^(\s+)", old).group(1)
+    comment = re.search(r"\s+#.*$", old)
+    return idx[0], f'{indent}{key}: "{value}"{comment.group(0) if comment else ""}\n'
+
+
 def set_flash_default(path: Path) -> str:
-    """Make default.model the one Flash model of the dashscope list, editing that one line only. Returns what happened."""
+    """Make a new session start on the one Flash model of the dashscope list: default.ai_provider and default.model, those two lines only.
+    The provider has to move with the model: with another provider there (workbench is not in the dropdown) the app starts on the first
+    entry of the list whatever default.model says. Returns what happened."""
     before, _dup = load(path)
     ids = flash_ids(before)
     if len(ids) != 1:
         return f"NOT CHANGED: expected exactly one Flash chat model in dashscope.available_models, found {ids or 'none'}"
-    target = ids[0]
+    target, provider = ids[0], "dashscope"
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-    start = next((i for i, ln in enumerate(lines) if re.match(r"^default:\s*(#.*)?$", ln)), None)
-    if start is None:
-        return "NOT CHANGED: no top-level 'default:' block found"
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() and not lines[i].startswith((" ", "\t", "#"))), len(lines))
-    idx = [i for i in range(start + 1, end) if re.match(r"^\s+model:\s", lines[i])]
-    if len(idx) != 1:
-        return f"NOT CHANGED: expected one 'model:' line inside default:, found {len(idx)}"
-    old = lines[idx[0]]
-    indent = re.match(r"^(\s+)", old).group(1)
-    comment = re.search(r"\s+#.*$", old)
-    new = f'{indent}model: "{target}"{comment.group(0) if comment else ""}\n'
-    if old == new:
-        return f"already set: default.model = {target}"
+    edits = []
+    for key, value in (("ai_provider", provider), ("model", target)):
+        i, new = _replace_in_default(lines, key, value)
+        if i is None:
+            return f"NOT CHANGED: {new}"
+        if str((before.get("default") or {}).get(key) or "") != value:      # by what the file says, not by how it is quoted
+            edits.append((i, new))
+    if not edits:
+        now = starts_on(before)
+        return (f"already set: default.ai_provider = {provider}, default.model = {target}" if now and now["model_name"] == target
+                else f"NOT CHANGED: the two lines already say {provider} / {target} but a new session starts on {now['label'] if now else 'nothing'} "
+                     "(is Flash listed: false, or the provider missing from the file?)")
     backup = path.with_name(f"{path.name}.bak-{datetime.datetime.now():%Y%m%d-%H%M%S}")
     shutil.copyfile(path, backup)
-    lines[idx[0]] = new
+    for i, new in edits:
+        lines[i] = new
     path.write_text("".join(lines), encoding="utf-8")
-    after, _ = load(path)
+    try:
+        after, _ = load(path)
+    except yaml.YAMLError:
+        shutil.copyfile(backup, path)
+        return f"RESTORED from {backup.name}: the file did not read after the edit"
     flat_a, flat_b = flatten(before), flatten(after)
     changed = sorted(k for k in set(flat_a) | set(flat_b) if flat_a.get(k) != flat_b.get(k))
-    if changed != ["default.model"] or after["default"]["model"] != target:
+    now = starts_on(after)
+    if not set(changed) <= {"default.ai_provider", "default.model"} or not now or now["model_name"] != target or now["model_type"] != provider:
         shutil.copyfile(backup, path)
-        return f"RESTORED from {backup.name}: the read-back differed in {changed}"
-    return f"CHANGED default.model: {before.get('default', {}).get('model')!r} -> {target!r} (one line; copy kept as {backup.name})"
+        return (f"RESTORED from {backup.name}: the read-back differed in {changed} and a new session would start on "
+                f"{now['label'] if now else 'nothing'}")
+    was = (before.get("default") or {})
+    return (f"CHANGED default.ai_provider {was.get('ai_provider')!r} -> {provider!r}, default.model {was.get('model')!r} -> {target!r} "
+            f"(two lines; a new session starts on {now['label']}; copy kept as {backup.name})")
+
+
+def top_blocks(lines: List[str]) -> List[Tuple[str, int, int]]:
+    """(key, first line, end) of every top-level 'key:' block. Blank lines and column-0 comments after a block belong to the next one."""
+    starts = [(i, m.group(1)) for i, ln in enumerate(lines) if (m := re.match(r"^([A-Za-z_][\w.\-]*):", ln))]
+    blocks = []
+    for n, (s, key) in enumerate(starts):
+        end = starts[n + 1][0] if n + 1 < len(starts) else len(lines)
+        while end > s + 1 and (not lines[end - 1].strip() or lines[end - 1].startswith("#")):
+            end -= 1
+        blocks.append((key, s, end))
+    return blocks
+
+
+def ignored_blocks(path: Path) -> List[Tuple[str, int, int, Dict[str, Any]]]:
+    """The earlier copies of a top-level key written more than once, which the app never reads: (key, first line, last line, their flat values)."""
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    blocks = top_blocks(lines)
+    last = {key: (s, e) for key, s, e in blocks}
+    out = []
+    for key, s, e in blocks:
+        if (s, e) == last[key]:
+            continue
+        try:
+            values = flatten(yaml.safe_load("".join(lines[s:e])) or {})
+        except yaml.YAMLError:
+            values = {}
+        out.append((key, s + 1, e, values))
+    return out
+
+
+def drop_ignored_blocks(path: Path) -> str:
+    """Delete the earlier copy of every top-level key written twice. YAML keeps the last, so the app already reads without them: the file is
+    parsed again afterwards and put back from the copy unless the parsed result is exactly what it was."""
+    before, dups = load(path)
+    if not dups:
+        return "NOT CHANGED: no top-level key is written twice"
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    blocks = top_blocks(lines)
+    last = {key: (s, e) for key, s, e in blocks}
+    drop = [(key, s, e) for key, s, e in blocks if (s, e) != last[key]]
+    if not drop:
+        return "NOT CHANGED: could not find the earlier block in the text"
+    backup = path.with_name(f"{path.name}.bak-{datetime.datetime.now():%Y%m%d-%H%M%S}")
+    shutil.copyfile(path, backup)
+    kept = [ln for i, ln in enumerate(lines) if not any(s <= i < e for _k, s, e in drop)]
+    path.write_text("".join(kept), encoding="utf-8")
+    try:
+        after, dups_after = load(path)
+    except yaml.YAMLError:
+        after, dups_after = None, ["unreadable"]
+    if after != before or dups_after:
+        shutil.copyfile(backup, path)
+        return f"RESTORED from {backup.name}: the file read differently after the removal"
+    return ("REMOVED " + ", ".join(f"the earlier '{k}' block (lines {s + 1}-{e})" for k, s, e in drop)
+            + f"; what the app reads is unchanged (copy kept as {backup.name})")
 
 
 def top(path: str) -> str:
-    return re.split(r"[.\[]", path, 1)[0]
+    return re.split(r"[.\[]", path, maxsplit=1)[0]
 
 
-def report(path: Path, example_path: Path, *, verbose: bool = False, section: str = "") -> str:
+def report(path: Path, example_path: Path, *, verbose: bool = False, section: Any = "") -> str:
     mine_cfg, dups = load(path)
     example_cfg, _ = load(example_path)
     mine, example = flatten(mine_cfg), flatten(example_cfg)
@@ -263,6 +356,13 @@ def report(path: Path, example_path: Path, *, verbose: bool = False, section: st
            f"  read from {'the repo folder' if path.resolve().parent == (ROOT / 'fdd_utils').resolve() else str(path.resolve().parent)}"]
     out.append("  duplicate keys (YAML keeps the last, the earlier block is ignored): "
                + (", ".join(f"'{k}' again at line {n}" for k, n in dups) if dups else "none"))
+    for key, first, last_line, values in ignored_blocks(path) if dups else []:
+        active = {p_: v for p_, v in mine.items() if top(p_) == key}
+        only_there = sorted(p_ for p_ in values if p_ not in active)
+        other = sorted(p_ for p_ in values if p_ in active and values[p_] != active[p_])
+        out.append(f"    ignored '{key}' block, lines {first}-{last_line}: {len(values)} setting(s); not in the block the app reads: "
+                   + (", ".join(f"{p_}={shown(p_, values[p_])}" for p_ in only_there[:12]) + (" ..." if len(only_there) > 12 else "") if only_there else "none")
+                   + ("; same key, other value: " + ", ".join(f"{p_}={shown(p_, values[p_])} (read: {shown(p_, active[p_])})" for p_ in other[:8]) if other else ""))
     out += ["", "ENVIRONMENT"] + [f"  {x}" for x in environment()]
     out += ["", "EFFECTIVE"] + [f"  {x}" for x in effective(mine_cfg)]
     diff = compare(mine, example)
@@ -283,16 +383,18 @@ def report(path: Path, example_path: Path, *, verbose: bool = False, section: st
     if verbose:
         for title, key in (("MISSING from this file (the code default applies)", "missing"), ("ONLY in this file", "only_mine")):
             out += ["", f"{title}: {len(diff[key])}"] + [f"  {x}" for x in diff[key]]
-    if section:
-        out += ["", f"SECTION {section} in this file, every value (secrets masked)"]
-        out += [f"  {p_} = {shown(p_, v)}" for p_, v in sorted(mine.items()) if top(p_) == section]
+    sections = [section] if isinstance(section, str) and section else list(section or [])
+    for name in sections:
+        out += ["", f"SECTION {name} in this file, every value (secrets masked)"]
+        out += [f"  {p_} = {shown(p_, v)}" for p_, v in sorted(mine.items()) if top(p_) == name]
     todo = []
     if dups:
-        todo.append("merge the duplicate top-level block(s) named above into one")
+        todo.append("a top-level key is written twice: read the 'ignored' line above; if it holds nothing you want, re-run with --drop-ignored-blocks")
     ids = flash_ids(mine_cfg)
-    default_model = str((mine_cfg.get("default") or {}).get("model") or "")
-    if len(ids) == 1 and default_model != ids[0]:
-        todo.append(f"default.model is {default_model!r}: re-run with --set-flash-default (or edit that one line to {ids[0]!r})")
+    now = starts_on(mine_cfg)
+    if len(ids) == 1 and not (now and now["model_name"] == ids[0]):
+        todo.append(f"a new session starts on {now['label'] if now else 'nothing'}, not Flash: re-run with --set-flash-default "
+                    f"(it sets default.ai_provider to dashscope and default.model to {ids[0]!r})")
     if not ids:
         todo.append("dashscope.available_models has no Flash chat model")
     out += ["", "TO CHANGE" + ("" if todo else ": nothing the report can see")] + [f"  - {t}" for t in todo]
@@ -304,13 +406,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--config", default=str(ROOT / "fdd_utils" / "config.yml"))
     ap.add_argument("--example", default=str(ROOT / "fdd_utils" / "config.example.yml"))
     ap.add_argument("--set-flash-default", action="store_true")
+    ap.add_argument("--drop-ignored-blocks", action="store_true", help="delete the earlier copy of a top-level key written twice")
     ap.add_argument("--verbose", action="store_true", help="list every missing / different / only-here setting")
-    ap.add_argument("--section", default="", help="list every value of one top-level section (agent, dashscope, processing, ...)")
+    ap.add_argument("--section", nargs="*", default=[], help="list every value of these top-level sections (agent, dashscope, processing, ...)")
     args = ap.parse_args(argv)
     path = Path(args.config)
     if not path.exists():
         print(f"no config at {path}")
         return 1
+    if args.drop_ignored_blocks:
+        print(drop_ignored_blocks(path) + "\n")
     if args.set_flash_default:
         print(set_flash_default(path) + "\n")
     print(report(path, Path(args.example), verbose=args.verbose, section=args.section))
