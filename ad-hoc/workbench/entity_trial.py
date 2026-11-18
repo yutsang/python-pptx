@@ -63,6 +63,7 @@ sys.path.insert(0, str(ROOT))
 import agent_acceptance as A  # noqa: E402
 
 OUT_DIR = ROOT / "fdd_utils" / "output" / "agent_trial"
+ISSUE_DIR = ROOT / "fdd_utils" / "output" / "agent_issues"    # one case per account with a refused sentence (fdd_utils/agent/issues.py)
 ARMS = ("pro_lead", "flash_lead", "mixed_lead", "pro", "flash", "mixed", "planned", "routed", "seeded", "reviewed", "checked", "loop",
         "researched")
 # the model leads (understands, decides, checks); Python reads, computes and verifies as a tool. pro / flash / mixed are the
@@ -389,6 +390,11 @@ def run_arm(name: str, setup: Dict[str, Any], cfg: Dict[str, Any], databook: str
                     red = any(f.get("severity") == "failed" and f.get("dimension") in cl._RED_DIMENSIONS for f in v.get("findings") or [])
                     marked["red" if red else "orange"] += 1
         result["marked"] = marked
+        # every account that still has a refused sentence is kept as one case file (contract + draft + refusals): replayed free by
+        # issue_cases.py, so a verifier fix is checked on what the paid runs produced, not on the next paid run
+        from fdd_utils.agent import issues as _issues
+        kept = _issues.capture(work.source, ISSUE_DIR, entity=Path(databook).stem, code=code_fingerprint()["short"])
+        result["issue_cases"] = len(kept)
     except Exception as exc:                                            # noqa: BLE001
         import traceback
         result["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
@@ -728,6 +734,8 @@ def summary_text(report: Dict[str, Any]) -> str:
             lines.append(f"           deck findings {res['findings']}")
         for b_ in res.get("blockers") or []:
             lines.append(f"           deck blocked by {b_['code']}{' ' + b_['account'] if b_['account'] else ''}: {b_['message']}")
+        if res.get("issue_cases"):
+            lines.append(f"           {res['issue_cases']} refused account(s) kept as cases (free to re-check: python ad-hoc/workbench/issue_cases.py replay)")
         if b.get("calls_without_provider_usage"):
             lines.append(f"           {b['calls_without_provider_usage']} call(s) without provider usage (estimated, not in the columns above)")
         if (b.get("cached_input_pricing") or "").startswith(tuple("0123456789")):

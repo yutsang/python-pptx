@@ -6,7 +6,7 @@
 # which prints, with no AI call, exactly what the UI will offer from this file.
 default:
   ai_provider: "dashscope"
-  model: "dashscope_qwen3.7-max"   # an id from that provider's available_models
+  model: "dashscope_deepseek-v4-flash-0731"   # an id from that provider's available_models (Flash: measured sufficient, 2026-11-17)
 
 # Which model compare_models.py puts first and marks [baseline]. Without this
 # block it is the first configured of workbench / local / openai / deepseek.
@@ -95,20 +95,22 @@ dashscope:
   # Prices (optional, yuan per million tokens) go on each entry: price_in, price_out, and price_cached_in for input the
   # provider reports as served from its prompt cache. Without price_cached_in, cached input is priced at the full price_in
   # (the agent's books say so). Take it from the provider's price sheet; nothing here assumes a discount.
+  # The dropdown lists these in this order and starts on default.model (above): Flash for the whole report, Pro when a person
+  # wants the stronger model. The agent path (agent.models empty) writes with whatever the dropdown has selected.
   available_models:
-    - id: "dashscope_qwen3.7-max"
+    - id: "dashscope_deepseek-v4-flash-0731"
       kind: chat
-      label: "Qwen3.7-Max"
+      label: "DeepSeek-V4-Flash"
     - id: "dashscope_deepseek-v4-pro-0813"
       kind: chat
       label: "DeepSeek-V4-Pro"
+    - id: "dashscope_qwen3.7-max"
+      kind: chat
+      label: "Qwen3.7-Max"
     - id: "kimi-k2.6_chat"
       kind: chat
       label: "Kimi-K2.6"
       listed: false   # 2026-10-21: gateway answers "Access Denied" for this account -- hidden from the dropdown
-    - id: "dashscope_deepseek-v4-flash-0731"
-      kind: chat
-      label: "DeepSeek-V4-Flash"
     - id: "text_v4_embedding"
       kind: embedding
       label: "Text-V4-Embedding"
