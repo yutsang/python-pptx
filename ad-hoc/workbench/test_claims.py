@@ -23,7 +23,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fdd_utils.ai import claims as cl  # noqa: E402
 from fdd_utils.ai import evidence_contract as ec  # noqa: E402
-from fdd_utils.ai.validator import SourceIndex  # noqa: E402
 from fdd_utils.delivery import STATUS_BLOCKED, STATUS_READY, decide_delivery  # noqa: E402
 from fdd_utils.workbook.authority import AUTHORITY_KEY  # noqa: E402
 
@@ -1065,11 +1064,10 @@ class Citations(unittest.TestCase):
 
 
 class AgainstThePoolSearch(unittest.TestCase):
-    def test_a_figure_the_pool_would_ground_but_nothing_cited_fails(self):
+    def test_a_figure_that_exists_somewhere_in_the_workbook_but_is_not_what_was_cited_fails(self):
+        # the old verifier searched a pool of every figure in the workbook and called a number "data-backed" if it was in there anywhere;
+        # a figure now has to be the one the sentence cites, for the period the sentence puts it under
         c = build()
-        pool = SourceIndex([{"value": 1300000.0, "kind": "cell", "sheet": "OTHER", "row_desc": "another account's balance",
-                             "col_label": P2, "multiplier": 1.0, "row_idx": 1}])
-        self.assertTrue(pool.matches(1300000.0), "legacy: found somewhere in the pool, so 'data-backed'")
         v = verdict("2025年12月31日应收账款余额130.0万元", c, [ref(c, P1)], [P2])
         self.assertEqual(v["verdict"], "failed")
 

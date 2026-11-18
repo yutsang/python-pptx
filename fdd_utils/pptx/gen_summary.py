@@ -87,8 +87,6 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.WARNING)
 
 
-
-
 class _SummaryMixin:
     """The executive summary band (coSummaryShape): sizing it to the box, asking the
     model for text that fits, and checking what comes back.
@@ -242,239 +240,6 @@ class _SummaryMixin:
             return static_chi, static_eng
 
 
-    def _resolve_summary_model_type(self, is_chinese: bool) -> str:
-        cached = getattr(self, "_summary_model_type_cache", None)
-        if cached:
-            return cached
-
-        if self.model_type:
-            resolved_model_type = str(self.model_type).strip()
-            self._summary_model_type_cache = resolved_model_type
-            return resolved_model_type
-
-        try:
-            from fdd_utils.ai import FDDConfig
-
-            config = load_yaml_file(package_file_path("config.yml")) or {}
-            requested_model_type = (
-                str(self.model_type).strip()
-                if self.model_type
-                else str(((config.get("default") or {}).get("ai_provider")) or "deepseek")
-            )
-            config_manager = FDDConfig(
-                language="Chi" if is_chinese else "Eng",
-                model_type=requested_model_type,
-            )
-            resolved_model_type = str(config_manager.model_type or requested_model_type)
-        except Exception as exc:
-            logger.warning("Could not resolve PPTX summary model type, defaulting to deepseek: %s", exc)
-            resolved_model_type = "deepseek"
-
-        self._summary_model_type_cache = resolved_model_type
-        return resolved_model_type
-
-
-    def _call_with_timeout(self, func, timeout_seconds: float, timeout_label: str):
-        if timeout_seconds <= 0:
-            return func()
-
-        result_container = {"value": None, "error": None, "completed": False}
-
-        def _run():
-            try:
-                result_container["value"] = func()
-            except Exception as exc:
-                result_container["error"] = exc
-            finally:
-                result_container["completed"] = True
-
-        from .. import usage_ledger  # a fresh thread does not inherit attribution
-        worker = threading.Thread(target=usage_ledger.bind(_run), daemon=True)
-        worker.start()
-        worker.join(timeout=timeout_seconds)
-
-        if not result_container["completed"]:
-            raise TimeoutError(f"{timeout_label} timed out after {timeout_seconds:.1f} seconds")
-        if result_container["error"] is not None:
-            raise result_container["error"]
-        return result_container["value"]
-
-
-    def _call_with_timeout_retry(
-        self,
-        func,
-        timeout_seconds: float,
-        max_retries: int,
-        timeout_label: str,
-    ):
-        """Call ``func`` with a per-attempt timeout and retry on TimeoutError
-        or other transient failures. Raises the last exception if all retries
-        fail. Use ``max_retries >= 1`` (1 means "no retry, just run once")."""
-        attempts = max(1, int(max_retries or 1))
-        last_error: Optional[BaseException] = None
-        for attempt in range(1, attempts + 1):
-            label = (
-                timeout_label
-                if attempts == 1
-                else f"{timeout_label} (attempt {attempt}/{attempts})"
-            )
-            try:
-                return self._call_with_timeout(func, timeout_seconds, label)
-            except TimeoutError as te:
-                last_error = te
-                logger.warning(
-                    "%s timed out after %.1fs; %s",
-                    label,
-                    timeout_seconds,
-                    "retrying" if attempt < attempts else "giving up",
-                )
-            except Exception as exc:
-                last_error = exc
-                logger.warning(
-                    "%s errored (%s); %s",
-                    label,
-                    exc,
-                    "retrying" if attempt < attempts else "giving up",
-                )
-        assert last_error is not None
-        raise last_error
-
-
-    def _build_page_summary_source(self, slide_accounts: List[Dict]) -> Tuple[str, str]:
-        """Build the exact slide commentary set used for summary generation.
-
-        The summary source is each account's LEAD-IN only, never its table
-        detail. strip_table_detail_for_summary was written for exactly this
-        and its docstring records the symptom it prevents -- the naive
-        first-sentence splitter in _generate_page_summary doesn't know
-        "明细如下：" isn't a sentence end, so a table account's raw commentary
-        yields a "first sentence" that runs through the handoff phrase and
-        swallows the whole first "➢" bullet, splicing table detail into the
-        executive summary and cutting off mid-sentence. Both ui.py call
-        sites already strip; the export path never did, so the deterministic
-        in-export summary reintroduced the same defect the moment it started
-        filling the band rather than leaving it blank.
-
-        page_commentary stays UNSTRIPPED -- it is the AI path's own input and
-        should still see everything.
-        """
-        commentary_parts = []
-        summary_source_parts = []
-        summary_parts = []
-
-        for account_data in slide_accounts or []:
-            commentary = str(account_data.get("commentary", "") or "").strip()
-            summary = str(account_data.get("summary", "") or "").strip()
-            if commentary:
-                commentary_parts.append(commentary)
-                lead_in = self.strip_table_detail_for_summary(
-                    commentary, _account_is_chinese(account_data),
-                )
-                summary_source_parts.append(lead_in or commentary)
-            if summary:
-                summary_parts.append(summary)
-
-        page_commentary = "\n\n".join(commentary_parts).strip()
-        page_summary_source = (
-            "\n\n".join(summary_source_parts).strip() or " ".join(summary_parts).strip()
-        )
-        return page_commentary, page_summary_source
-
-
-    def _validate_ai_summary(
-        self,
-        source_text: str,
-        draft_summary: str,
-        is_chinese: bool,
-        ai_helper: Optional[Any] = None,
-    ) -> Optional[str]:
-        summary_settings = self._summary_settings()
-        if not bool(summary_settings.get("enable_validation", True)):
-            return draft_summary
-
-        try:
-            from fdd_utils.ai import AIClient
-
-            model_type = ai_helper.model_type if ai_helper is not None else self._resolve_summary_model_type(is_chinese)
-            if model_type == "local" and not bool(summary_settings.get("local_enable_validation", False)):
-                logger.info("Skipping PPTX summary validation for local model; using draft summary directly")
-                return draft_summary
-
-            max_input_chars = int(summary_settings.get("max_input_chars", 1400))
-            validation_max_tokens = int(summary_settings.get("validation_max_tokens", 90))
-            max_numeric_sentences = int(summary_settings.get("max_numeric_sentences", 1))
-            validation_timeout_seconds = float(summary_settings.get("validation_timeout_seconds", 25) or 25)
-            # Sized to the real summary box, not a static config number --
-            # see _summary_length_targets.
-            target_chars_chi, target_words_eng = self._summary_length_targets(is_chinese)
-            max_sentences_chi = int(summary_settings.get("max_sentences_chi", 4))
-            max_sentences_eng = int(summary_settings.get("max_sentences_eng", 4))
-
-            if is_chinese:
-                prompt = f"""请校验以下PPT执行摘要草稿，使其适合作为财务PPT摘要框内容。
-
-要求：
-1. 只保留与原始评论一致的高层结论、趋势和核心驱动。
-2. 控制在{max_sentences_chi}句话以内，长度约{target_chars_chi}字 —— 若草稿明显短于目标长度，请补充其他高层要点以达到目标，不要仅做压缩。
-3. 最多保留{max_numeric_sentences}个数字或百分比，除非删除后会影响结论准确性。
-4. 删除重复、堆叠金额和逐项罗列，但不得为了简短而牺牲目标长度或丢失核心趋势、驱动和结论。
-5. 优先合并重复句、删去铺垫和次要背景，只保留最重要的业务含义。
-6. 只输出最终摘要，不要解释。
-
-原始评论：
-{source_text[:max_input_chars]}
-
-摘要草稿：
-{draft_summary}"""
-            else:
-                prompt = f"""Validate the draft executive summary for a financial PPT summary box.
-
-Requirements:
-1. Keep only source-supported themes, trend, and core driver.
-2. Limit the result to no more than {max_sentences_eng} sentences and about {target_words_eng} words —
-   if the draft runs noticeably shorter than the target, add other high-level points to reach it
-   rather than just compressing further.
-3. Keep at most {max_numeric_sentences} number or percentage unless removing it would make the summary inaccurate.
-4. Remove repeated phrasing, stacked figures, scene-setting language, and account-by-account detail,
-   but do not sacrifice the target length or the key trend, driver, or conclusion just to be terse.
-5. Output only the final validated summary paragraph.
-
-Source commentary:
-{source_text[:max_input_chars]}
-
-Draft summary:
-{draft_summary}"""
-
-            ai_helper = ai_helper or AIClient(
-                model_type=model_type,
-                language='Chi' if is_chinese else 'Eng',
-                model_name=self.model_name,
-            )
-            validation_max_retries = int(summary_settings.get("validation_max_retries", 2) or 2)
-            response = self._call_with_timeout_retry(
-                lambda: ai_helper.get_response(
-                    user_prompt=prompt,
-                    system_prompt=(
-                        "You validate executive summaries for financial presentation slides. "
-                        "Keep only source-supported, concise, presentation-ready conclusions."
-                    ),
-                    temperature=float(summary_settings.get("validation_temperature", 0.1) or 0.1),
-                    max_tokens=validation_max_tokens,
-                ),
-                timeout_seconds=validation_timeout_seconds,
-                max_retries=validation_max_retries,
-                timeout_label="PPTX summary validation",
-            )
-            validated_summary = str((response or {}).get("content") or "").strip()
-            if _looks_like_blocked_ai_content(validated_summary):
-                logger.warning("PPTX summary validation returned blocked/network HTML content; using draft summary fallback")
-                return draft_summary
-            return validated_summary or draft_summary
-        except Exception as exc:
-            logger.warning("Could not validate AI summary: %s", exc)
-            return draft_summary
-
-
     @classmethod
     def strip_table_detail_for_summary(cls, text: str, is_chinese: bool) -> str:
         """Truncates one account's commentary to its lead-in only, at the
@@ -537,257 +302,45 @@ Draft summary:
         joiner = "。" if is_chinese else ". "
         return (head + joiner + rest).strip()
 
+    def _build_page_summary_source(self, slide_accounts: List[Dict]) -> Tuple[str, str]:
+        """Build the exact slide commentary set used for summary generation.
 
-    @classmethod
-    def generate_section_summary(
-        cls,
-        commentary: str,
-        *,
-        is_chinese: bool,
-        language: str = "english",
-        model_type: Optional[str] = None,
-        model_name: Optional[str] = None,
-        preface: str = "",
-    ) -> Optional[str]:
-        """Top-level helper: generate one executive summary from concatenated
-        commentary for a BS or IS section. Designed to be called from the UI
-        during the AI commentary phase so the PPTX export becomes pure XML
-        (no AI calls during export).
+        The summary source is each account's LEAD-IN only, never its table
+        detail. strip_table_detail_for_summary was written for exactly this
+        and its docstring records the symptom it prevents -- the naive
+        first-sentence splitter in _generate_page_summary doesn't know
+        "明细如下：" isn't a sentence end, so a table account's raw commentary
+        yields a "first sentence" that runs through the handoff phrase and
+        swallows the whole first "➢" bullet, splicing table detail into the
+        executive summary and cutting off mid-sentence. Both ui.py call
+        sites already strip; the export path never did, so the deterministic
+        in-export summary reintroduced the same defect the moment it started
+        filling the band rather than leaving it blank.
 
-        Returns the summary string, or None if AI is disabled / fails.
+        page_commentary stays UNSTRIPPED -- it is the AI path's own input and
+        should still see everything.
         """
-        try:
-            generator = cls.__new__(cls)
-            # Use the same config-merged settings the full generator uses,
-            # otherwise the timeout/retry defaults from config.yml are
-            # ignored (would fire at 10s instead of the configured value).
-            generator.pptx_settings = _load_pptx_settings()
-            generator.model_type = model_type
-            generator.model_name = model_name
-            generator.language = language
-            # Sent ahead of the commentary and outside its max_input_chars cut:
-            # that cut keeps only the first few accounts' text as it is, and a
-            # statement table counted against it would leave none.
-            generator._summary_preface = str(preface or "").strip()
-            result = generator._generate_ai_summary(commentary, commentary, is_chinese)
-            if result is None:
-                # AI timed out or unavailable — fall back to the rule-based
-                # summary so coSummaryShape is never left blank.
-                result = generator._generate_page_summary(commentary, is_chinese) or None
-            return result
-        except Exception as exc:
-            logger.warning("generate_section_summary failed: %s", exc)
-            return None
+        commentary_parts = []
+        summary_source_parts = []
+        summary_parts = []
 
-
-    @classmethod
-    def generate_section_fallback(cls, commentary: str, *, is_chinese: bool) -> str:
-        """Deterministic section summary used when an AI call is unavailable."""
-        try:
-            generator = cls.__new__(cls)
-            generator.pptx_settings = _load_pptx_settings()
-            generator.model_type = None
-            generator.model_name = None
-            generator.language = "chinese" if is_chinese else "english"
-            return generator._generate_page_summary(commentary, is_chinese)
-        except Exception as exc:
-            logger.warning("generate_section_fallback failed: %s", exc)
-            return ""
-
-
-    @staticmethod
-    def ground_section_summary(
-        summary: str,
-        account_evidence: List[Any],
-        *,
-        is_chinese: bool,
-    ) -> Tuple[str, Dict[str, Any]]:
-        """Remove summary sentences containing a figure no account pool supports.
-
-        A section summary is checked against the union of the accounts it
-        summarises. Dropping the whole sentence is intentionally conservative:
-        deleting only the unmatched token can leave a materially different or
-        grammatically broken claim. Sentences with no money amount pass through;
-        soft causal judgement remains the summary model's responsibility.
-        """
-        from fdd_utils.ai.validator import SourceIndex, ground_amounts
-
-        facts: List[Dict[str, Any]] = []
-        for evidence in account_evidence or []:
-            if isinstance(evidence, dict):
-                facts.extend(evidence.get("facts") or [])
-            else:
-                facts.extend(getattr(evidence, "facts", None) or [])
-        source = SourceIndex(facts)
-
-        body = str(summary or "").strip()
-        sentences = _split_text_sentences(body, is_chinese) if body else []
-        kept: List[str] = []
-        dropped: List[Dict[str, Any]] = []
-        checked_amounts = 0
-        for sentence in sentences:
-            verdict = ground_amounts(sentence, source)
-            if verdict is None:
-                kept.append(sentence)
-                continue
-            checked_amounts += len(verdict.get("amounts") or [])
-            if verdict.get("supported"):
-                kept.append(sentence)
-            else:
-                dropped.append({
-                    "sentence": sentence,
-                    "code": verdict.get("code"),
-                    "reason": verdict.get("reason"),
-                    "amounts": verdict.get("amounts") or [],
-                })
-
-        separator = "" if is_chinese else " "
-        grounded = separator.join(kept).strip()
-        report = {
-            "pool_facts": len(source.facts),
-            "sentences": len(sentences),
-            "checked_amounts": checked_amounts,
-            "kept_sentences": len(kept),
-            "dropped_sentences": dropped,
-        }
-        return grounded, report
-
-
-    def _generate_ai_summary(self, commentary: str, summary_source: str, is_chinese: bool) -> Optional[str]:
-        """Generate and validate AI summary from page commentary."""
-        try:
-            from fdd_utils.ai import AIClient
-            summary_settings = self._summary_settings()
-            if not bool(summary_settings.get("enable_ai", True)):
-                # WARNING, not INFO: falling back is invisible in the deck --
-                # the band still fills, just with spliced first sentences that
-                # read "截至...；截至...；截至...". A reader cannot tell the AI
-                # summary never ran, so the log has to say so at a level that
-                # inspect_databook's export-log analysis actually surfaces.
-                logger.warning(
-                    "Executive summary: AI DISABLED by config "
-                    "(pptx.executive_summary.enable_ai) -- the band will be filled by the "
-                    "deterministic first-sentence fallback, not by the model.")
-                return None
-            model_type = self._resolve_summary_model_type(is_chinese)
-            max_input_chars = int(summary_settings.get("max_input_chars", 1600))
-            max_tokens = int(summary_settings.get("max_tokens", 180))
-            max_numeric_sentences = int(summary_settings.get("max_numeric_sentences", 1))
-            # Use a shorter timeout for local models — they either answer fast
-            # or they're not running; long waits just block the export.
-            _is_local = str(model_type or "").lower() == "local"
-            generation_timeout_seconds = float(
-                summary_settings.get("local_generation_timeout_seconds", 10)
-                if _is_local else
-                # 45, not 20: a gateway model with reasoning took longer than
-                # 20s on one entity of a seven-entity run (2026-10-16), and the
-                # IS band shipped the spliced fallback, opening on a bare
-                # 「营业收入。」. The two summaries together normally take ~40s.
-                summary_settings.get("generation_timeout_seconds", 45)
-            )
-            # Sized to the real summary box, not a static config number --
-            # see _summary_length_targets.
-            target_chars_chi, target_words_eng = self._summary_length_targets(is_chinese)
-            max_sentences_chi = int(summary_settings.get("max_sentences_chi", 4))
-            max_sentences_eng = int(summary_settings.get("max_sentences_eng", 4))
-            source_text = str(commentary or summary_source or "").strip()
-            if not source_text:
-                logger.warning(
-                    "Executive summary: no source text for this page -- neither the page "
-                    "commentary nor the summary source had content, so the band falls back.")
-                return None
-            preface = str(getattr(self, "_summary_preface", "") or "")
-            if preface:
-                preface += "\n\n"
-
-            if is_chinese:
-                prompt = f"""请将以下财务评论改写成适合PPT摘要框的高层执行摘要。
-
-目标长度：约{target_chars_chi}字，控制在{max_sentences_chi}句话以内 —— 请写满这个长度，不要明显短于目标。
-
-要求：
-1. 保留高层结论、趋势和核心驱动，可覆盖一个以上要点以达到目标长度。
-2. 除非极其必要，最多保留{max_numeric_sentences}个数字或百分比。
-3. 不要逐项复述账户，不要堆叠金额细节。
-4. 语气要像管理层摘要，写成一个紧凑自然的短段落。
-5. 优先删去次要说明、重复铺垫和账户层级细节，只保留最重要的业务结论、驱动和影响，但不要为了简短而牺牲目标长度。
-6. 原始内容若以【报表数据】开头，摘要必须先概括其中金额最大的几行及其跨期走势（利润表：收入、主要成本费用、利润或亏损；资产负债表：主要资产、负债及权益），再补充科目评论中的重点。金额占比很小的科目不得作为摘要主体，也不得把报表中金额重大的项目说成'影响不大'。
-7. 报表数据中标注'仅N个月，未年化'的一列不得与完整年度直接比较增减；引用的数字必须是原始内容中出现的数字。
-8. 只陈述数据和评论支持的结论，不得添加'结构优化''有效控制''基础夯实'一类没有依据的评价。
-
-原始内容：
-{preface}{source_text[:max_input_chars]}"""
-            else:
-                prompt = f"""Write a short executive summary for a PPT summary box based on the following financial commentary.
-
-Target length: about {target_words_eng} words, with no more than {max_sentences_eng} sentences —
-write to fill this length, do not stop noticeably short of it.
-
-Requirements:
-1. Cover overall trend, key driver, and business implication — span more than one theme if needed to reach the target length.
-2. Keep it high level and presentation-friendly.
-3. Include at most {max_numeric_sentences} number or percentage unless absolutely necessary.
-4. Do not list account-by-account detail or repeat many figures.
-5. Write one compact management-style paragraph. Remove secondary detail, scene-setting language, and repeated wording, but do not sacrifice the target length just to be terse.
-6. Remove secondary detail, scene-setting language, and repeated wording.
-7. If the content opens with [STATEMENT TABLE], lead with its largest lines and how they moved across the periods (income statement: revenue, main costs, profit or loss; balance sheet: main assets, liabilities and equity) before anything from the account commentary. An immaterial account must not be the subject of the summary, and a line that is large in the table must not be called insignificant.
-8. A column marked "months only, not annualised" must not be compared with a full year as an increase or decrease; every figure quoted must appear in the content.
-9. State only what the data and commentary support; add no unsupported evaluation ("optimised", "well controlled", "solid foundation").
-
-Original content:
-{preface}{source_text[:max_input_chars]}"""
-
-            ai_helper = AIClient(
-                model_type=model_type,
-                language='Chi' if is_chinese else 'Eng',
-                model_name=self.model_name,
-            )
-            generation_max_retries = int(
-                summary_settings.get("local_generation_max_retries", 1)
-                if _is_local else
-                summary_settings.get("generation_max_retries", 1)
-            )
-            response = self._call_with_timeout_retry(
-                lambda: ai_helper.get_response(
-                    user_prompt=prompt,
-                    system_prompt=(
-                        "You write concise executive summaries for financial presentation slides. "
-                        "Prefer themes, drivers, and implications over detailed figures."
-                    ),
-                    temperature=float(summary_settings.get("generation_temperature", 0.2) or 0.2),
-                    max_tokens=max_tokens,
-                ),
-                timeout_seconds=generation_timeout_seconds,
-                max_retries=generation_max_retries,
-                timeout_label="PPTX summary generation",
-            )
-            from fdd_utils.ai import strip_thinking
-            summary = strip_thinking(str((response or {}).get("content") or "")).strip()
-            if _looks_like_blocked_ai_content(summary):
-                logger.warning(
-                    "PPTX summary generation returned blocked/network HTML content; falling back to compact summary"
+        for account_data in slide_accounts or []:
+            commentary = str(account_data.get("commentary", "") or "").strip()
+            summary = str(account_data.get("summary", "") or "").strip()
+            if commentary:
+                commentary_parts.append(commentary)
+                lead_in = self.strip_table_detail_for_summary(
+                    commentary, _account_is_chinese(account_data),
                 )
-                return None
-
+                summary_source_parts.append(lead_in or commentary)
             if summary:
-                return self._validate_ai_summary(source_text, summary, is_chinese, ai_helper=ai_helper)
-            # The last silent way out, and the likeliest one: a local model that
-            # answers in 10-14s against a 10s summary timeout returns nothing,
-            # and the band quietly fills with spliced first sentences instead.
-            # Nothing in the deck says which happened, so say it here.
-            logger.warning(
-                "Executive summary: the model returned NO text (model_type=%s, "
-                "timeout=%.0fs, source=%d chars) -- falling back to spliced first "
-                "sentences. If this is a local model, raise "
-                "pptx.executive_summary.local_generation_timeout_seconds.",
-                model_type, generation_timeout_seconds, len(source_text),
-            )
-            return None
-        except Exception as e:
-            logger.warning("Could not generate AI summary: %s", e)
-            logger.debug(traceback.format_exc())
-        
-        return None
+                summary_parts.append(summary)
+
+        page_commentary = "\n\n".join(commentary_parts).strip()
+        page_summary_source = (
+            "\n\n".join(summary_source_parts).strip() or " ".join(summary_parts).strip()
+        )
+        return page_commentary, page_summary_source
 
 
     def _generate_page_summary(self, commentary: str, is_chinese: bool) -> str:

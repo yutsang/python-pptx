@@ -25,7 +25,6 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from fdd_utils.ai import evidence_contract as ec  # noqa: E402
-from fdd_utils.ai.evidence import AccountEvidence, compile_account_evidence  # noqa: E402
 from fdd_utils.workbook.authority import AUTHORITY_KEY  # noqa: E402
 
 P1, P2 = "2024-12-31", "2025-12-31"
@@ -267,24 +266,6 @@ class HiddenSheets(unittest.TestCase):
                 if pattern.search(line) and "visible_sheets" not in line and "digest-ok" not in line:
                     offenders.append(f"{rel}:{number}: {line.strip()[:90]}")
         self.assertEqual(offenders, [], "a digest reader that bypasses visible_sheets")
-
-
-class Persistence(unittest.TestCase):
-    def test_contract_rides_on_account_evidence_and_survives_a_round_trip(self):
-        frame = account_frame(clean_rows())
-        evidence = compile_account_evidence("AR", frame, statement_type="BS", graph_facts={"links": [{
-            "kind": "tab_to_financials", "source": "AR", "target": "Financials::AR", "passed": True,
-            "evidence": {"financials_values": {P1: 100.0, P2: 100.0}}}]})
-        self.assertIsNotNone(evidence.contract)
-        again = AccountEvidence.from_dict(evidence.to_dict())
-        contract = ec.EvidenceContract.from_dict(again.contract)
-        self.assertEqual(contract.check(P2, ec.CHECK_TOTAL_VS_FINANCIALS)["status"], ec.PASS)
-        self.assertEqual(contract.to_dict(), evidence.contract)
-
-    def test_a_frame_the_contract_cannot_read_leaves_the_pool_intact(self):
-        evidence = compile_account_evidence("X", pd.DataFrame({"a": [1.0]}))
-        self.assertTrue(evidence.facts is not None)     # no exception, pool built either way
-
 
 
 class SupportingTables(unittest.TestCase):

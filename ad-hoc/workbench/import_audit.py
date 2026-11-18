@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Set, Tuple
 
 ROOT = Path(__file__).resolve().parents[2]
-SKIP_DIRS = {".venv", "__pycache__", ".git", "node_modules", "output", "for_test", "databooks", "pptx_previews", "logs"}
+SKIP_DIRS = {".venv", "__pycache__", ".git", "node_modules", "output", "for_test", "databooks", "pptx_previews", "logs", "docs"}   # docs/ is git-ignored scratch
 #: top-level names that resolve to a file in these folders when a script puts them on sys.path (the scripts do it themselves)
 LOCAL_DIRS = [ROOT, ROOT / "ad-hoc" / "workbench"]
 
@@ -125,3 +125,38 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def method_audit() -> Dict[str, List[str]]:
+    """{file: [problems]}: every `self.name(...)` / `cls.name(...)` call in a class of fdd_utils names a method the class has (its bases and
+    the deck generator's other mixins included) or an attribute the class assigns. Pyflakes cannot see these, and a deleted method
+    fails only when its caller runs (the 2026-11-19 summary helpers: the deck export failed on every book, found by the baseline)."""
+    for folder in LOCAL_DIRS:
+        if str(folder) not in sys.path:
+            sys.path.insert(0, str(folder))
+    from fdd_utils.pptx.generation import PowerPointGenerator
+    problems: Dict[str, List[str]] = {}
+    for path in py_files():
+        rel = path.relative_to(ROOT).as_posix()
+        if not rel.startswith("fdd_utils/"):
+            continue
+        module = importlib.import_module(module_name(path))
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            cls = getattr(module, node.name, None)
+            if not isinstance(cls, type):
+                continue
+            assigned = {t.attr for n in ast.walk(node) for t in (n.targets if isinstance(n, ast.Assign) else [n.target] if isinstance(n, (ast.AnnAssign, ast.AugAssign)) else [])
+                        if isinstance(t, ast.Attribute) and isinstance(t.value, ast.Name) and t.value.id in ("self", "cls")}
+            mixin = issubclass(PowerPointGenerator, cls)
+            for call in ast.walk(node):
+                if not (isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and isinstance(call.func.value, ast.Name)
+                        and call.func.value.id in ("self", "cls")):
+                    continue
+                name = call.func.attr
+                if hasattr(cls, name) or name in assigned or hasattr(cls, "__getattr__") or (mixin and hasattr(PowerPointGenerator, name)):
+                    continue
+                problems.setdefault(rel, []).append(f"line {call.lineno}: {node.name}.{name}() is not defined")
+    return problems

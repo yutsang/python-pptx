@@ -27,6 +27,10 @@ class Audit(unittest.TestCase):
         problems = ia.audit(include_scripts=True)
         self.assertEqual(problems, {}, "\n".join(f"{f}: {p}" for f, ps in problems.items() for p in ps))
 
+    def test_every_method_a_class_calls_on_itself_exists(self):
+        problems = ia.method_audit()
+        self.assertEqual(problems, {}, "\n".join(f"{f}: {p}" for f, ps in problems.items() for p in ps))
+
 
 if __name__ == "__main__":
     unittest.main()
