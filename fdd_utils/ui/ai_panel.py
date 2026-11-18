@@ -25,7 +25,7 @@ if not hasattr(st, "fragment"):
         return func
     st.fragment = _noop_fragment  # type: ignore[attr-defined]
 
-from ..ai import FDDConfig
+from ..ai import get_default_config_path, load_yaml_config
 from ..ai.validator import build_highlighted_commentary_html
 from ..financial_common import extract_result_text_content, get_pipeline_result_text
 from ..financial_display_format import prepare_display_dataframe, stringify_display_dataframe
@@ -317,6 +317,15 @@ def _matched_keys(session_state: Any) -> list:
     return keys
 
 
+def _demo_settings() -> Dict[str, Any]:
+    """config.yml's `demo` block (the uploaded file the app replays recorded results for), or {} when there is no config or no such block.
+    Read as plain YAML: the replay needs no provider, so a machine with none configured can still show it."""
+    try:
+        return (load_yaml_config(get_default_config_path()) or {}).get("demo") or {}
+    except Exception:                                                        # noqa: BLE001
+        return {}
+
+
 def _eta(started: float, done: int, total: int) -> str:
     if done <= 0 or total <= 0:
         return "Calculating..."
@@ -349,7 +358,7 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
         status_placeholder = st.empty()
         try:
             started = time.time()
-            demo_cfg = (FDDConfig().config or {}).get("demo", {})
+            demo_cfg = _demo_settings()
             demo_filename = str(demo_cfg.get("filename") or "").strip()
             is_demo = bool(demo_filename and str(session_state.get("uploaded_filename") or "").strip() == demo_filename)
             if is_demo:
