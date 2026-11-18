@@ -1,18 +1,13 @@
 # Which model a new session starts on. The dropdown itself is built from each
 # provider's available_models; `listed: false` on a provider block (or on one
 # available_models entry) takes it off the dropdown WITHOUT disabling it -- it
-# stays callable from the CLI and stays the baseline in
-#   python ad-hoc/workbench/compare_models.py --list
-# which prints, with no AI call, exactly what the UI will offer from this file.
+# stays callable from the command line. `python ad-hoc/workbench/config_report.py`
+# prints, with no AI call, exactly what the dropdown will offer from this file and
+# which model a new session starts on (a default provider that is not in the
+# dropdown leaves the first entry of the list as the start).
 default:
   ai_provider: "dashscope"
   model: "dashscope_deepseek-v4-flash-0731"   # an id from that provider's available_models (Flash: measured sufficient, 2026-11-17)
-
-# Which model compare_models.py puts first and marks [baseline]. Without this
-# block it is the first configured of workbench / local / openai / deepseek.
-# A provider name alone means that provider's chat_model.
-# benchmark:
-#   baseline: "dashscope::dashscope_deepseek-v4-flash-0731"
 
 openai:
   api_key: ""
@@ -25,11 +20,6 @@ local:
   api_base: "http://localhost:8000/v1"
   api_key: "not-needed"
   chat_model: "Qwen3-32B"   # must match the id your local server serves
-  supports_thinking: true   # Qwen3 emits <think>; structured stages disable it via allow_thinking
-  # The local server serves one request effectively serially — default to 1
-  # worker. Every other provider defaults to 4 (parallel, no UI toggle
-  # needed) unless overridden with its own max_workers (see workbench below).
-  max_workers: 1
 
 deepseek:
   api_key: ""
@@ -60,15 +50,9 @@ workbench:
   supports_temperature: false        # this model only allows temperature=1 (its default)
   supports_sampling_params: false    # this model rejects top_p / frequency_penalty / presence_penalty
   use_max_completion_tokens: true    # this model rejects legacy 'max_tokens'
-  # Floor for max_completion_tokens (not a replacement for agents.*.max_tokens
-  # below). Reasoning models spend part of the budget on hidden reasoning
-  # before the visible answer, so a complex account can exhaust a small
-  # per-agent budget and come back empty. 0/blank disables the floor.
+  # Floor for max_completion_tokens. Reasoning models spend part of the budget on hidden reasoning before the visible answer, so a
+  # complex account can exhaust a small budget and come back empty. 0/blank disables the floor.
   min_max_tokens: 3000
-  # Concurrent worker threads per pipeline stage for THIS provider. Built-in
-  # default (if omitted) is 2 for any non-local provider — raise it only
-  # after validating the gateway handles it with test_workbench_concurrency.py.
-  max_workers: 4
   # Deployment ids are environment-specific -- fill these in your own
   # config.yml (gitignored), not in this public example.
   available_models: []
@@ -88,7 +72,6 @@ dashscope:
   charge_code: ""
   region_override: ""
   chat_model: "dashscope_qwen3.7-max"
-  max_workers: 4
   # Only if the gateway's documentation names its thinking switch: the body sent with the agent's thinking / reasoning_effort
   # per role. Unverified until `python ad-hoc/workbench/agent_acceptance.py probe --send` shows the gateway accepts it. Shape:
   # thinking_extra_body: {"on": {"enable_thinking": true}, "off": {"enable_thinking": false}}
@@ -118,36 +101,11 @@ dashscope:
       kind: rerank
       label: "Qwen3-Rerank"
 
-agents:
-  # allow_thinking: false sends enable_thinking=false to Qwen3 for structured
-  # stages (skips <think> for speed + clean JSON). Omit / true keeps thinking on.
-  1_Generator:
-    temperature: 0.6
-    max_tokens: 2000
-    top_p: 0.95
-    allow_thinking: true
-  2_Auditor:
-    temperature: 0.2
-    max_tokens: 2000
-    top_p: 0.8
-    allow_thinking: false
-    # workbench only — overrides workbench.reasoning_effort for this stage.
-    # Auditor's job (verification, no creative writing) needs less reasoning
-    # depth than Generator/Validator. Omit to inherit the global setting.
-    reasoning_effort: "low"
-  3_Refiner:
-    temperature: 0.5
-    max_tokens: 2000
-    top_p: 0.9
-    reduction_target_pct: 64
-  4_Validator:
-    temperature: 0.1
-    max_tokens: 2000
-    top_p: 0.8
-    allow_thinking: false
-    # Below this variance, a clause is immaterial and must NOT be flagged as
-    # reasoning/hallucination — tempers the "when in doubt, flag it" bias.
-    materiality_threshold_pct: 5
+# The agent's own requests are sent with temperature, max_tokens and top_p from a built-in default (top_p 0.9); to change what the
+# model is sent in those, name the agent here:
+# agents:
+#   fdd_agent:
+#     top_p: 0.9
 
 processing:
   # Cell styles (Excel indent / bold) of each tab, read straight from the .xlsx
@@ -157,43 +115,6 @@ processing:
   # read entirely (a real databook once spent 20 minutes on it, before the
   # read was rewritten on 2026-10-21) at the cost of that check.
   read_cell_styles: true
-  data_format_for_ai: "json"
-  # Per-account example sentences from mappings.yml go into the Generator
-  # prompt. They were written when a much weaker local model needed a concrete
-  # template to imitate; an audit (inspect_mapping_patterns.py) found 57% are
-  # fill-in-the-blanks templates, which can constrain a capable model rather
-  # than guide it. Set false to generate WITHOUT them and compare, rather than
-  # arguing the point:
-  #   python inspect_databook_to_pptx.py --databook X --pptx Y --style-profile
-  #   python inspect_databook_to_pptx.py --databook X --pptx Y --check-claims
-  inject_mapping_patterns: true
-  # "open" replaces the per-account Generator templates (fixed opening, order,
-  # sentence count, mandatory dimensions) with one analyst brief, and tells the
-  # Auditor and Validator to keep marked inferences. See analysis_mode in
-  # prompts.yml. "guided" is "open" plus the account's old template handed over
-  # as reference for what to look at (its structure rules declared void).
-  # FDD_ANALYSIS_MODE=open|guided|standard overrides this for one run.
-  analysis_mode: guided      # default since 2026-10-15; "standard" = the old per-account templates
-  # An account with no figure in any period and no remark against it gets its
-  # one sentence from code instead of from the model (no request is made).
-  # false sends those accounts to the model as before.
-  deterministic_nil_accounts: true
-  # Cuts to what each request carries, for measuring what a current model
-  # still needs of prompts written for a much weaker one. Empty = every prompt
-  # exactly as before. Names (PromptEngine.PROMPT_TRIMS): dedupe_guidance,
-  # auditor_no_judgement, auditor_no_formatting, validator_no_style.
-  # FDD_PROMPT_TRIM=name,name in the environment overrides this for one run.
-  prompt_trim: []
-  # Input-token budget per LLM call. A 65-component account rendered past a
-  # 32,768-token provider limit three runs in a row and shipped no commentary.
-  # When the estimated prompt exceeds max_input_tokens - headroom_tokens, the
-  # smallest components are left out of what is SHOWN (never a rollup parent;
-  # never the three largest), the model is told how many and what they sum to,
-  # and that sum is grounded. Set max_input_tokens to your provider's limit;
-  # 0 disables. headroom covers the reply and estimation error.
-  prompt_budget:
-    max_input_tokens: 32768
-    headroom_tokens: 4096
   # Keep each answer the model gives, keyed by the exact request (provider,
   # model, both prompts, sampling parameters), and reuse it when the identical
   # request comes round again -- which is most of a re-run of the same
@@ -205,32 +126,17 @@ processing:
     enabled: false
     max_age_days: 30
   debug_mode: false
-  feedback_loop:
-    enabled: true
-    max_retries: 2
-    unsupported_threshold: 0.3
 
-# Thresholds for _variance_analysis_guidance (ai.py) — the deterministic
-# movement/disproportion checks fed into the Generator+Auditor prompts.
-# Omitting this block (or any key in it) falls back to these same values,
-# so this section is documentation, not a required override.
-analysis:
-  variance_threshold_pct: 30   # an account's own period-over-period move at/above this is "material"
-  disproportion_gap_pp: 30     # percentage-point gap vs revenue growth that counts as disproportionate
-  max_extra_pairs: 2           # cap on how many EARLIER (non-latest) period pairs get a one-line mention
-
-# Evidence-grounded single-agent path (fdd_utils/agent, CLI: fdd_agent.py). OFF by default: the
-# Generator -> Auditor -> Validator pipeline stays the production path whatever is set here.
-# FDD_AGENT=1 / FDD_AGENT=0 in the environment overrides `enabled` for one run.
-# Rollback is `enabled: false` (or unsetting FDD_AGENT): nothing in the legacy path reads this block.
+# The agent: the one path that writes commentary (fdd_utils/agent; the app and `python fdd_agent.py book` both run it). Everything
+# here has a built-in default, so a missing key or block changes nothing; this block is where a limit is set or a flag turned on.
 agent:
-  enabled: false
   max_steps: 12            # model turns per run
   max_tokens: 80000        # estimated prompt + completion tokens per run
   max_seconds: 300
   max_no_progress: 3       # consecutive steps that add no evidence and resolve nothing
   max_rejections: 3        # answers the gate may send back before the run stops
-  max_model_calls: 60      # hard cap on model calls over one working session (app panel and --session); 0 = no cap
+  max_model_calls: 60      # hard cap on model calls over one ASK or EDIT session (the app's workbench panel, --session); 0 = no cap
+  max_calls_per_account: 40  # runaway guard of a WHOLE BOOK: this times its accounts (the app's run, fdd_agent.py book); 0 = no cap
   # -- which model answers, and one budget over all of them (agent/routing.py) ---------------------------------------------
   routing: single          # single | escalate. escalate: a second model takes over a turn after `escalate_after` consecutive
                            # failures the first model could have repaired from the evidence it had. Never for missing evidence or

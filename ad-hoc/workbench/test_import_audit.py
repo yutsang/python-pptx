@@ -31,6 +31,20 @@ class Audit(unittest.TestCase):
         problems = ia.method_audit()
         self.assertEqual(problems, {}, "\n".join(f"{f}: {p}" for f, ps in problems.items() for p in ps))
 
+    def test_every_root_script_the_package_imports_is_in_the_deploy_zip(self):
+        # the server runs fdd_app.py and fdd_utils/ only (make_deploy_package.py); a root script the package imports at run time has to ship too
+        import make_deploy_package as pack
+        needed = set()
+        for path in ia.py_files():
+            if not path.relative_to(ia.ROOT).as_posix().startswith("fdd_utils/"):
+                continue
+            for base, _names, _line in ia.imports_of(path):
+                if "." not in base and (ia.ROOT / f"{base}.py").exists():
+                    needed.add(f"{base}.py")
+        self.assertEqual(sorted(needed - set(pack.ROOT_FILES)), [], "imported by fdd_utils but not in make_deploy_package.ROOT_FILES")
+        for name in pack.ROOT_FILES:
+            self.assertTrue((ia.ROOT / name).exists(), name)
+
 
 if __name__ == "__main__":
     unittest.main()

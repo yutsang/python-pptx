@@ -83,7 +83,6 @@ class AIClient:
         )
         self.model_type = self.config_manager.model_type
         self.full_config = self.config_manager.config
-        self.data_format = self.config_manager.get_default_data_format()
         if self.use_heuristic:
             self.config_details = self.full_config.get(self.model_type, {})
         else:

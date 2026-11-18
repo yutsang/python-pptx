@@ -1,19 +1,12 @@
-"""Is the agent path switched on? One answer, read from one place.
-
-Default off. The environment wins over the file so a single run can be switched either way
-without editing config.yml (and so a run on a machine whose config.yml was edited by hand is
-not silently different): FDD_AGENT=1 / true / on / yes enables, 0 / false / off / no disables.
-Nothing in the legacy pipeline reads this; switching it off is the rollback.
-"""
+"""What the agent block of config.yml says, read from one place: the budgets of a run, the call caps, the routing, and the flags the
+controller reads (prepared write, repair of an inference, the read of a sentence's binding, ...). The agent is the app's one path: there
+is no switch."""
 from __future__ import annotations
 
 import os
 from typing import Any, Dict, Optional
 
 from .controller import Budget
-
-_ON = {"1", "true", "on", "yes"}
-_OFF = {"0", "false", "off", "no"}
 
 
 def _config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -24,15 +17,6 @@ def _config(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         return FDDConfig().config or {}
     except Exception:
         return {}
-
-
-def agent_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
-    env = os.environ.get("FDD_AGENT", "").strip().lower()
-    if env in _ON:
-        return True
-    if env in _OFF:
-        return False
-    return bool((_config(config).get("agent") or {}).get("enabled", False))
 
 
 def agent_budget(config: Optional[Dict[str, Any]] = None) -> Budget:

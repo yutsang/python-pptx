@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""The evidence-grounded agent path, from the command line.
+"""The evidence-grounded agent, from the command line: the whole databook, one account, a question, a returned deck.
 
+    python fdd_agent.py book <databook> [--model P --model-name ID] [--limit N] [--session FILE] [--out DECK]   the whole databook   (model)
     python fdd_agent.py summary <databook>                        numerical summary, every figure traced     (free)
-    python fdd_agent.py ask <databook> "question" [--base-run ID] investigate and answer, sources + states   (model)
-    python fdd_agent.py edit <databook> --account KEY "instruction" --base-run ID [--export] [--out DECK]    (model)
+    python fdd_agent.py ask <databook> "question"                 investigate and answer, sources + states   (model)
+    python fdd_agent.py edit <databook> --account KEY "instruction" [--export] [--out DECK]                  (model)
     python fdd_agent.py diff <databook> --baseline-deck DECK      what the sources changed since that deck   (free)
     python fdd_agent.py deck <databook> --deck RETURNED [--update --out DECK]   read a returned deck         (free)
     python fdd_agent.py strip DECK --out OUTSIDE                  the copy of a deck without its manifest    (free)
 
+`book` is what the app does when a databook is loaded: every account in scope is written from its own evidence, every sentence is
+checked against the workbook, the statements' summaries are written from the finished paragraphs, and one deck is exported (a sentence
+the verifier refused is carried into it marked red or orange and named in the delivery decision). With --session the session is kept,
+and the commands below continue from it.
+
 One session, several turns (investigate -> follow up -> put it in the report -> accept -> export -> update a returned deck):
 
-    python fdd_agent.py chat <databook> [--session FILE] [--base-run ID]      interactive; /help lists the commands (model on free text)
+    python fdd_agent.py chat <databook> [--session FILE]                      interactive; /help lists the commands (model on free text)
     python fdd_agent.py ask <databook> "question" --session FILE              one turn, kept in the session file
     python fdd_agent.py report <databook> --session FILE [--request "..."] [--account KEY] [--export] [--out DECK]
                                                                               "put that in the report": no model call unless the wording changes
@@ -20,21 +26,16 @@ One session, several turns (investigate -> follow up -> put it in the report -> 
     python fdd_agent.py session show FILE                                     what a saved session holds, without loading the workbook (free)
 
 A session file holds the workbook's figures and commentary: it is created only when --session is given, only at a path git
-would not track, and never leaves the machine. Without --session nothing is kept after the command.
+would not track, and never leaves the machine. Without --session nothing is kept after the command. (--base-run ID binds a session to
+an archived pipeline run's commentary, for editing accounts of a deck that run made.)
 
-`ask` and `edit` call a model and run only when the agent path is switched on
-(FDD_AGENT=1, or agent.enabled: true in config.yml). The default is off, and the
-Generator -> Auditor -> Validator pipeline (inspect_databook.py, the app) is untouched
-either way; unsetting the flag is the rollback. The rest read workbooks and decks and
-call no model.
+`book`, `ask` and `edit` call a model. The rest read workbooks and decks and call no model.
 
---scripted FILE replaces the model with a JSON list of replies (one object per turn), for
-replaying a conversation offline.
+--scripted FILE replaces the model with a JSON list of replies (one object per turn), for replaying a conversation offline.
 
-Exit status: 0 the run finished (answered / done / the free command succeeded); 2 it stopped
-without an acceptable result (budget, no progress, a question for the user, an answer the
-verifier would not accept) or the agent path is off; 1 an error. The report names accounts and
-figures: keep it local.
+Exit status: 0 the run finished (the deck is ready / answered / done / the free command succeeded); 2 it stopped without an acceptable
+result (budget, no progress, a question for the user, an answer the verifier would not accept, a deck that is not ready); 1 an error.
+The report names accounts and figures: keep it local.
 """
 from __future__ import annotations
 
@@ -76,15 +77,6 @@ def _model(args, session):
             return ScriptedModel(json.load(fh))
     from fdd_utils.agent.controller import AIClientModel
     return AIClientModel(model_type=args.model or "local", model_name=args.model_name, language=session.language)
-
-
-def _gate(args) -> bool:
-    from fdd_utils.agent.flag import agent_enabled
-    if agent_enabled():
-        return True
-    print("The agent path is off (agent.enabled: false, FDD_AGENT not set). The legacy pipeline is unaffected.\n"
-          "To run this one time:  FDD_AGENT=1 python fdd_agent.py " + " ".join(sys.argv[1:]))
-    return False
 
 
 def _print_run(run, as_json: bool) -> int:
@@ -238,8 +230,6 @@ def _print_candidates(views: list, unresolved: list) -> None:
 
 
 def cmd_chat(args) -> int:
-    if not _gate(args):
-        return 2
     from fdd_utils.agent import tools as T
     from fdd_utils.agent.workspace import classify_request
     work = _work(args)
@@ -354,8 +344,6 @@ def cmd_chat(args) -> int:
 
 
 def cmd_ask_session(args) -> int:
-    if not _gate(args):
-        return 2
     work = _work(args)
     code = _print_turn(work.ask(args.question), args.json)
     if work.path:
@@ -364,8 +352,6 @@ def cmd_ask_session(args) -> int:
 
 
 def cmd_report(args) -> int:
-    if not _gate(args):
-        return 2
     work = _work(args)
     code = _print_turn(work.report(args.request or "", args.account or "", export=args.export, out_path=args.out or ""), args.json)
     if not args.json:
@@ -483,8 +469,6 @@ def cmd_summary(args) -> int:
 def cmd_ask(args) -> int:
     if getattr(args, "session", None):
         return cmd_ask_session(args)
-    if not _gate(args):
-        return 2
     from fdd_utils.agent.controller import AgentController
     from fdd_utils.agent.flag import agent_budget
     session = _session(args)
@@ -493,8 +477,6 @@ def cmd_ask(args) -> int:
 
 
 def cmd_edit_session(args) -> int:
-    if not _gate(args):
-        return 2
     work = _work(args)
     code = _print_turn(work.edit(args.instruction, args.account or "", accept=args.export, export=args.export, out_path=args.out or ""), args.json)
     if not args.json:
@@ -505,8 +487,6 @@ def cmd_edit_session(args) -> int:
 def cmd_edit(args) -> int:
     if getattr(args, "session", None):
         return cmd_edit_session(args)
-    if not _gate(args):
-        return 2
     from fdd_utils.agent.controller import AgentController
     from fdd_utils.agent.flag import agent_budget
     if not args.base_run:

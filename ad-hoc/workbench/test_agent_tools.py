@@ -265,33 +265,19 @@ class HiddenFinancials(unittest.TestCase):
 
 
 class Flag(unittest.TestCase):
-    """Default off; the environment wins over the file in both directions; budgets come from config."""
-
-    def setUp(self):
-        self.saved = os.environ.pop("FDD_AGENT", None)
-
-    def tearDown(self):
-        os.environ.pop("FDD_AGENT", None)
-        if self.saved is not None:
-            os.environ["FDD_AGENT"] = self.saved
-
-    def test_off_unless_asked(self):
-        from fdd_utils.agent.flag import agent_enabled
-        self.assertFalse(agent_enabled({}))
-        self.assertFalse(agent_enabled({"agent": {"enabled": False}}))
-        self.assertTrue(agent_enabled({"agent": {"enabled": True}}))
-
-    def test_the_environment_overrides_the_file_either_way(self):
-        from fdd_utils.agent.flag import agent_enabled
-        os.environ["FDD_AGENT"] = "1"
-        self.assertTrue(agent_enabled({"agent": {"enabled": False}}))
-        os.environ["FDD_AGENT"] = "off"
-        self.assertFalse(agent_enabled({"agent": {"enabled": True}}))
+    """The agent block of config.yml: budgets, the call guards and what is left at its default."""
 
     def test_budget_reads_the_config_and_falls_back(self):
         from fdd_utils.agent.flag import agent_budget
         b = agent_budget({"agent": {"max_steps": 5, "max_tokens": 1234}})
         self.assertEqual((b.max_steps, b.max_tokens, b.max_rejections), (5, 1234, 3))
+
+    def test_the_whole_book_guard_is_per_account_and_the_session_cap_is_a_separate_setting(self):
+        from fdd_utils.agent.flag import agent_max_model_calls, max_calls_per_account
+        self.assertEqual((max_calls_per_account({}), agent_max_model_calls({})), (40, None))
+        self.assertEqual(max_calls_per_account({"agent": {"max_calls_per_account": 12, "max_model_calls": 60}}), 12)
+        self.assertEqual(agent_max_model_calls({"agent": {"max_calls_per_account": 12, "max_model_calls": 60}}), 60)
+        self.assertIsNone(max_calls_per_account({"agent": {"max_calls_per_account": 0}}), "0 means no cap")
 
 
 if __name__ == "__main__":

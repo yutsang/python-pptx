@@ -2,8 +2,7 @@
 
     python ad-hoc/workbench/test_agent_panel.py
 
-The panel is a face over WorkSession (tested in test_workspace.py); these tests check what it shows and that it is
-absent while the agent path is off. The "model" is a scripted policy. What this cannot show is how the page looks.
+The panel is a face over WorkSession (tested in test_workspace.py); these tests check what it shows. The "model" is a scripted policy. What this cannot show is how the page looks.
 """
 from __future__ import annotations
 
@@ -50,25 +49,16 @@ class Panel(unittest.TestCase):
         source = session_on(self.book)
         source.base_results = {ACCOUNT: {"final": "应收账款余额较低。"}}
         self.work = W.WorkSession(source, model=answer_policy(), budget=C.Budget(max_steps=6))
-        self.saved = os.environ.pop("FDD_AGENT", None)
-
-    def tearDown(self):
-        os.environ.pop("FDD_AGENT", None)
-        if self.saved is not None:
-            os.environ["FDD_AGENT"] = self.saved
 
     def run_app(self):
         return AppTest.from_function(app, kwargs={"work": self.work, "path": self.book}, default_timeout=20).run()
 
-    def test_the_panel_is_there_whatever_FDD_AGENT_says(self):
-        for value in ("0", "1"):
-            os.environ["FDD_AGENT"] = value                               # the switch is gone: the agent is the app's one path
-            at = self.run_app()
-            self.assertFalse(at.exception)
-            self.assertEqual(len(at.expander), 1)
+    def test_the_panel_is_always_there(self):
+        at = self.run_app()
+        self.assertFalse(at.exception)
+        self.assertEqual(len(at.expander), 1)
 
     def test_ask_then_put_it_in_the_report_then_the_draft_is_shown_accepted_with_what_is_open(self):
-        os.environ["FDD_AGENT"] = "1"
         at = self.run_app()
         self.assertFalse(at.exception, at.exception)
         at.button(key="agent_start").click().run()
@@ -93,7 +83,6 @@ class Panel(unittest.TestCase):
         self.assertFalse(at.button(key="agent_export").disabled)
 
     def test_an_export_with_no_base_run_is_refused_in_words_not_silently(self):
-        os.environ["FDD_AGENT"] = "1"
         self.work.source.base_results = None
         at = self.run_app()
         at.button(key="agent_start").click().run()
@@ -107,7 +96,6 @@ class Panel(unittest.TestCase):
         self.assertTrue(any("fdd_agent.py export" in c.value for c in at.code))
 
     def test_overrides_a_partial_update_and_a_doubtful_base_run_are_shown(self):
-        os.environ["FDD_AGENT"] = "1"
         self.work.source.load_params = dict(self.work.source.load_params or {}, mapping_overrides={"应收账款": "AR"})
         self.work.source.base_run_check = {"status": "edited_since", "reasons": ["account data differs"]}
         self.work.deck = {"last_update": {"complete": False, "unfinished": [{"action": "conflict"}], "next_steps": ["decide the conflict"]}}
@@ -121,7 +109,6 @@ class Panel(unittest.TestCase):
         self.assertIn("PARTIAL", warnings)
 
     def test_a_draft_that_no_longer_stands_says_why_and_cannot_be_accepted(self):
-        os.environ["FDD_AGENT"] = "1"
         at = self.run_app()
         at.button(key="agent_start").click().run()
         at.text_area(key="agent_request").set_value("应收账款期末余额是多少？").run()
@@ -135,7 +122,6 @@ class Panel(unittest.TestCase):
         self.assertEqual([b for b in at.button if b.key == f"agent_accept_{ACCOUNT}"], [])
 
     def test_a_draft_the_account_moved_around_shows_what_moved_and_asks_for_a_second_look(self):
-        os.environ["FDD_AGENT"] = "1"
         at = self.run_app()
         at.button(key="agent_start").click().run()
         at.text_area(key="agent_request").set_value("应收账款期末余额是多少？").run()

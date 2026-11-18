@@ -174,9 +174,6 @@ def effective(config: Dict[str, Any]) -> List[str]:
     lines.append("dropdown, in order (* = a new session starts on it):")
     for c in choices:
         lines.append(f"  {'*' if c['key'] == start else ' '} {c['label']:<26s} {c['key']:<52s} {'ready' if c['ready'] else 'NOT READY (api_key / api_base empty)'}")
-    env = os.environ.get("FDD_AGENT", "")
-    lines.append(f"agent.enabled={flag.agent_enabled(config)}  (config says {bool((config.get('agent') or {}).get('enabled', False))}; "
-                 f"environment FDD_AGENT={env!r})")
     for role in ("primary", "escalation"):
         r = flag.role_config(config, role)
         lines.append(f"agent.models.{role}: " + (f"{r['provider']}::{r['model']}  thinking={r['thinking']!r} effort={r['reasoning_effort']!r} "
@@ -186,7 +183,8 @@ def effective(config: Dict[str, Any]) -> List[str]:
              "repair_inference": flag.repair_inference(config), "judge_binding": flag.judge_binding(config),
              "seed_facts": flag.seed_facts(config), "review_meaning": flag.review_meaning(config)}
     lines.append("agent flags: " + "  ".join(f"{k}={v}" for k, v in flags.items()))
-    lines.append(f"agent budget: {flag.agent_budget(config)}  max_model_calls={flag.agent_max_model_calls(config)}")
+    lines.append(f"agent budget: {flag.agent_budget(config)}  max_model_calls (one ask/edit session)={flag.agent_max_model_calls(config)}  "
+                 f"max_calls_per_account (a whole book)={flag.max_calls_per_account(config)}")
     return lines
 
 

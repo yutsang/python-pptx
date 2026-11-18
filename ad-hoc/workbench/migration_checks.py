@@ -54,6 +54,7 @@ SUITES = [
     "test_agent_research",
     "test_issue_cases",
     "test_config_report",
+    "test_public_config",
     "test_import_audit",
     "test_book",
     "test_app_book",

@@ -231,38 +231,24 @@ class Flow4_5_UpdateAndReturn(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_WORKBOOK, f"{WORKBOOK} is not on this machine")
 class Cli(unittest.TestCase):
-    """fdd_agent.py: free commands always run; model commands need the flag; a scripted file stands in for the model."""
+    """fdd_agent.py: free commands call no model; a scripted file stands in for the model."""
 
-    def run_cli(self, *argv, flag=None):
+    def run_cli(self, *argv):
         import contextlib
         import io
         import fdd_agent
-        saved = os.environ.pop("FDD_AGENT", None)
-        if flag is not None:
-            os.environ["FDD_AGENT"] = flag
         out = io.StringIO()
-        try:
-            with contextlib.redirect_stdout(out):
-                code = fdd_agent.main(list(argv))
-        finally:
-            os.environ.pop("FDD_AGENT", None)
-            if saved is not None:
-                os.environ["FDD_AGENT"] = saved
+        with contextlib.redirect_stdout(out):
+            code = fdd_agent.main(list(argv))
         return code, out.getvalue()
 
-    def test_summary_needs_no_flag_and_no_model(self):
+    def test_summary_needs_no_model(self):
         code, text = self.run_cli("summary", WORKBOOK)
         self.assertEqual(code, 0, text[-400:])
         self.assertIn("no model call", text)
         self.assertRegex(text, r"traceability: (\d+) of \1 printed numbers resolve")
 
-    def test_ask_is_refused_while_the_flag_is_off_and_says_how_to_run_once(self):
-        code, text = self.run_cli("ask", WORKBOOK, "余额？", "--scripted", os.devnull)
-        self.assertEqual(code, 2)
-        self.assertIn("agent path is off", text)
-        self.assertIn("FDD_AGENT=1", text)
-
-    def test_a_scripted_conversation_runs_end_to_end_with_the_flag(self):
+    def test_a_scripted_conversation_runs_end_to_end(self):
         session = _STATE["session"]
         key = edit_account(session)
         contract = session.contracts[key]
@@ -274,7 +260,7 @@ class Cli(unittest.TestCase):
                                            "text": f"截至{date_text(last)}，{key}余额{abs(total['yuan']) / 1e4:,.1f}万元"}], "unresolved": []}}]
         path = os.path.join(_STATE["tmp"], "script.json")
         Path(path).write_text(json.dumps(replies, ensure_ascii=False), encoding="utf-8")
-        code, text = self.run_cli("ask", WORKBOOK, f"{key}的期末余额？", "--scripted", path, flag="1")
+        code, text = self.run_cli("ask", WORKBOOK, f"{key}的期末余额？", "--scripted", path)
         self.assertEqual(code, 0, text[-600:])
         self.assertIn("stop: answered", text)
         self.assertIn("verification: 1 verified", text)
@@ -282,7 +268,7 @@ class Cli(unittest.TestCase):
     def test_a_conversation_that_runs_out_ends_with_a_report_and_exit_2(self):
         path = os.path.join(_STATE["tmp"], "short.json")
         Path(path).write_text(json.dumps([tool("inspect_sources")]), encoding="utf-8")
-        code, text = self.run_cli("ask", WORKBOOK, "?", "--scripted", path, flag="1")
+        code, text = self.run_cli("ask", WORKBOOK, "?", "--scripted", path)
         self.assertEqual(code, 2)
         self.assertIn("why it stopped", text)
 
