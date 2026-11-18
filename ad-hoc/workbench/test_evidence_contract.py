@@ -238,7 +238,6 @@ class HiddenSheets(unittest.TestCase):
         """Behavioural: each reader calls the filter. Static: no module outside the
         digest itself reads digest['sheets'] directly, so a new reader cannot skip it."""
         import fdd_utils.workbook.digest as digest_module
-        from fdd_utils.ai import facts
         from fdd_utils.workbook import authority
         calls = []
         original = digest_module.visible_sheets
@@ -248,13 +247,9 @@ class HiddenSheets(unittest.TestCase):
             authority.adjustment_entries(probe, 2000.0, P2)
             authority._adjustment_cells(probe)
             authority.adjustment_bridge(probe, "AR")
-            facts.build_digest_graph_links(probe, {"series": {"AR": {P2: 1.0}}})
-            facts.digest_tieout_diagnostics(probe, {"series": {"AR": {P2: 1.0}}})
-            facts.supporting_breakdowns_for("AR", probe, {"links": [{"passed": True, "kind": "supporting_schedule_tieout",
-                                                                     "target": "AR", "evidence": {"sheet": "S"}}]})
         finally:
             digest_module.visible_sheets = original
-        self.assertGreaterEqual(len(calls), 6, "authority x3 + facts x3")
+        self.assertGreaterEqual(len(calls), 3, "authority x3")
         offenders = []
         allowed = {"fdd_utils/workbook/digest.py"}
         pattern = re.compile(r"""(workbook_)?digest[^\n]{0,40}\.get\(\s*["']sheets["']\)|\(digest or \{\}\)\.get\(["']sheets["']\)""")

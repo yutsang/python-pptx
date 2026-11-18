@@ -19,7 +19,6 @@ from .config import (  # noqa: F401
     default_model_choice_key,
     get_default_config_path,
     get_provider_config,
-    get_safe_default_data_format,
     is_provider_ready,
     list_model_choices,
     load_yaml_config,

@@ -5,18 +5,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import pandas as pd
 
 from ..financial_common import load_yaml_file, package_file_path
-from ..keyword_registry import (
-    BS_END_KEYWORDS,
-    BS_HEADER_KEYWORDS,
-    INDICATIVE_KEYWORDS,
-    IS_END_KEYWORDS,
-    IS_HEADER_KEYWORDS,
-    REMARK_KEYWORDS,
-    SUBTOTAL_KEYWORDS,
-    SUMMARY_ACCOUNT_SKIP_KEYWORDS,
-    TABLE_END_KEYWORDS,
-    contains_thousand_unit_marker,
-)
+from ..keyword_registry import SUMMARY_ACCOUNT_SKIP_KEYWORDS
 
 
 def load_mappings(mappings_path: Optional[str] = None) -> Dict[str, Any]:
@@ -114,47 +103,4 @@ def split_accounts_by_type(
     return bs_accounts, is_accounts, other_accounts
 
 
-def build_account_mapping_diagnostics(
-    account_names: Iterable[str],
-    mappings: Dict[str, Any],
-) -> pd.DataFrame:
-    rows: List[Dict[str, str]] = []
-
-    for account_name in account_names:
-        mapping_key = find_mapping_key(account_name, mappings)
-        if not mapping_key:
-            rows.append(
-                {
-                    "account_name": str(account_name),
-                    "mapping_key": "",
-                    "account_type": "",
-                    "classification": "other",
-                    "reason": "No mappings.yml key or alias matched this account/tab name.",
-                }
-            )
-            continue
-
-        mapping_config = mappings.get(mapping_key, {})
-        account_type = str(mapping_config.get("type", "") or "")
-        if account_type in {"BS", "IS"}:
-            classification = account_type
-            reason = f"Mapped to {account_type} via '{mapping_key}'."
-        else:
-            classification = "other"
-            reason = f"mapped type '{account_type or 'blank'}' is not classified as BS or IS."
-
-        rows.append(
-            {
-                "account_name": str(account_name),
-                "mapping_key": mapping_key,
-                "account_type": account_type,
-                "classification": classification,
-                "reason": reason,
-            }
-        )
-
-    return pd.DataFrame(
-        rows,
-        columns=["account_name", "mapping_key", "account_type", "classification", "reason"],
-    )
 # --- end workbook/mapping.py ---

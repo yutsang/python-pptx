@@ -56,7 +56,6 @@ from typing import Any, Dict  # noqa: F401
 
 
 from .mapping import (  # noqa: F401
-    build_account_mapping_diagnostics,
     find_mapping_key,
     get_effective_mappings,
     iter_account_mappings,
@@ -80,7 +79,6 @@ from .analysis import (  # noqa: F401
 from .inspector import (  # noqa: F401
     CANONICAL_STAGE_LABELS,
     canonical_stage_label,
-    contains_indicative_text,
     contains_unit_marker,
     date_row_index,
     load_workbook_frames,
@@ -137,7 +135,6 @@ from .table_debug import (  # noqa: F401
     RowClassification,
     TableInspection,
     TableSection,
-    clear_table_inspection_cache,
     clear_workbook_caches,
     get_table_inspection,
     inspect_sheet,

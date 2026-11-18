@@ -26,7 +26,7 @@ import os
 import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional
 
 LOG_DIR = Path(__file__).resolve().parent / "logs"
 USAGE_PATH = LOG_DIR / "usage.jsonl"
@@ -57,26 +57,6 @@ def set_context(**fields: Any) -> None:
     Streamlit rerun, which has no natural `with` block around it: called at the
     top of every rerun, so a value never outlives the rerun that set it."""
     _CONTEXT.set({k: v for k, v in fields.items() if v is not None})
-
-
-def bind(fn: Callable[..., Any], **fields: Any) -> Callable[..., Any]:
-    """fn, run in a copy of the CURRENT context (plus `fields`) whichever thread
-    calls it. A fresh copy per call, so many executor tasks can share one bound
-    function."""
-    snapshot = contextvars.copy_context()
-    extra = {k: v for k, v in fields.items() if v is not None}
-
-    def run(*args: Any, **kwargs: Any) -> Any:
-        ctx = snapshot.copy()
-
-        def inner() -> Any:
-            if extra:
-                _CONTEXT.set({**_CONTEXT.get(), **extra})
-            return fn(*args, **kwargs)
-
-        return ctx.run(inner)
-
-    return run
 
 
 def _append(path: Path, record: Dict[str, Any]) -> None:

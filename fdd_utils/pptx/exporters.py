@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # re-added: bound by an import in another section of the pre-split module
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 import re
 
 
@@ -203,98 +203,6 @@ def export_pptx_from_structured_data_combined(
     except Exception as exc:
         logger.error("PPTX generation failed: %s", exc)
         logger.error(traceback.format_exc())
-        raise
-
-
-def export_pptx_from_structured_data(
-    template_path: str,
-    structured_data: List[Dict],
-    output_path: str,
-    project_name: Optional[str] = None,
-    language: str = "english",
-    statement_type: str = "BS",
-    start_slide: int = 1,
-    model_type: Optional[str] = None,
-):
-    from .generation import PowerPointGenerator  # local: exporters imports the later generation; module-level would be a cycle
-    try:
-        logger.info("Starting PPTX generation from structured data...")
-        logger.info("Template: %s", template_path)
-        logger.info("Output: %s", output_path)
-        logger.info("Language: %s", language)
-        logger.info("Statement type: %s, Start slide: %s", statement_type, start_slide)
-        logger.info("Accounts to process: %s", len(structured_data))
-
-        generator = PowerPointGenerator(template_path, language, row_limit=20, model_type=model_type)
-        generator.load_template()
-        generator.apply_structured_data_to_slides(structured_data, start_slide, project_name, statement_type)
-        generator.save(output_path)
-
-        logger.info("PPTX generation completed: %s", output_path)
-        return output_path
-    except Exception as exc:
-        logger.error("PPTX generation failed: %s", exc)
-        raise
-
-
-def merge_presentations(bs_presentation_path: str, is_presentation_path: str, output_path: str):
-    try:
-        logger.info("🔄 Starting presentation merge...")
-        logger.info("   BS: %s", bs_presentation_path)
-        logger.info("   IS: %s", is_presentation_path)
-
-        merged_prs = Presentation(bs_presentation_path)
-        is_prs = Presentation(is_presentation_path)
-
-        from copy import deepcopy
-
-        for slide_idx, slide in enumerate(is_prs.slides):
-            try:
-                slide_layout = slide.slide_layout
-                new_slide = merged_prs.slides.add_slide(slide_layout)
-
-                source_slide_xml = slide._element
-                target_slide_xml = new_slide._element
-
-                shapes_to_remove = list(new_slide.shapes)
-                for shape in shapes_to_remove:
-                    try:
-                        sp_tree = target_slide_xml.get_or_add_spTree()
-                        sp_tree.remove(shape._element)
-                    except Exception:
-                        pass
-
-                source_sp_tree = source_slide_xml.get_or_add_spTree()
-                target_sp_tree = target_slide_xml.get_or_add_spTree()
-                for shape_element in source_sp_tree:
-                    target_sp_tree.append(deepcopy(shape_element))
-
-            except Exception as exc:
-                logger.error("Error copying slide %s, using fallback method: %s", slide_idx, exc)
-                slide_layout = slide.slide_layout
-                new_slide = merged_prs.slides.add_slide(slide_layout)
-                for shape in slide.shapes:
-                    if shape.has_text_frame:
-                        for new_shape in new_slide.shapes:
-                            if (
-                                hasattr(new_shape, "name")
-                                and hasattr(shape, "name")
-                                and new_shape.name == shape.name
-                                and new_shape.has_text_frame
-                            ):
-                                new_shape.text_frame.text = shape.text_frame.text
-                                break
-
-        merged_prs.save(output_path)
-        del merged_prs
-        del is_prs
-
-        import gc
-
-        gc.collect()
-        logger.info("✅ Presentation merge completed successfully")
-    except Exception as exc:
-        logger.error("Presentation merge failed: %s", exc)
         raise
 
 

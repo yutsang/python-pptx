@@ -6,7 +6,7 @@ FDD configuration module aligned with the HR config interface.
 
 from typing import Any, Dict, List, Optional
 
-from ..financial_common import build_income_statement_period_label, load_required_yaml_file, package_file_path
+from ..financial_common import load_required_yaml_file, package_file_path
 
 PROVIDER_REQUIRED_KEYS = {
     "openai": ["api_key", "api_base", "chat_model", "api_version_completion"],
@@ -226,32 +226,6 @@ def default_model_choice_key(config: Dict[str, Any], choices: List[Dict[str, Any
 
 def get_default_config_path() -> str:
     return package_file_path(DEFAULT_CONFIG_FILENAME)
-
-
-def get_safe_default_data_format(
-    config_path: Optional[str] = None,
-    language: str = "Eng",
-    model_type: str = "deepseek",
-) -> str:
-    try:
-        return FDDConfig(
-            config_path=config_path,
-            language=language,
-            model_type=model_type,
-        ).get_default_data_format()
-    except Exception:
-        return DEFAULT_DATA_FORMAT
-
-
-def get_safe_grounding_include_siblings() -> bool:
-    """FDDConfig.get_grounding_include_siblings for callers with no config in
-    hand (SourceIndex.from_df, and the CLI/diagnostics that call it). Falls back
-    to the same default when config.yml is absent or no provider is configured —
-    config.yml is gitignored and per-machine, so this must work without it."""
-    try:
-        return FDDConfig().get_grounding_include_siblings()
-    except Exception:
-        return False
 
 
 class FDDConfig:

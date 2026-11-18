@@ -99,15 +99,6 @@ def build_identity(*, workbook: str, entity: str, sheet: Optional[str], financia
     }
 
 
-def write_identity(run_folder: Optional[str], identity: Dict[str, Any]) -> Optional[str]:
-    if not run_folder or not os.path.isdir(run_folder):
-        return None
-    path = os.path.join(run_folder, IDENTITY_FILE)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(identity, fh, ensure_ascii=False, indent=1)
-    return path
-
-
 #: Fields that must agree for a run's commentary to describe this workbook.
 #: Model, code, config and template are recorded and reported, not compared:
 #: re-laying-out old text under new code is the point of a re-export.

@@ -12,9 +12,8 @@ from .schedules import normalize_financial_schedule
 
 from difflib import SequenceMatcher
 import json
-import os
 import re
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -193,8 +192,6 @@ def _sheet_type_bonus(profile: Dict[str, Any], mapping_type: str) -> float:
 _LOW_CONFIDENCE_MATCH_FLOOR = 45.0
 
 
-
-
 def _candidate_sheets_for_mapping(mapping_key: str, config: Dict[str, Any], profiles: Dict[str, Dict[str, Any]]) -> List[Dict[str, Any]]:
     aliases = list(config.get("aliases") or [])
     aliases.append(mapping_key)
@@ -351,8 +348,6 @@ def _normalized_total_values(normalized: Dict[str, Any]) -> Dict[str, float]:
         for column in columns
         if total_entry["values"].get(column["key"]) is not None
     }
-
-
 
 
 def _build_financial_reference_context(
@@ -971,7 +966,6 @@ def resolve_ambiguous_candidate(
 #                             is where normalization_errors first exists
 _UNRESOLVED_REASON_NO_ALIAS = "no_alias_scored_above_45"
 _UNRESOLVED_REASON_SHEET_KIND = "sheet_kind_excluded"
-_UNRESOLVED_REASON_NORMALIZATION = "normalization_error"
 
 # Which sheet kinds are worth reporting as unresolved at all. "other" was added
 # to the original financial_schedule-only filter so a sheet whose stage

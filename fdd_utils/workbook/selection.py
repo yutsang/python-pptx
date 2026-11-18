@@ -271,40 +271,6 @@ def select_reconciliation_keys(
     return result
 
 
-SELECTION_FILE = "selection.json"
-
-
-def save_selection(run_folder: str, result: SelectionResult) -> str:
-    """Beside the run's results, so an offline re-export of the run can tell which
-    accounts were left out of it and why, without redoing the reconciliation."""
-    import json
-    import os
-    path = os.path.join(str(run_folder), SELECTION_FILE)
-    with open(path, "w", encoding="utf-8") as fh:
-        json.dump(result.to_dict(), fh, ensure_ascii=False, indent=1)
-    return path
-
-
-def load_selection(run_folder: str) -> Optional[SelectionResult]:
-    import json
-    import os
-    path = os.path.join(str(run_folder), SELECTION_FILE)
-    if not os.path.exists(path):
-        return None
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)
-    result = SelectionResult(
-        unmatched_financials=list(data.get("unmatched_financials") or []),
-        reconciliation_available=bool(data.get("reconciliation_available", True)),
-    )
-    for item in data.get("decisions") or []:
-        result.decisions.append(Decision(
-            key=str(item.get("key")), admitted=bool(item.get("admitted")), route=str(item.get("route") or ""),
-            reason=str(item.get("reason") or ""), detail=str(item.get("detail") or ""),
-            statement=str(item.get("statement") or ""), statuses=list(item.get("statuses") or [])))
-    return result
-
-
 def selection_without_financials(available_keys: Iterable[str]) -> SelectionResult:
     """The record for a workbook with no Financials sheet: every tab goes to
     commentary (the caller's fallback), and none of it was tied out."""

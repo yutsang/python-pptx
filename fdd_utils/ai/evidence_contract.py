@@ -39,7 +39,7 @@ import hashlib
 import numbers
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -714,11 +714,6 @@ def add_related_evidence(contracts: Dict[str, EvidenceContract], *, notes_per_ac
                                        "ref": f"N{len(contract.notes) + 1}"})
                 filed += 1
     return filed
-
-
-def attach_contract(evidence: Any, contract: Optional[EvidenceContract]) -> None:
-    """File a contract on an AccountEvidence (kept as plain data)."""
-    evidence.contract = contract.to_dict() if contract is not None else None
 
 
 def trace_fact(contract: EvidenceContract, fact_id: str) -> Dict[str, Any]:

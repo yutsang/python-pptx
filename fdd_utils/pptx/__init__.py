@@ -62,12 +62,10 @@ from .payloads import (  # noqa: F401
     _extract_summary,
     _find_chinese_display_name,
     _has_significant_balance,
-    _join_text_sentences,
     _load_pptx_settings,
     _looks_like_blocked_ai_content,
     _merge_nested_dict,
     _normalize_slide_commentary_text,
-    _sentence_is_numeric_heavy,
     _split_text_sentences,
     _translate_statement_row_label,
 )
@@ -75,10 +73,8 @@ from .exporters import (  # noqa: F401
     ReportGenerator,
     combine_presentations,
     export_pptx,
-    export_pptx_from_structured_data,
     export_pptx_from_structured_data_combined,
     logger,
-    merge_presentations,
     _copy_slide_into,
     _dedupe_part_name,
 )

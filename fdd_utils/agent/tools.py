@@ -23,7 +23,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..ai import claims as cl
 from ..ai import evidence_contract as ec
-from ..delivery import Finding, banner, decide_delivery, labelled_path
+from ..delivery import decide_delivery
 from . import investigate as I
 from .session import account_profile, Candidate, SourceSession, capture_cite_ids, capture_context, claims_digest
 from .summary import build_numerical_summary
@@ -447,10 +447,6 @@ _TOOLS += [
          {"package": {"type": "str", "required": False, "help": "e.g. 'fdd_utils/pptx'"}}, code_overview, reads_evidence=False, in_prompt=False),
 ]
 TOOLS: Dict[str, Tool] = {t.name: t for t in _TOOLS}
-
-
-def register_tool(tool: Tool) -> None:
-    TOOLS[tool.name] = tool
 
 
 def describe_tools() -> str:

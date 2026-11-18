@@ -258,19 +258,3 @@ def build_income_statement_period_label(
     return f"FY{year_short}"
 
 
-def normalize_chinese_punctuation_in_text(s: str, preserve_sentence_stop: bool = False) -> str:
-    if not s or not isinstance(s, str):
-        return s
-    s = s.replace("\uff0c", ",").replace("\u3001", ",")
-    if not preserve_sentence_stop:
-        s = s.replace("\u3002", ".").replace("\uff0e", ".")
-    return s
-
-
-def normalize_number_str_for_parsing(s: str) -> str:
-    if not s or not isinstance(s, str):
-        return s
-    s = str(s).strip()
-    s = re.sub(r"(?<=\d)[，,\uff0c\u3001\u060c\ufe50\ufe10](?=\d)", "", s)
-    s = s.replace("\u3002", ".").replace("\uff0e", ".")
-    return s

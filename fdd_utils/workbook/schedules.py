@@ -14,17 +14,14 @@ from .statements import _find_description_column, parse_date
 
 
 from collections import Counter
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import logging
-import math
 import os
 import re
 
 import pandas as pd
 
-from ..financial_common import cell_text, coerce_numeric
 from ..keyword_registry import UNIT_THOUSAND_MARKERS
 
 logger = logging.getLogger(__name__)
@@ -504,7 +501,6 @@ _XML_ATTR = re.compile(rb"\b(r|outlineLevel)=\"(\d+)\"")
 _XML_CELL_TAG = re.compile(rb"<(?:\w+:)?c\b([^>]*?)/?>")
 _XML_CELL_REF = re.compile(rb"\br=\"([A-Z]+)(\d+)\"")
 _XML_CELL_STYLE = re.compile(rb"\bs=\"(\d+)\"")
-_XML_ROW_START = re.compile(rb"<(?:\w+:)?row\b[^>]*\br=\"(\d+)\"")
 
 
 def _cell_styles_enabled() -> bool:
@@ -1806,8 +1802,6 @@ def _build_prompt_analysis_df(
     frame.attrs["component_descriptions"] = component_descriptions
     frame.attrs["rollup_groups"] = rollup_groups
     return frame
-
-
 
 
 def _first_table_with_rows(primary, fallback_factory):

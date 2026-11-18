@@ -1,18 +1,7 @@
 from __future__ import annotations
 
 # re-added: bound by an import in another section of the pre-split module
-from ..keyword_registry import (
-    BS_END_KEYWORDS,
-    BS_HEADER_KEYWORDS,
-    INDICATIVE_KEYWORDS,
-    IS_END_KEYWORDS,
-    IS_HEADER_KEYWORDS,
-    REMARK_KEYWORDS,
-    SUBTOTAL_KEYWORDS,
-    SUMMARY_ACCOUNT_SKIP_KEYWORDS,
-    TABLE_END_KEYWORDS,
-    contains_thousand_unit_marker,
-)
+from ..keyword_registry import BS_END_KEYWORDS, BS_HEADER_KEYWORDS, IS_END_KEYWORDS, IS_HEADER_KEYWORDS
 
 """
 FDD Table Inspector - Understand databook table structure and number flow.
@@ -26,11 +15,9 @@ from .preflight import _build_workbook_preflight_cached
 from .schedules import _build_indent_signal_index, _build_workbook_style_index
 
 import pandas as pd
-import re
 from functools import lru_cache
 from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, field
-
 
 
 @dataclass
@@ -67,10 +54,6 @@ class TableInspection:
     row_classifications: List[RowClassification] = field(default_factory=list)
     header_hierarchy: Dict[str, Any] = field(default_factory=dict)
     multiplier_note: str = ""
-
-
-
-
 
 
 def _is_subtotal_or_total(desc: str) -> Tuple[bool, bool]:
@@ -253,16 +236,10 @@ def inspect_workbook(workbook_path: str, sheet_name: Optional[str] = None) -> Di
         return {"_error": TableInspection(sheet_name="_error")}  # Placeholder; multiplier_note can hold error
 
 
-
-
 @lru_cache(maxsize=32)
 def get_table_inspection(workbook_path: str, sheet_name: str) -> Any:
     inspections = inspect_workbook(workbook_path, sheet_name)
     return inspections.get(sheet_name)
-
-
-def clear_table_inspection_cache():
-    get_table_inspection.cache_clear()
 
 
 def clear_workbook_caches():

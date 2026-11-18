@@ -2,64 +2,9 @@ from __future__ import annotations
 
 """Display-focused formatting helpers for localized financial tables."""
 
-from typing import Iterable, Union
+from typing import Iterable
 
 import pandas as pd
-
-
-def format_number_chinese(value: Union[float, int], language: str = "Chi") -> str:
-    if pd.isna(value) or value == 0:
-        return "0"
-
-    is_negative = value < 0
-    abs_value = abs(value)
-
-    # Precision measured from the real deliverable rather than assumed: its
-    # 万元 figures carry 1dp (1,062.8万元) in 99% of cases and its 亿元
-    # figures 2dp (6.65亿元) in 100%. An earlier comment here reasoned that
-    # 万 "adds little real precision" at whole-number scale -- but a report
-    # that writes 1,062.8万元 while the tool writes 1,063万元 is subtly wrong
-    # on every amount, and the team's own convention is the authority.
-    if language == "Chi":
-        if abs_value < 10000:
-            result = f"{abs_value:,.0f}元"
-        else:
-            wan_value = abs_value / 10000
-            if wan_value >= 10000:
-                yi_value = wan_value / 10000
-                result = f"{yi_value:.2f}亿元"
-            else:
-                result = f"{wan_value:.1f}万元"
-        # Bare by default, matching the report convention measured from the
-        # real deliverable (97% of its amounts carry no 人民币 prefix). This
-        # feeds the LLM-unavailable fallback bullet, which would otherwise
-        # emit a form every prompt now forbids.
-        return f"-{result}" if is_negative else result
-
-    if abs_value < 1000000:
-        result = f"{abs_value:,.0f}"
-    else:
-        result = f"{abs_value / 1000000:.1f} million"
-    return f"CNY-{result}" if is_negative else f"CNY{result}"
-
-
-def convert_scientific_to_normal(value: Union[str, float, int]) -> float:
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return 0.0
-    if isinstance(value, (int, float)):
-        return float(value)
-    return 0.0
-
-
-def detect_and_format_amount(value: Union[str, float, int], language: str = "Chi") -> str:
-    return format_number_chinese(convert_scientific_to_normal(value), language)
-
-
-
-
 
 
 def format_value_by_language(value, language: str, _account_name=None) -> str:
@@ -99,7 +44,6 @@ def format_value_by_language(value, language: str, _account_name=None) -> str:
     else:
         formatted = f"CNY{abs_value:,.0f}"
     return f"-{formatted}" if is_negative else formatted
-
 
 
 #: (divisor, label), largest first. One unit is chosen for a WHOLE account and

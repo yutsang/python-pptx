@@ -28,7 +28,7 @@ from __future__ import annotations
 import bisect
 import math
 import os
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from .inspector import contains_unit_marker
 
@@ -487,28 +487,3 @@ def format_coverage(digest: Dict[str, Any]) -> List[str]:
     return lines
 
 
-def sheet_view(digest: Dict[str, Any], sheet: str, max_items: int = 40) -> Optional[Dict[str, Any]]:
-    """What one tab holds, for a reader: status, blocks, labels, remarks, and
-    the largest non-zero figures with whether each reached the model."""
-    s = (digest or {}).get("sheets", {}).get(sheet)
-    if s is None:
-        return None
-    cells = s["cells"]
-    figures = sorted(
-        (i for i, v in enumerate(cells["v"]) if v != 0), key=lambda i: -abs(cells["v"][i])
-    )[:max_items]
-    return {
-        "sheet": sheet, "status": s.get("status"), "accounts": s.get("accounts"), "reason": s.get("reason"),
-        "kind": s.get("kind"), "title": s.get("title"), "shape": s.get("shape"), "blocks": s.get("blocks"),
-        "main_blocks": s.get("main_blocks"), "coverage": s.get("coverage"),
-        "row_labels": dict(list(s.get("row_labels", {}).items())[:max_items]),
-        "col_labels": s.get("col_labels"),
-        "remarks": [t[2] for t in s.get("texts", []) if t[4] == "remark"][:max_items],
-        "largest_figures": [
-            {"row": cells["r"][i], "col": cells["c"][i], "value": cells["v"][i],
-             "row_label": s.get("row_labels", {}).get(str(cells["r"][i])),
-             "col_label": s.get("col_labels", {}).get(str(cells["c"][i])),
-             "reached": cells["reach"][i] or None}
-            for i in figures
-        ],
-    }

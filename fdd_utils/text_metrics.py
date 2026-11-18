@@ -228,8 +228,6 @@ def emu_to_pt(emu: float) -> float:
     return emu / EMU_PER_POINT
 
 
-
-
 # ---------------------------------------------------------------------------
 # Font path resolution
 # ---------------------------------------------------------------------------
@@ -823,35 +821,6 @@ def fit_text_to_box(
 # ---------------------------------------------------------------------------
 # normAutofit XML safety net
 # ---------------------------------------------------------------------------
-
-def add_norm_autofit(
-    text_frame,
-    *,
-    font_scale_pct: float = 100.0,
-    line_space_reduction_pct: float = 0.0,
-) -> None:
-    """Inject `<a:normAutofit fontScale=... lnSpcReduction=.../>` into the
-    text frame's bodyPr.
-
-    PowerPoint reads this on open and shrinks text accordingly. Pass 100.0
-    / 0.0 for a no-op marker. LibreOffice and Keynote ignore this hint, so
-    treat it as a safety net on top of an already-correct Pillow estimate,
-    not the primary fitting mechanism.
-    """
-    from lxml import etree  # local import: only needed when this is called
-
-    body_pr = text_frame._txBody.bodyPr
-    for tag in ("normAutofit", "spAutoFit", "noAutofit"):
-        for el in body_pr.findall(f"{{{A_NS}}}{tag}"):
-            body_pr.remove(el)
-
-    autofit = etree.SubElement(body_pr, f"{{{A_NS}}}normAutofit")
-    autofit.set("fontScale", str(int(round(font_scale_pct * 1000))))
-    if line_space_reduction_pct > 0:
-        autofit.set(
-            "lnSpcReduction",
-            str(int(round(line_space_reduction_pct * 1000))),
-        )
 
 
 # ---------------------------------------------------------------------------

@@ -278,53 +278,6 @@ def apply_financials_authority(
     return applied
 
 
-def authority_note(df: Optional[pd.DataFrame], language: str) -> str:
-    """The instruction that goes with an overridden total: which periods were
-    set from Financials, and what the commentary may not conclude from the
-    tab's own detail for them."""
-    record = (getattr(df, "attrs", None) or {}).get(AUTHORITY_KEY) or {}
-    if not record:
-        analysis = (getattr(df, "attrs", None) or {}).get("prompt_analysis_df")
-        record = (getattr(analysis, "attrs", None) or {}).get(AUTHORITY_KEY) or {}
-    if not record:
-        return ""
-    periods = sorted(record)
-    empty = [p for p in periods if not record[p].get("tab")]
-    adjusted = [(p, record[p].get("adjustments")) for p in periods if record[p].get("adjustments")]
-    if language == "Chi":
-        note = (
-            "【报表口径】本科目在" + "、".join(periods) + "的合计已按财务报表（Financials）金额列示，"
-            "与报表一致；本表在这些期间的明细未随审计/示意性调整更新，加总不等于该合计。"
-            "涉及这些期间的余额、发生额及跨期变动，一律以表中合计为准；"
-            "不得引用这些期间的明细加总，不得据明细写出'无余额''未发生''首次形成'一类结论。"
-        )
-        if empty:
-            note += ("其中" + "、".join(empty) + "本表未列明细，只能陈述合计金额，"
-                     "不得臆造构成；如需说明性质，仅可依据备注。")
-        if adjusted:
-            note += ("【调整依据】工作底稿中金额与上述差额相符的调整分录如下（同一调整列中的借贷两方）："
-                     + " ".join(f"{p}：" + " | ".join(lines) for p, lines in adjusted)
-                     + "。可据此说明该合计与本表明细不同的原因（例如由哪个科目重分类转入），"
-                       "但只陈述分录本身显示的内容。")
-        return note
-    note = (
-        "[STATEMENT BASIS] This account's total for " + ", ".join(periods) + " is shown at the Financials "
-        "sheet's figure, as in the statement table; the tab's own detail for those periods was not updated "
-        "for the audit / indicative adjustments and does not add up to it. For those periods use the total "
-        "in the table for any balance, amount or movement; do not quote the detail's sum, and do not "
-        "conclude 'nil', 'not incurred' or 'first arose' from the detail."
-    )
-    if empty:
-        note += (" For " + ", ".join(empty) + " the tab carries no detail at all: state the total only "
-                 "and do not invent a composition; describe its nature only from the remarks.")
-    if adjusted:
-        note += (" [ADJUSTMENT EVIDENCE] Entries in the working papers equal to that difference (both sides "
-                 "of the same adjustment column): " + " ".join(f"{p}: " + " | ".join(lines) for p, lines in adjusted)
-                 + ". You may use them to explain why the total differs from the tab (e.g. which account it "
-                   "was reclassified from), stating only what the entries show.")
-    return note
-
-
 _BRIDGE_TOTAL_COLUMN = re.compile(r"后|数$|合计|总计|TB|报告|余额")
 _BRIDGE_TOTAL_ROW = re.compile(r"合计|总计|小计")
 BRIDGE_KEY = "adjustment_bridge"
@@ -617,27 +570,3 @@ def attach_adjustment_bridges(dfs: Dict[str, pd.DataFrame], digest: Optional[Dic
     return found
 
 
-def bridge_note(df: Optional[pd.DataFrame], language: str) -> str:
-    bridge = (getattr(df, "attrs", None) or {}).get(BRIDGE_KEY) or {}
-    lines = bridge.get("lines") or []
-    if not lines:
-        return ""
-    notes = bridge.get("related_notes") or []
-    if language == "Chi":
-        text = ("【本科目的审计调整及示意性调整（工作底稿）】" + " | ".join(lines)
-                + "。其中「示意性调整」为我方提出的调整：如与本科目有关，应说明调整内容、金额及原因"
-                  "（原因仅依据上述说明文字或备注）；审计调整可用于解释与管理层报表的差异。")
-        if notes:
-            text += ("【分录对方科目的资料】" + " | ".join(notes)
-                     + "。本科目的变动若可由上述资料解释（例如收益来自对方科目所述的借款），直接据此说明，"
-                       "不要写成原因待确认；外文公司名照原文书写，不要自行译成中文。")
-        return text
-    text = ("[AUDIT AND INDICATIVE ADJUSTMENTS TO THIS ACCOUNT (working papers)] " + " | ".join(lines)
-            + ". Indicative adjustments are ours: where relevant, state what was adjusted, by how much and why "
-              "(the why only from the notes above or the remarks); audit adjustments explain differences from "
-              "the management accounts.")
-    if notes:
-        text += (" [WHAT THE OTHER SIDE OF THESE ENTRIES SAYS] " + " | ".join(notes)
-                 + ". Where this explains the account's movement (e.g. income arising from a loan described there), "
-                   "say so rather than leaving the cause to management.")
-    return text

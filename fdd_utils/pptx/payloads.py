@@ -5,7 +5,7 @@ import re
 
 
 from .text import clean_content_quotes
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -16,12 +16,7 @@ from ..financial_common import (
     load_yaml_file,
     package_file_path,
 )
-from ..keyword_registry import (
-    STATEMENT_ORDER_SKIP_KEYWORDS,
-    SUMMARY_ACCOUNT_SKIP_KEYWORDS,
-    translate_category_to_chinese,
-    translate_statement_line_to_chinese,
-)
+from ..keyword_registry import STATEMENT_ORDER_SKIP_KEYWORDS, translate_statement_line_to_chinese
 from ..workbook import find_mapping_key
 
 
@@ -124,21 +119,6 @@ def _split_text_sentences(text: str, is_chinese: bool) -> List[str]:
     else:
         parts = re.split(r"(?<=[.!?;])\s+", normalized)
     return [part.strip() for part in parts if part and part.strip()]
-
-
-def _join_text_sentences(sentences: List[str], is_chinese: bool) -> str:
-    cleaned = [str(sentence or "").strip() for sentence in sentences if str(sentence or "").strip()]
-    if not cleaned:
-        return ""
-    return "".join(cleaned) if is_chinese else " ".join(cleaned)
-
-
-def _sentence_is_numeric_heavy(sentence: str) -> bool:
-    text = str(sentence or "")
-    numeric_tokens = re.findall(r"\d[\d,.\-]*%?|USD|HKD|RMB|CNY|EUR|JPY|\$", text, flags=re.IGNORECASE)
-    return len(numeric_tokens) >= 2
-
-
 
 
 #: Legal-form tails and place-of-registration brackets carry NO identifying

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 # re-added: bound by an import in another section of the pre-split module
-from ..financial_common import cell_text, coerce_numeric, normalize_financial_date_label
+from ..financial_common import cell_text, coerce_numeric
 
 """
 Workbook profiling helpers for financial databooks.
@@ -9,7 +9,6 @@ Workbook profiling helpers for financial databooks.
 This module inspects sheet structure without applying business mappings so later
 steps can resolve tabs and normalize values using real workbook metadata.
 """
-
 
 
 from functools import lru_cache
@@ -87,10 +86,6 @@ def canonical_stage_label(value: Any) -> Optional[str]:
         if any(variant in text for variant in variants):
             return canonical
     return None
-
-
-def contains_indicative_text(value: Any) -> bool:
-    return canonical_stage_label(value) == "Indicative adjusted"
 
 
 def contains_unit_marker(value: Any, markers: tuple[str, ...] = _UNIT_PATTERNS) -> bool:
