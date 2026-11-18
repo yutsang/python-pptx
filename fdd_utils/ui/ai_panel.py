@@ -377,8 +377,9 @@ def render_ai_generation_section(session_state: Any, get_model_display_name) -> 
 
                 result = agent_run.run_for_state(session_state, progress_callback=progress)
                 if not result.ai_results:
-                    session_state.book_error = (result.stopped or "no account could be written; check that the model is configured "
-                                                f"({get_model_display_name(session_state.get('model_type', 'local'))}) and reachable")
+                    session_state.book_error = (result.stopped or result.first_error
+                                                or "no account could be written; check that the model is configured "
+                                                   f"({get_model_display_name(session_state.get('model_type', 'local'))}) and reachable")
                     progress_placeholder.empty()
                     st.rerun()
                 session_state.update(agent_run.book_state(result))

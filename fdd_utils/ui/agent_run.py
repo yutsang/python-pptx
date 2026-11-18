@@ -57,10 +57,11 @@ def run_for_state(session_state: Any, *, progress_callback: Optional[Callable[..
         mapping_overrides=dict(session_state.get("mapping_overrides") or {}) or None,
         model_type=session_state.get("model_type", "local"), model_name=session_state.get("model_name"),
         language=session_state.get("language") or "")
-    return _run(work, progress_callback, deck_out_path(session_state.get("entity_name") or session_state.get("project_name")))
+    remarks = {key: text for key, text in (session_state.get("account_comments") or {}).items() if str(text or "").strip()}
+    return _run(work, progress_callback, deck_out_path(session_state.get("entity_name") or session_state.get("project_name")), remarks)
 
 
-def _run(work: Any, progress_callback: Optional[Callable[..., Any]], out_path: str = "") -> Any:
+def _run(work: Any, progress_callback: Optional[Callable[..., Any]], out_path: str = "", guidance: Optional[Dict[str, str]] = None) -> Any:
     from ..agent import book as B
     accounts = work.entity_accounts()
     done = [0]
@@ -70,7 +71,7 @@ def _run(work: Any, progress_callback: Optional[Callable[..., Any]], out_path: s
         if progress_callback is not None:
             progress_callback(done[0], len(accounts), key)
 
-    return B.run_book(work, accounts, on_account=on_account, out_path=out_path)
+    return B.run_book(work, accounts, on_account=on_account, out_path=out_path, guidance=guidance)
 
 
 def run_for_entity(*, extracted: Dict[str, Any], model_type: str = "local", model_name: Optional[str] = None,
@@ -91,7 +92,8 @@ def run_for_entity(*, extracted: Dict[str, Any], model_type: str = "local", mode
     accounts = work.entity_accounts()
     book = _run(work, progress_callback, deck_out_path(entity_name))
     if not book.deck_path:
-        result.update(status="failed", error=f"no deck was written: [{book.error.get('code')}] {str(book.error.get('message') or book.stopped)[:300]}")
+        result.update(status="failed", error=f"no deck was written: [{book.error.get('code')}] "
+                                             f"{str(book.error.get('message') or book.stopped or book.first_error)[:300]}")
         return result
     state = book_state(book)
     raw = internal["raw_state"]

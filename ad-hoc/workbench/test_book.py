@@ -119,6 +119,17 @@ class RunBook(unittest.TestCase):
         self.assertIn("agent_4_validation", result)
         self.assertEqual(result["agent_4_validation"]["clause_reviews"][0]["supported"], True)
 
+    def test_a_persons_remarks_on_an_account_reach_that_accounts_writer_and_only_that_one(self):
+        work = two_account_work(finishes_one_account)
+        B.run_book(work, overview=False, deck=False, issues_dir=None, guidance={ACCOUNT: "请说明租金回款的节奏", OTHER: "  "})
+        users = work.model.users
+        mine = [u for u in users if "EVIDENCE for 应收账款" in u]
+        other = [u for u in users if f"EVIDENCE for {OTHER}" in u]
+        self.assertTrue(mine and all("请说明租金回款的节奏" in u for u in mine))
+        self.assertTrue(other and all("补充要求" not in u for u in other), "blank remarks add nothing")
+        self.assertIn("补充要求", B.request_for(ACCOUNT, "x"))
+        self.assertEqual(B.request_for(ACCOUNT, ""), f"根据工作簿中的证据，撰写{ACCOUNT}的报告段落")
+
     def test_the_refused_account_is_kept_as_a_case_and_nothing_else_is_written_to_disk_without_a_folder(self):
         work = two_account_work(finishes_one_account)
         with tempfile.TemporaryDirectory() as folder:
@@ -126,6 +137,17 @@ class RunBook(unittest.TestCase):
             kept = list(Path(folder).rglob("*.json"))
         self.assertEqual(result.issue_cases, 1)
         self.assertEqual(len(kept), 1)
+
+
+class WhatWentWrong(unittest.TestCase):
+    def test_a_provider_that_is_not_configured_is_named_not_just_counted(self):
+        def refuses(system, user, n):
+            raise ValueError("the primary model asks for provider 'dashscope', which is not configured here")
+        work = two_account_work(refuses)
+        result = B.run_book(work, overview=False, deck=False, issues_dir=None)
+        self.assertEqual(result.finished, [])
+        self.assertIn("not configured here", result.first_error)
+        self.assertTrue(any("NO ACCOUNT WAS WRITTEN. First problem" in line and "not configured here" in line for line in result.summary_lines("x")))
 
 
 class CommandLine(unittest.TestCase):

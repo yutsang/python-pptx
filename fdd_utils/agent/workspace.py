@@ -328,16 +328,17 @@ class WorkSession:
         return result
 
     def draft_entity(self, accounts: Optional[List[str]] = None, instruction: str = "", on_account: Optional[Callable[..., Any]] = None,
-                     on_review: Optional[Callable[..., Any]] = None) -> Dict[str, Any]:
+                     on_review: Optional[Callable[..., Any]] = None, instructions: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """Every in-scope account written from its own evidence, one edit turn each, accepted when the verifier passes it.
 
         The state decides the order and the scope; each account is an independent task, so each turn starts with a fresh memory
         (the earlier accounts' answers are not resent in every prompt). Nothing is copied from a base run: an account the model
-        could not finish has no paragraph, and the export says so. `on_account(key, turn)` is called after each account."""
+        could not finish has no paragraph, and the export says so. `on_account(key, turn)` is called after each account.
+        `instructions` gives an account its own request (a person's remarks on it), which wins over `instruction`."""
         keys = [k for k in (accounts or self.entity_accounts()) if k in self.source.contracts]
         rows = []
         for key in keys:
-            text = instruction or f"根据工作簿中的证据，撰写{key}的报告段落"
+            text = (instructions or {}).get(key) or instruction or f"根据工作簿中的证据，撰写{key}的报告段落"
             try:
                 turn = self._run(text, "edit", key, memory=Memory())
             except R.BudgetExhausted as exc:

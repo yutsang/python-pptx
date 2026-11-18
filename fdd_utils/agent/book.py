@@ -123,6 +123,20 @@ class BookResult:
         return self.work.shared.summary()
 
     @property
+    def first_error(self) -> str:
+        """The first thing that went wrong with a model or an account, in the words it was reported in ('' when nothing did): a provider
+        that is not configured, a refused key, a timeout. Without it a run in which no account could be written says only that."""
+        for row in self.rows:
+            if row.get("error"):
+                return str(row["error"])[:300]
+        for turn in getattr(self.work, "turns", []):
+            report = getattr(turn, "report", None) or {}
+            for key in ("model_error", "error"):
+                if report.get(key):
+                    return str(report[key])[:300]
+        return ""
+
+    @property
     def marked(self) -> List[str]:
         """Drafts carried into the deck with the sentences the verifier refused marked (red or orange)."""
         from . import tools as T
@@ -137,6 +151,8 @@ class BookResult:
                  f"not drafted {len([a for a in self.accounts if a not in finished and a not in marked])}"]
         if self.stopped:
             lines.append(f"STOPPED: {self.stopped}")
+        if not finished and self.first_error:
+            lines.append(f"NO ACCOUNT WAS WRITTEN. First problem: {self.first_error}")
         if self.overview:
             lines.append("executive summary written for: " + ", ".join(sorted(self.overview)))
         elif self.overview_error:
@@ -163,11 +179,20 @@ def results_for_deck(work: Any) -> Dict[str, Any]:
     return merged_results(work.source, work.first_generation_accounts(), first_generation=True)
 
 
+def request_for(account: str, guidance: str = "") -> str:
+    """What an account is asked: its paragraph, from the evidence, and a person's remarks on it when there are some."""
+    text = f"根据工作簿中的证据，撰写{account}的报告段落"
+    guidance = str(guidance or "").strip()
+    return f"{text}。使用者对这个科目的补充要求（只在证据支持时采纳）：{guidance}" if guidance else text
+
+
 def run_book(work: Any, accounts: Optional[List[str]] = None, *, on_account: Optional[Callable[..., Any]] = None,
              on_review: Optional[Callable[..., Any]] = None, overview: bool = True, deck: bool = True, out_path: str = "",
-             issues_dir: Optional[Any] = ISSUE_DIR, max_calls: Optional[int] = None, max_tokens: Optional[int] = None) -> BookResult:
+             issues_dir: Optional[Any] = ISSUE_DIR, max_calls: Optional[int] = None, max_tokens: Optional[int] = None,
+             guidance: Optional[Dict[str, str]] = None) -> BookResult:
     """Write every account in scope (or `accounts`), the overviews, and export the deck. `on_account(key, turn)` is called as each
-    account finishes. Returns what was written; a model that failed or a budget that ran out is in the result, not raised."""
+    account finishes; `guidance` is a person's remarks per account (the app's "User remarks"), put to the writer with that account's
+    request. Returns what was written; a model that failed or a budget that ran out is in the result, not raised."""
     from . import routing as R
     started = time.perf_counter()
     keys = list(accounts or work.entity_accounts())
@@ -178,7 +203,8 @@ def run_book(work: Any, accounts: Optional[List[str]] = None, *, on_account: Opt
     work.shared.limits.max_tokens = tokens          # a book's guard replaces the session cap of an ask or edit (None: no cap)
     result = BookResult(work=work, accounts=keys)
     work.deck["whole_book"] = {"at": time.strftime("%Y-%m-%dT%H:%M:%S"), "accounts": len(keys)}     # the session's drafts are now the deck
-    done = work.draft_entity(keys, on_account=on_account, on_review=on_review)
+    remarks = {k: request_for(k, v) for k, v in (guidance or {}).items() if str(v or "").strip()}
+    done = work.draft_entity(keys, on_account=on_account, on_review=on_review, instructions=remarks or None)
     result.rows = done["rows"]
     result.stopped = next((r.get("error") or "the model-call budget of this run was reached" for r in done["rows"]
                            if r.get("stop_reason") == "budget_session"), "")
@@ -207,7 +233,7 @@ def redraft(work: Any, account: str, guidance: str = "") -> Dict[str, Any]:
     the commentary tabs read it, or {} when the model did not finish it (the earlier draft stands)."""
     from ..ai import claims as cl
     key = work.source.resolve_account(account) or account
-    work.draft_entity([key], instruction=guidance.strip())
+    work.draft_entity([key], instructions={key: request_for(key, guidance)})
     candidate = work.source.candidates.get(key)
     if candidate is None or not candidate.claims:
         return {}
