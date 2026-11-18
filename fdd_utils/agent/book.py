@@ -137,6 +137,21 @@ class BookResult:
         return ""
 
     @property
+    def why_no_text(self) -> str:
+        """Why no account has a paragraph, in words: the first real error if there was one, else how the accounts ended (a model that
+        answered but whose sentences the verifier would not carry is not a model that is unreachable)."""
+        if self.first_error:
+            return self.first_error
+        stops: Dict[str, int] = {}
+        for row in self.rows:
+            stops[str(row.get("stop_reason") or "?")] = stops.get(str(row.get("stop_reason") or "?"), 0) + 1
+        if not stops:
+            return ""
+        ended = ", ".join(f"{k}: {n}" for k, n in sorted(stops.items(), key=lambda kv: -kv[1])[:3])
+        return (f"the model answered, but none of the {len(self.accounts)} accounts produced a paragraph with a sentence the verifier "
+                f"would carry ({ended}); try another model, or read what the writer was shown with inspect_evidence.py")
+
+    @property
     def marked(self) -> List[str]:
         """Drafts carried into the deck with the sentences the verifier refused marked (red or orange)."""
         from . import tools as T
@@ -151,8 +166,8 @@ class BookResult:
                  f"not drafted {len([a for a in self.accounts if a not in finished and a not in marked])}"]
         if self.stopped:
             lines.append(f"STOPPED: {self.stopped}")
-        if not finished and self.first_error:
-            lines.append(f"NO ACCOUNT WAS WRITTEN. First problem: {self.first_error}")
+        if not finished and not self.marked and self.why_no_text:
+            lines.append(f"NO ACCOUNT WAS WRITTEN. {self.why_no_text}")
         if self.overview:
             lines.append("executive summary written for: " + ", ".join(sorted(self.overview)))
         elif self.overview_error:

@@ -147,7 +147,21 @@ class WhatWentWrong(unittest.TestCase):
         result = B.run_book(work, overview=False, deck=False, issues_dir=None)
         self.assertEqual(result.finished, [])
         self.assertIn("not configured here", result.first_error)
-        self.assertTrue(any("NO ACCOUNT WAS WRITTEN. First problem" in line and "not configured here" in line for line in result.summary_lines("x")))
+        self.assertTrue(any("NO ACCOUNT WAS WRITTEN." in line and "not configured here" in line for line in result.summary_lines("x")))
+
+
+    def test_a_model_that_answered_but_was_never_accepted_is_not_called_unreachable(self):
+        def wrong_only(system, user, n):
+            view = writer_view(user)
+            move = next(d["ref"] for d in view["derived"] if d["kind"] == "movement")
+            wrong = {"kind": "movement", "periods": [P1, P2], "cites": [move], "text": "较2024年12月31日增加99.0万元"}
+            return {"fix": [{"index": 0, "claim": wrong}], "add": []} if "REJECTED" in user else {"draft": {"claims": [wrong], "unresolved": []}}
+        work = two_account_work(wrong_only)
+        result = B.run_book(work, overview=False, deck=False, issues_dir=None)
+        self.assertEqual((result.finished, result.marked), ([], []))
+        self.assertEqual(result.first_error, "")
+        self.assertIn("the model answered", result.why_no_text)
+        self.assertNotIn("not configured", result.why_no_text)
 
 
 class CommandLine(unittest.TestCase):
