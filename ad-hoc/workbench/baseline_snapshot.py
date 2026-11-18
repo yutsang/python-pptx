@@ -3,6 +3,7 @@
     python ad-hoc/workbench/baseline_snapshot.py save  <label>      write the snapshot of the code as it is now
     python ad-hoc/workbench/baseline_snapshot.py check <label>      read it again with the code as it is now; any difference exits 1
     python ad-hoc/workbench/baseline_snapshot.py check <label> --books "Project Gold"      only the books whose name contains this
+    python ad-hoc/workbench/baseline_snapshot.py save  <label> --dir databooks --books A   books in another folder (the paid sessions found for them are read too)
 
 Per local databook (every .xlsx in the repo root whose sessions or contracts can be read), three things are hashed:
     CONTRACTS   every account's evidence contract, as extracted now (what Python reads from the workbook)
@@ -42,9 +43,12 @@ def sha(obj: Any) -> str:
     return hashlib.sha256(json.dumps(obj, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
 
 
+BOOKS_DIR = ROOT
+
+
 def local_books() -> Dict[str, str]:
-    return {hashlib.sha256(Path(b).read_bytes()).hexdigest(): b for b in sorted(glob.glob(str(ROOT / "*.xlsx")))
-            if "reconciliation_report" not in b}
+    return {hashlib.sha256(Path(b).read_bytes()).hexdigest(): b for b in sorted(glob.glob(str(BOOKS_DIR / "*.xlsx")))
+            if "reconciliation_report" not in b and not Path(b).name.startswith("~$")}
 
 
 def open_work(book: str):
@@ -223,7 +227,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("action", choices=["save", "check"])
     ap.add_argument("label")
     ap.add_argument("--books", default="", help="only the books whose file name contains this")
+    ap.add_argument("--dir", default="", help="the folder of databooks (default: the repo root; the company machine's is databooks)")
     args = ap.parse_args(argv)
+    global BOOKS_DIR
+    BOOKS_DIR = Path(args.dir).resolve() if args.dir else ROOT
     path = OUT / f"{args.label}.json"
     print(f"BASELINE {args.action} {args.label}")
     saved_snapshot = json.loads(path.read_text(encoding="utf-8")) if args.action == "check" and path.exists() else None
