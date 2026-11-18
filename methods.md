@@ -15,51 +15,48 @@ Every statement below carries one of four labels.
 | **Not verified** | Implemented or asserted, with no reproducible check here. Needs a provider, Windows PowerPoint, or the company machine. |
 | **Not built** | Described as a limit or a plan. No code. |
 
-Two paths exist. The fixed pipeline (Generator, Auditor, selective Validator)
-is the production default and is unchanged except where stated. The agent path
-(`fdd_utils/agent`, `fdd_agent.py`) is off by default. The checks in sections 2
-to 6 serve both.
+One path exists: the agent (`fdd_utils/agent`; the app, `fdd_agent.py book` and `inspect_databook.py --run-ai` all run it). The fixed
+pipeline (Generator, Auditor, selective Validator) that was the production default until 2026-11-19 was removed that day; section 1
+says what replaced each part, and the git tag `pre-slim-20261119` holds the code as it was. The checks in sections 2 to 6 serve the
+agent.
 
 ---
 
-## 1. The fixed pipeline (production default)
+## 1. The whole databook, written by the agent
 
 ```
-data for ONE account ──► Generator ──► Auditor ──► [ Validator ]  (only if the text claims a cause)
-                                          │
-                                  verify_commentary: arithmetic against the account's own source data
-                                          │
-                  data-backed │ reasoning │ hallucination
-                                          │
-                 any hallucination? ── no ──► done
-                         │ yes
-                 name the bad amounts, retry (up to 3 attempts)
-                         │ exhausted
-                 arbiter keeps the attempt with the fewest hallucinations
-                         │
-                 delivery decision (section 3): a kept attempt that still has one is BLOCKED
+workbook ──► evidence contract per account (facts F, derived D, notes N: every figure with its sheet, row, period and basis)
+                 │
+  accounts in scope (section 2) ── one prepared write each: the controller reads the evidence, the model writes sentences that cite it
+                 │
+        claim verifier (sections 4 to 6): each sentence is held to the facts it cites
+                 │ a refused sentence goes back to the writer alone (up to the rejection limit)
+                 │ a sentence refused only for how its prose was read is read by the agent, and Python holds that reading to the evidence
+                 │
+  executive summary of each statement, from the finished paragraphs, each sentence verified (agent/overview.py)
+                 │
+  one deck: accepted paragraphs, plus the drafts the verifier did not accept with their refused sentences marked
+  (red: a figure the databook does not support, or a sentence the agent read and found wrong; orange: refused only for how its
+  prose was read) ──► delivery decision (section 3) ──► layout check of every slide
 ```
 
-- **Stateless calls.** Each stage gets `[system, user]` with no conversation, so
-  the Auditor reads the Generator's text cold. A timed-out call is resent with
-  the same prompt and a circuit breaker stops a stage that keeps failing.
-  *Verified offline* (`ad-hoc/workbench/replay_pipeline_state.py`).
-- **The judge of amounts is arithmetic.** `verify_commentary` checks every amount
-  against the account's own source data and its verdict outranks the model's
-  in both directions. *Verified offline* (`ad-hoc/workbench/test_validator_defects.py`).
-- **The retry gate is `hallucination` only.** A `reasoning` flag (numbers right,
-  inference unproven) never fires a retry by itself; the deck renders it in
-  orange. A ratio of unsupported clauses stays as a backstop at the configured
-  share. *Verified offline* (`pipeline.count_defective_clauses`, covered by
-  `test_delivery_decision.py`).
-- **Bounded attempts and the arbiter.** The budget of 3 attempts and the rule
-  "keep the best attempt, not the last" rest on the observation that
-  re-generation is not monotonically better. That observation is a design
-  rationale. The explanation usually given for it (a model agrees with
-  "that was wrong" whether or not it was) is **Not verified**: this repo has no
-  experiment that separates it from other causes.
-- **Narrow Validator.** It runs only where the text asserts a cause. Whether
-  that saves quality as well as tokens is **Not verified**.
+`fdd_utils/agent/book.py` is that path; `ad-hoc/workbench/entity_trial.py` runs it with the measurements around it. What it replaced:
+
+- **The Generator and Auditor** are one prepared write (the controller reads the evidence itself; the model writes once; a repair
+  touches only the sentences that failed). The Auditor's cold re-read became the verifier, which does not depend on a model.
+- **The Validator and `verify_commentary`** (a pool search: an amount was "data-backed" if its size existed anywhere in the statement) became the
+  claim verifier of sections 4 to 6, where a figure has to be the one the sentence cites, for the period it names. The old check accepted a
+  material share of deliberately wrong magnitudes; the new one is measured in section 6.
+- **The retry gate, the arbiter and the feedback loop** became the rejection limit and the per-sentence repair, and the delivery decision
+  blocks a deck that still carries a refused sentence.
+- **The per-account prompt templates** (`mappings.yml` patterns and prompt text, `prompts.yml`) are gone; the writer is given the evidence
+  and a short house-style brief (`agent/controller.py`). `mappings.yml` keeps each account's key, type, category and aliases, and the
+  team's reference sentences.
+
+Offline checks: `python ad-hoc/workbench/test_book.py`, `test_app_book.py` and `test_app_flows.py` (the app on a real workbook with a
+scripted writer), and `python ad-hoc/workbench/baseline_snapshot.py check <label>`, which proves that a change to the code left the
+agent's contracts, the verdict on every generated sentence, the verdicts on saved paid sessions and the scripted whole deck of every local
+databook exactly as they were. **Not verified** here: what a model writes, and real PowerPoint.
 
 ## 2. Which accounts are sent to commentary
 
@@ -74,7 +71,7 @@ with history (Financials line nil in the two latest periods), or excluded
 - Admitted keys are never a superset of the old function's. **Verified**:
   `python ad-hoc/workbench/test_reconciliation_selection.py` (includes the old
   function as a negative control and an exhaustive status-combination property
-  test), `python ad-hoc/workbench/selection_parity.py <databook>`.
+  test).
 - On local test workbooks the new rule excludes some accounts the old one
   admitted. All of them are accounts no Financials line reconciles to, or a
   `❌ Diff` line. Whether the project team wants those back, flagged instead of
@@ -100,17 +97,15 @@ and the run identity.
   (`_DRAFT-BLOCKED`, `_REVIEW`), a `<deck>.delivery.json` sidecar, and the deck's
   own document properties. No slide is changed. A caller that did not assess the
   deck gets `review_required`. A combined deck takes its worst part.
-- **Verified offline**: `test_delivery_decision.py`, the stub run
-  (`ad-hoc/workbench/stub_inspect_run.py <databook> --export`) and
-  `test_offline_reexport.py`.
+- **Verified offline**: `test_delivery_decision.py`, and `test_app_flows.py` (the banner and the batch download on a real workbook with a
+  scripted writer).
 - **Not verified**: how the labelled deck behaves in the Streamlit UI beyond
   import and syntax (the UI banner and the batch download label were not
   exercised in a browser).
 
 ## 4. Evidence contract and claim verification
 
-`fdd_utils/ai/evidence_contract.py` extends `AccountEvidence`. For each account
-it keeps three bases apart: the tab's own figure (`raw_schedule`), the Financials
+`fdd_utils/ai/evidence_contract.py` builds the contract of each account. It keeps three bases apart: the tab's own figure (`raw_schedule`), the Financials
 figure, and the figure the deck uses after the "deck follows Financials" rule
 (`authority_adjusted`). It records a check per account, period and kind (tab total
 against Financials; detail against total) with statuses `pass`, `mismatch`,
@@ -259,12 +254,9 @@ wording the pattern list does not recognise is not screened at all; citing a not
   written by the same author as the verifier. This is not a measurement of
   model-written text. **Not verified**: false-accept and false-reject rates on
   claims a real model writes.
-- The older pool search (`SourceIndex.matches`) remains in the fixed pipeline.
-  **Re-measured on the current revision**, `replay_verification.py --decoys`
-  (seed 1234, one local test workbook): a material share of deformed real values
-  (tenfold, one-tenth, transposed digits, jitter) is still accepted. Figures
-  quoted in earlier versions of this file came from a different workbook and are
-  not reproducible here.
+- The older pool search (`SourceIndex.matches`) was removed with the fixed pipeline (2026-11-19). Measured before it went (seed 1234, one
+  local test workbook), a material share of deformed real values (tenfold, one-tenth, transposed digits, jitter) was still accepted by it;
+  the claim verifier holds a figure to the one the sentence cites.
 
 ## 5. Tools and the controller
 
@@ -485,7 +477,7 @@ never holds a prompt, a key or the config.
 Manual mapping overrides are the user's: the CLI's `/override`, `--mapping-override`
 and the app's existing override control set them; no tool can. They are part of
 the source binding, so changing one changes the source version and every draft
-is rebound as below. `/base-run` binds a legacy run as the base commentary; the
+is rebound as below. `/base-run` binds an archived pipeline run as the base commentary (such runs are no longer made; the ones on disk can still be edited); the
 run is checked against the workbook and an export refuses one that does not
 describe it.
 
@@ -508,10 +500,10 @@ the session reads it again and decides per draft in three layers:
 A session file saved without that record cannot show the account did not move,
 and says so when it is opened against other bytes.
 
-Exports and updates. An export needs a base run (the legacy commentary of every
-other account); without one it is refused with the first-generation path: the
-legacy command that writes the whole entity, then `/base-run`. A deck of a few
-accounts is never presented as the report. An update of a returned deck writes
+Exports and updates. A session that wrote the whole book (`fdd_utils/agent/book.py`: the app's run, `fdd_agent.py book`) exports its accepted
+drafts as the deck. A session over an archived run (`/base-run`) exports its edits over that run's commentary. A session with neither is
+refused with the first-generation path: write the whole entity (`python fdd_agent.py book <workbook> --session FILE`), then export from that
+session. A deck of a few accounts is never presented as the report. An update of a returned deck writes
 a copy and is `complete` only when nothing was left: a paragraph a person edited
 whose figures moved (a conflict, never overwritten), an account that runs across
 paragraphs (needs the deck re-packed), an edited table or an unlocated paragraph
@@ -994,25 +986,17 @@ to test on.
 
 ## 7. Switching and rolling back
 
-The agent path is off. `FDD_AGENT=1`, or `agent.enabled: true` in `config.yml`,
-turns on the model commands of `fdd_agent.py` (`ask`, `edit`, `chat`, `report`)
-and the app panel. The free commands (`summary`, `diff`, `deck`, `candidates`,
-`accept`, `export`, `strip`) always run. Routing is `single` unless
-`agent.routing: escalate`, `FDD_AGENT_ROUTING` or `--routing` says otherwise.
-Nothing in the fixed pipeline reads either setting. Rollback is unsetting them. **Verified offline**: the
-flag and the CLI are covered in `test_agent_tools.py` and `test_agent_flows.py`.
+There is no switch: the agent is the one path (the fixed pipeline it replaced was removed on 2026-11-19, and `agent.enabled` and
+`FDD_AGENT` are no longer read). What a person can still choose: the model (the app's dropdown, `--model` / `--model-name`, or
+`agent.models` in `config.yml`, which wins), the routing (`single`, or `escalate` with a second model: `agent.routing`,
+`FDD_AGENT_ROUTING` or `--routing`), and the limits (`agent.max_calls_per_account` for a whole book, `agent.max_model_calls` for one
+ask or edit session). Rolling back means checking out the git tag `pre-slim-20261119`. **Verified offline**: the limits and the CLI are
+covered in `test_agent_tools.py`, `test_book.py` and `test_agent_flows.py`.
 
 ## 8. Known limits
 
-- Bare numbers and percentages are not extracted as amounts by the fixed
-  pipeline's verifier, so a wrong ratio there is never caught. The claim
-  verifier checks percentages that appear with `%`.
-- A `data-backed` verdict in the fixed pipeline covers both "the numbers
-  matched" and "nothing here was checkable".
-- The frequency of verdicts across archived runs (roughly one clause in sixty
-  comes back unsupported, about a quarter of those arithmetic) was read from
-  archives that are not in this repository. **Not verified** on the current
-  revision, and frequency is not accuracy.
+- The claim verifier checks percentages that appear with `%`; a bare number in a sentence is not read as an amount, so a wrong ratio
+  written without `%` is not caught.
 - A tab's history-activity test (`any_period_nonzero_by_description`) is read
   from every block on a sheet, so a sheet holding several accounts can look
   active for an account that is not.
@@ -1081,6 +1065,9 @@ FDD_FLOW_WORKBOOK=<databook.xlsx> FDD_FLOW_BASE_RUN=<run id> python ad-hoc/workb
 python ad-hoc/workbench/entity_trial.py run --databook <databook.xlsx> --scripted [--arms pro,flash,mixed,loop]   free, the whole flow
 python ad-hoc/workbench/baseline_pack.py --databook <databook.xlsx> [--out for_test/<pack>]   free; --verify <pack> checks one
 python ad-hoc/workbench/claim_eval.py <databook.xlsx>             false accept / reject of the claim verifier
-python ad-hoc/workbench/shadow_compare.py <databook.xlsx> --base-run <id>
-PYTHONPATH=. python ad-hoc/workbench/replay_verification.py <databook.xlsx> --run <id> --decoys
+python ad-hoc/workbench/baseline_snapshot.py save|check <label> [--dir <folder>] [--books <name>]   free; the agent's outputs before and after a change
+python ad-hoc/workbench/import_audit.py --all                     every import, and every self.method() call, still resolves
+python ad-hoc/workbench/issue_cases.py replay                     the sentences earlier paid runs had refused, read again by the verifier as it is
+python ad-hoc/workbench/config_report.py                          what this machine's config.yml does, against the example; no secret in it
+python fdd_agent.py book <databook.xlsx> --model <provider> --model-name <id>   the whole databook (model calls)
 ```

@@ -1,7 +1,8 @@
 # Financial Due Diligence (FDD) Tool
 
-Automated financial commentary generation from Excel databooks, powered by a
-multi-stage AI pipeline with reconciliation and PowerPoint export.
+Financial commentary from Excel databooks: the workbook is read and reconciled in code, an
+agent writes each account from its own evidence, every sentence is checked against the
+workbook before it can reach a slide, and the result is exported to PowerPoint.
 
 ---
 
@@ -38,267 +39,159 @@ pip install -r requirements.txt
 streamlit run fdd_app.py
 ```
 
+Upload a databook, set the entity and the Financials sheet, press **Process Data**. The reading and reconciliation cost
+nothing; the commentary then starts by itself and **is paid for** (the model in the sidebar's dropdown writes every account in
+scope). The dropdown starts on the model named by `default` in `config.yml`; Flash is enough for the whole report, Pro is there
+when a person wants the stronger one. The same run from the command line: `python fdd_agent.py book <databook.xlsx> --model
+<provider> --model-name <id>`.
+
 ---
 
-## Pipeline
-
-**藍**是程式算出來的，**橙**是模型寫的，**綠**是這一次跑完留在硬碟上的，
-**灰虛線**是出錯時的退路。橙色只有四塊，其中三塊都只是在寫字；模型唯一一次做
-裁決，是判斷一句因果講不講得通。金額、對數、重試與否、留哪一次、版面怎麼排，
-全部藍色。
-
-看圖先看綠色那個六角形。**prompt 從它渲染，驗證者也讀它**——同一份東西。這條
-分岔是整套設計的地基：檢查者看見的絕不會比模型少。曾經兩邊各自重建一份，縫隙
-裡出過五次同一種錯，每次都是模型引用了一個檢查者根本不知道的數字，然後被判
-「查無此數」。
-
-另外兩個位置值得留意。哪些科目配明細表，是在寫任何 prompt **之前**就全份 deck
-一次裁決完的，所以文字不可能承諾一張畫不出來的表。而這一次跑完之後，證據池不
-會消失：幾個月後不用再開 Excel，也答得出某個數字是哪一格來的。
+## How a databook becomes a deck
 
 ```mermaid
 flowchart TD
     classDef det  fill:#E8F0FE,stroke:#1A56DB,stroke-width:2px,color:#0B2A6B
     classDef llm  fill:#FFF1E0,stroke:#E8710A,stroke-width:2px,color:#7A3E00
     classDef pool fill:#E6F4EA,stroke:#137333,stroke-width:3px,color:#0B3D1E
-    classDef keep fill:#F0F7F2,stroke:#137333,stroke-width:2px,color:#0B3D1E
-    classDef edge fill:#FFFFFF,stroke:#5F6368,stroke-width:2px,color:#202124
-    classDef weak fill:#F1F3F4,stroke:#9AA0A6,stroke-width:1px,color:#5F6368
     classDef gate fill:#FEF7E0,stroke:#B06000,stroke-width:2px,color:#5C3A00
+    classDef edge fill:#FFFFFF,stroke:#5F6368,stroke-width:2px,color:#202124
 
-    XL["Excel 底稿"]
-    OUT["最終簡報 .pptx"]
+    XL["Excel databook"]
+    OUT["PowerPoint deck + delivery decision"]
 
-    subgraph S1["① 先把事實算清楚 — 全程無模型"]
+    subgraph S1["1. Facts, in code (no model)"]
         direction TB
-        RES["識別與對應<br/>分頁性質 · 科目"]
-        NORM["標準化<br/>調整後各期"]
-        REC["對數<br/>分頁合計 vs 財務報表"]
-        SUB["表格入選裁決<br/>全份 deck 一次定"]
-        FACT["事實表<br/>期間變動 · 重大性<br/>構成殘差 · 集中度"]
-        RES --> NORM --> REC --> SUB --> FACT
+        RES["identify tabs and accounts"]
+        NORM["normalise schedules"]
+        REC["reconcile tabs against the Financials sheet"]
+        SEL["decide which accounts get commentary"]
+        RES --> NORM --> REC --> SEL
     end
 
-    EV{{"每個科目一個證據池<br/>模型獲准引用的每一格<br/>來源分頁 · 行 · 期間 · 乘數"}}
+    EV{{"evidence contract per account<br/>every figure with its sheet, row, period and basis<br/>computed movements, shares, gaps · the workbook's notes"}}
 
-    subgraph S2["② 模型只負責語言"]
+    subgraph S2["2. The agent writes (one account at a time)"]
         direction TB
-        GEN["生成初稿"]
-        AUD["覆核<br/>冷讀，不帶上一輪對話"]
-        GEN --> AUD
+        WR["write sentences that cite the evidence"]
+        VER["verify each sentence against what it cites<br/>period, line, sign, unit, rounding, cause"]
+        FIX["a refused sentence goes back alone"]
+        WR --> VER
+        VER -->|"refused"| FIX --> WR
     end
 
-    subgraph S3["③ 判決 — 算術先行"]
-        direction TB
-        CHK["逐句核對金額<br/>算術，不是模型"]
-        VAL["宣稱因果時才判斷<br/>唯一交給模型的裁決"]
-        CHK --> VAL
-    end
-
-    GATE{"有找不到<br/>來源的數字？"}
-    RE["指名錯處<br/>只重寫該科目"]
-    ARB["仲裁<br/>留缺陷最少那次<br/>不是最後一次"]
-    HS["房屋風格<br/>零期間退出列舉 · 單位小數 · 公司名"]
-    SUM["執行摘要"]
-    PACK["量度真實高度並分欄<br/>字型度量，不是字數估算"]
-    HAR["逾時重送 · 階段熔斷<br/>最後退回純資料摘要"]
-    QA["匯出後檢查<br/>溢出 · 壓字 · 佔位符"]
-
-    subgraph S4["④ 這一次跑完留下來的"]
-        direction LR
-        DISK[("證據池 · 稽核軌跡<br/>階段斷點 · 逐句判決")]
-        ANA["分析層<br/>隱含利率 · 週轉天數<br/>轉固 · 集中度 · 留抵稅"]
-        ASK["提問<br/>答案受同一把尺"]
-        DISK --> ANA
-        DISK --> ASK
-    end
+    SUM["executive summary of each statement<br/>from the finished paragraphs, each sentence verified"]
+    MARK["a sentence still refused is kept in the deck, marked<br/>red: not supported · orange: read differently"]
+    DEC{"delivery decision<br/>ready · review · blocked"}
+    PACK["measure real text height, pack and split<br/>then check every slide's layout"]
 
     XL --> RES
-    FACT --> EV
-    EV -->|"prompt 由此渲染"| GEN
-    EV -->|"驗證者讀同一份"| CHK
-    AUD --> CHK
-    VAL --> GATE
-    GATE -->|"有"| RE
-    RE -->|"最多 3 次"| GEN
-    GATE -->|"沒有"| ARB
-    RE -.->|"次數用盡"| ARB
-    ARB --> HS --> SUM --> PACK --> OUT
+    SEL --> EV --> WR
+    VER -->|"verified"| SUM
+    VER -->|"limit reached"| MARK
+    SUM --> DEC
+    MARK --> DEC
+    DEC --> PACK --> OUT
 
-    EV ==> DISK
-    ANA -.->|"寫入內部發現清單"| SUM
-
-    GEN -.->|"呼叫失敗"| HAR
-    HAR -.-> CHK
-    GEN -.->|"死在中途就從斷點接回"| DISK
-    OUT -.->|"僅 CLI"| QA
-
-    class XL,RES,NORM,REC,SUB,FACT,CHK,RE,ARB,HS,PACK,ANA det
-    class GEN,AUD,VAL,SUM llm
+    class XL,RES,NORM,REC,SEL,VER,PACK det
+    class WR,FIX,SUM llm
     class EV pool
-    class DISK,ASK keep
-    class GATE gate
-    class HAR,QA weak
-    class OUT edge
+    class DEC gate
+    class MARK,OUT edge
 ```
+
+The model never does arithmetic and never decides whether a sentence is right: the verifier does, from the figures the sentence cites.
+A sentence the writer cannot get right is not dropped or smoothed over; it stays in the deck, coloured, and the file is labelled
+`_DRAFT-BLOCKED` or `_REVIEW` so nobody mistakes it for a finished deliverable.
 
 ---
 
 ## Architecture
 
-The four big modules are **packages**, not single files. Each `__init__.py`
-re-exports exactly what the flat module exposed, so `from fdd_utils.pptx import X`
-is unchanged.
+The big modules are **packages**; each `__init__.py` re-exports what a flat module would, so `from fdd_utils.pptx import X` works.
 
 | Module | Responsibility |
 |--------|---------------|
-| `fdd_utils/workbook/` | Workbook profiling, sheet resolution, normalization, reconciliation, movement analysis |
-| `fdd_utils/ai/` | AI config, prompt engine, subagent pipeline, harness, deterministic verification, feedback loop |
-| `fdd_utils/pptx/` | PPTX payload building, packing, slide generation, executive summaries |
-| `fdd_utils/ui/` | Streamlit UI, processed view, AI panel, sidebar, headless export helpers |
-| `fdd_utils/mappings.yml` | Account definitions, aliases, Generator prompts |
-| `fdd_utils/prompts.yml` | Auditor / Refiner / Validator prompts, plus the shared style pack |
-| `fdd_utils/config.yml` | Runtime config (AI providers, agent parameters, PPTX tuning). Per-machine, not tracked |
+| `fdd_utils/workbook/` | Workbook profiling, sheet resolution, normalisation, reconciliation, which accounts get commentary |
+| `fdd_utils/ai/` | Model configuration and the dropdown, the model client, the evidence contract, the claim verifier |
+| `fdd_utils/agent/` | The agent: `book.py` (a whole databook), the controller and its tools, sessions, routing and budgets, the deck export and delivery |
+| `fdd_utils/pptx/` | Payloads, packing, tables, text measurement, slide generation |
+| `fdd_utils/ui/` | The Streamlit app: sidebar, processed view, the commentary run, the agent workbench panel, batch |
+| `fdd_utils/mappings.yml` | Account definitions: key, statement type, category, aliases, reference sentences |
+| `fdd_utils/config.yml` | Runtime config (providers, agent limits, PPTX tuning). Per-machine, not tracked; `config.example.yml` is its shape |
 
-Diagnostic entry points live at the repo root: `inspect_databook.py` (end-to-end,
-optionally with `--run-ai --export-pptx`), `inspect_pptx.py` (geometry and
-overflow checks on an exported deck), and `inspect_render_truth.py` (drives real
-PowerPoint over COM on Windows — the only tool that reaches actual ground truth).
+Entry points at the repo root:
 
----
-
-## The Subagents
-
-Named `subagent_1`–`subagent_4` in code and config for historical reasons, but
-only **three stages run** — `subagent_3` (Refiner) is wired up, prompted and
-tested, yet deliberately dormant (`SUBAGENT_SEQUENCE` in
-`fdd_utils/ai/pipeline.py` skips it). It stays because tightening-for-length is a
-real recurring need that costs one line to re-enable; removing it would mean
-re-deriving the prompt later.
-
-| Stage | Agent | Role | Runs by default? |
-|-------|-------|------|---|
-| 1 | **Generator** | Writes commentary from the data and the account's prompt | Yes |
-| 2 | **Auditor** | Re-reads the draft cold against the source data | Yes |
-| 3 | **Refiner** | Tightens length while preserving facts and reasoning | No (dormant) |
-| 4 | **Validator** | Judges causal claims; emits clause-level verdicts | Only when the text asserts a cause |
-
-A typical account therefore costs two LLM calls, not four.
+- `fdd_app.py`: the app. One databook, or several at once (batch: one deck each, a ZIP and a combined deck).
+- `fdd_agent.py`: the agent from the command line: `book` (the whole databook), `ask`, `edit`, `chat`, `report`, `export`, and the free
+  commands (`summary`, `diff`, `deck`, `strip`). A session can be kept in a file and continued.
+- `inspect_databook.py`: what the reader made of a workbook, tab by tab (free); with `--run-ai --export-pptx` the same run as the app.
+- `inspect_pptx.py`: geometry and overflow checks on an exported deck. `inspect_render_truth.py` drives real PowerPoint over COM on
+  Windows and is the only tool that reaches actual ground truth.
+- `ad-hoc/workbench/`: the measuring tools and the offline gate (`migration_checks.py`, free, no model).
 
 ---
 
 ## Methodology
 
-Five ideas do most of the work. They are ordered by how much they change the
-output, not by where they sit in the pipeline.
-
 ### 1. Facts are compiled before prose
 
-The model is kept out of arithmetic wherever the answer can be settled in code.
-Movements, percentage changes, materiality flags, concentration shares and
-verified parent/child hierarchies are computed first and handed over as settled
-facts, with an explicit instruction to quote them rather than derive anything
-further. A self-derived number has no source to match against, which is exactly
-where invented figures come from. One arithmetic task is still asked of the
-model: reconciling an itemised composition against its total, where the residual
-is precomputed only once an account carries more than three top-level
-components.
-
-Two guards worth knowing: a percentage across a sign change is meaningless, so
-those movements are described qualitatively; and a stub period is annualized to
-a common basis before any cross-year comparison, and excluded outright from the
-revenue benchmark an expense account is measured against.
+Movements, percentage changes, shares, gaps between a tab and the Financials sheet, and sums are computed in code, and each is
+given an id the writer can cite. A number the writer derives itself has no source to be checked against, which is where invented
+figures come from. A sentence has to cite the facts it rests on, and what it says has to be what they say.
 
 ### 2. The judge is arithmetic, not a model
 
-After the model writes, every amount it cites is checked against the account's
-own source data by code. The verdict outranks the model's in both directions: it
-overrides a fabricated figure the model defended, and it dismisses a
-"hallucination" the model flagged on a figure that does match. A model-judged
-loop can be talked round by a confident rewrite; a sum cannot.
+Every sentence is checked against the facts it cites: the period it puts a figure under, the line, the sign, the unit, the rounding
+to the printed precision, a percentage's base, a cause resting on a cited note or marked as inference. A model-judged loop can be
+talked round by a confident rewrite; a sum cannot. Where the verifier can only say "refused for how the prose was read" (which
+period a figure sits under, what a rest is made of), the agent is asked to read the sentence figure by figure and Python holds that
+reading to the evidence; the stronger model does it when one is configured.
 
-### 3. Attempts are bounded, and the best one wins
+### 3. Attempts are bounded, and nothing is hidden
 
-Tell a model its answer is wrong and it will agree and change it, whether or not
-it was wrong. Each extra round drifts further toward whatever the feedback
-implies and further from the data. So retries are capped, and the trigger is
-deliberately narrow: a provable fabrication fires one, while an unprovable
-inference on its own does not — that inference is the analysis the deliverable
-exists for, and the deck renders it in orange on purpose. A second, looser
-trigger survives for output that is broadly unsupported rather than specifically
-wrong. An arbiter then keeps the attempt with the fewest defects rather than the
-last one produced.
+A refused sentence goes back to the writer alone, up to a limit. After that it stays in the deck, marked, and the delivery decision
+names the account and blocks the deck. A paragraph that is all verified but left out something that must be said (a material note, the
+latest balance) is blocked the same way. The cost of a run is capped by a guard per account, not by a quota that could stop a model
+half way.
 
-### 4. Nothing crosses a run boundary
+### 4. Nothing is learned between runs
 
-There is no cache file, no learned preference, no memory of a previous
-engagement. Every derived fact lives for the duration of one run and is rebuilt
-next time. This is a decision rather than an omission: cross-run learning is
-where one reviewer's wording preference silently becomes the next client's wrong
-deck. Promoting a correction stays a human edit to the prompt files.
+Nothing a person did to one deck changes the next. What is kept is explicit and local: a session file (`--session`), and one case file
+for every account that ended a run with a refused sentence (`fdd_utils/output/agent_issues/`, git-ignored), which
+`python ad-hoc/workbench/issue_cases.py replay` reads again with the verifier as it is now, free and without the workbook. A fix to the
+verifier is judged on what the paid runs produced, not on the next paid run.
 
 ### 5. Every rule that matters lives in code, not only in a prompt
 
-A rule that exists only as prompt text is a preference, not a guarantee. Where a
-convention is load-bearing — zero balances reading as "no balance" rather than
-"0", magnitude units and decimal places, company names shortened after first
-mention — it is enforced deterministically after the model is finished. Two
-attempts to hold the company-name rule through prompting alone did not survive
-real runs.
+A rule that exists only as prompt text is a preference. Where a convention is load-bearing (a zero balance read as "no balance", units and
+decimals, the period an amount belongs to) it is enforced by the verifier or the exporter after the model is finished.
 
 ---
 
 ## Known limits
 
-Stated because a tool that hides its blind spots is harder to trust than one
-that names them.
+- **A verified sentence is not a good paragraph.** The verifier holds figures, periods, signs, units and cited causes to the evidence. It
+  does not judge whether a paragraph says what a reader needs, and a cause the notes do not give is marked as inference, not supplied.
+  `methods.md` sections 4 and 8 say what was measured and what was not.
+- **Extraction depth is the real ceiling.** When a workpaper's breakdown does not survive extraction, no verification or prompting
+  recovers it. That is a per-firm structural problem.
+- **Layout can only be confirmed in real PowerPoint.** Every check in this repo except `inspect_render_truth.py` compares the model
+  against itself, so a clean `inspect_pptx.py` run is not evidence that PowerPoint agrees.
+- **The offline checks do not cover a model.** `migration_checks.py` and `baseline_snapshot.py` use a scripted writer: they prove the code
+  does what it did, on real workbooks, and say nothing about how a model writes.
 
-- **The number check discriminates, but not perfectly, and the history is worth
-  knowing.** An amount used to be tested against a pool that folded in every
-  other tab of the same statement, which made sibling tabs about 91% of it and
-  the account's own cells under 1%. Feeding that pool a real figure multiplied
-  by a random factor got it accepted around 88% of the time, and a tenfold unit
-  error passed about 80% of the time — so `data-backed` asserted little beyond
-  "a number of about this size exists somewhere in this statement". The pool is
-  now the account's own data by default, and the same tests come back at roughly
-  31% and 27%. That is a working check rather than a rubber stamp, but a third
-  of deliberately wrong magnitudes still pass, so the verdict is evidence and
-  not proof.
-- **A `data-backed` verdict is also not one meaning.** A clause whose only
-  defect is an unverifiable causal claim is demoted back to `data-backed` by a
-  confidence floor rather than shown as flagged, so the label covers both "the
-  numbers matched" and "nothing here was checkable".
-- **What the check does still catch**, and why it is not worthless: a figure
-  derived a way the pool has no route to — a difference, a sum of non-adjacent
-  rows, a cross-statement reference — is genuinely absent and is flagged. Bare
-  numbers and percentages are deliberately not extracted as amounts, so a wrong
-  ratio is never caught here at all.
-- **Unsupported clauses are rare, and most are judgement rather than
-  arithmetic.** Across the archived runs, roughly one clause in sixty comes back
-  unsupported. About a quarter of those are the arithmetic kind; the remaining
-  three quarters are the model's own opinion that something is unsupported,
-  which no amount of recomputation settles. Read that rate together with the
-  first bullet: the arithmetic share is low partly because the arithmetic test
-  is easy to pass. It is also measured *after* the confidence demotion above.
-- **Extraction depth is the real ceiling on analysis.** When a workpaper's
-  breakdown does not survive extraction, no amount of verification or prompting
-  recovers it. This is a per-firm structural problem rather than an industry one.
-- **Layout can only be confirmed in real PowerPoint.** Every check in this repo
-  except `inspect_render_truth.py` compares the model against itself, so a clean
-  `inspect_pptx.py` run is not evidence that PowerPoint agrees.
-- **False-positive and false-negative rates for the verification layer have not
-  been measured** — only how often each verdict occurs.
-
-See [`methods.md`](methods.md) for the verification loop in detail, including why
-the retry gate is shaped the way it is and what the arbiter is guarding against.
+See [`methods.md`](methods.md) for the checks in detail and what each claim rests on.
 
 ---
 
 ## Run
 
 ```bash
-streamlit run fdd_app.py                                    # the app
-python inspect_databook.py <databook.xlsx>                  # free diagnostics
-python inspect_databook.py <databook.xlsx> --run-ai --export-pptx   # full run
-python inspect_pptx.py <deck.pptx>                          # geometry checks
+streamlit run fdd_app.py                                                  # the app
+python fdd_agent.py book <databook.xlsx> --model dashscope --model-name <id>   # the same run, from the command line
+python inspect_databook.py <databook.xlsx>                                # free diagnostics
+python inspect_databook.py <databook.xlsx> --run-ai --export-pptx         # diagnostics, then the agent run and the deck
+python inspect_pptx.py <deck.pptx>                                        # geometry checks
+python ad-hoc/workbench/migration_checks.py                               # the offline gate (free)
 ```
