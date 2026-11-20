@@ -7,6 +7,8 @@ whole save, so the 18 books after it were never read.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 import unittest
 from pathlib import Path
@@ -23,7 +25,8 @@ class Unopenable(unittest.TestCase):
     def snapshot_with_two_books_that_do_not_open(self):
         def refuse(book):
             raise RuntimeError(f"No eligible accounts after reconciliation filtering. ({Path(book).name})")
-        with mock.patch.object(bs, "local_books", return_value={"h1": "A.xlsx", "h2": "B.xlsx"}), mock.patch.object(bs, "open_work", side_effect=refuse):
+        with mock.patch.object(bs, "local_books", return_value={"h1": "A.xlsx", "h2": "B.xlsx"}), mock.patch.object(bs, "open_work", side_effect=refuse), \
+                contextlib.redirect_stdout(io.StringIO()):
             return bs.snapshot()
 
     def test_every_book_is_tried_and_the_reason_is_kept(self):

@@ -7,6 +7,8 @@ Does not fetch anything and does not run the old code; the real run is `slim_com
 from __future__ import annotations
 
 import argparse
+import contextlib
+import io
 import sys
 import tempfile
 import unittest
@@ -68,7 +70,8 @@ class Prepare(unittest.TestCase):
             old.mkdir()
             (old / "notes.txt").write_text("keep", encoding="utf-8")
             args = argparse.Namespace(old=str(old), zip="", again=True, tag=sc.TAG)
-            self.assertEqual(sc.prepare(args), 2)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(sc.prepare(args), 2)
             self.assertEqual((old / "notes.txt").read_text(encoding="utf-8"), "keep")
 
 

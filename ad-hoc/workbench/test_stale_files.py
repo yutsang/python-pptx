@@ -43,6 +43,19 @@ class Folder(unittest.TestCase):
             self.assertFalse((root / "fdd_utils/ai/pipeline.py").exists())
             self.assertEqual((dest / "fdd_utils/ai/pipeline.py").read_text(encoding="utf-8"), "x = 1\n")
 
+    def test_restoring_puts_back_what_is_under_a_path_and_never_overwrites(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root, aside = Path(folder) / "repo", Path(folder) / "repo_not_in_main_20261120"
+            for rel in ("fdd_rewrite/fdd/a.py", "fdd_rewrite/tests/t.py", "ad-hoc/workbench/test_study_x.py", "fdd_utils/ai/pipeline.py"):
+                touch(aside, rel)
+            touch(root, "fdd_rewrite/tests/t.py")                          # a file already stands where one would come back to
+            back, kept = sf.restore(root, aside, ["fdd_rewrite", "ad-hoc\\workbench\\test_study_x.py"])
+            self.assertEqual(sorted(back), ["ad-hoc/workbench/test_study_x.py", "fdd_rewrite/fdd/a.py"])
+            self.assertEqual(kept, ["fdd_rewrite/tests/t.py"])
+            self.assertTrue((aside / "fdd_utils/ai/pipeline.py").exists(), "what was not asked for stays aside")
+            self.assertTrue((aside / "fdd_rewrite/tests/t.py").exists())
+            self.assertEqual(sf.aside_folder(root), aside)
+
 
 class Manifest(unittest.TestCase):
     def test_main_files_txt_is_what_git_tracks(self):
