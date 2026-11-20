@@ -76,6 +76,7 @@ ad-hoc/workbench/repair_pack.py
 ad-hoc/workbench/report_lengths.py
 ad-hoc/workbench/score_reference.py
 ad-hoc/workbench/score_review.py
+ad-hoc/workbench/slim_compare.py
 ad-hoc/workbench/stale_files.py
 ad-hoc/workbench/test_agent_controller.py
 ad-hoc/workbench/test_agent_flows.py
@@ -105,6 +106,7 @@ ad-hoc/workbench/test_reconciliation_selection.py
 ad-hoc/workbench/test_routing.py
 ad-hoc/workbench/test_score_review.py
 ad-hoc/workbench/test_sheet_visibility.py
+ad-hoc/workbench/test_slim_compare.py
 ad-hoc/workbench/test_stale_files.py
 ad-hoc/workbench/test_text_transfer.py
 ad-hoc/workbench/test_workbench_connectivity.py

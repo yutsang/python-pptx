@@ -58,6 +58,7 @@ SUITES = [
     "test_import_audit",
     "test_baseline_snapshot",
     "test_stale_files",
+    "test_slim_compare",
     "test_book",
     "test_app_book",
     "test_app_flows",           # the real app on a real workbook with a scripted writer; skipped without FDD_FLOW_WORKBOOK or databook.xlsx and the template
