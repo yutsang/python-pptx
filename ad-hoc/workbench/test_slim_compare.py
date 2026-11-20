@@ -75,6 +75,33 @@ class Prepare(unittest.TestCase):
             self.assertEqual((old / "notes.txt").read_text(encoding="utf-8"), "keep")
 
 
+class Trees(unittest.TestCase):
+    def test_what_differs_between_two_trees_ignores_line_endings_machine_files_and_outputs(self):
+        with tempfile.TemporaryDirectory() as folder:
+            old, new = Path(folder) / "old", Path(folder) / "new"
+            for root, text in ((old, b"a = 1\n"), (new, b"a = 1\r\n")):
+                for rel, body in (("fdd_utils/a.py", text), ("fdd_utils/config.yml", b"key: " + root.name.encode()),
+                                  ("fdd_utils/output/x/run.py", root.name.encode()), ("same.py", b"s\n")):
+                    (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                    (root / rel).write_bytes(body)
+            self.assertEqual(sc.files_that_differ(old, new), [])
+            (new / "fdd_utils/a.py").write_bytes(b"a = 2\n")
+            (new / "only_new.py").write_bytes(b"x\n")
+            self.assertEqual(sc.files_that_differ(old, new), ["fdd_utils/a.py", "only_new.py"])
+
+    def test_only_the_pre_slim_tag_is_known_by_two_files_any_other_tag_is_taken_as_it_came(self):
+        with tempfile.TemporaryDirectory() as folder:
+            old = Path(folder)
+            self.assertEqual(len(sc.tree_problems(old, sc.TAG)), 1, "no pipeline.py: not the old code")
+            self.assertEqual(sc.tree_problems(old, "ship-20261120"), [])
+            (old / "fdd_utils/agent").mkdir(parents=True)
+            (old / "fdd_utils/ai").mkdir(parents=True)
+            (old / "fdd_utils/agent/book.py").write_text("x\n", encoding="utf-8")
+            (old / "fdd_utils/ai/pipeline.py").write_text("x\n", encoding="utf-8")
+            self.assertEqual(len(sc.tree_problems(old, sc.TAG)), 1, "book.py is there: not the old code")
+            self.assertEqual(sc.tree_problems(old, "ship-20261120"), [], "a later tag has book.py and that is right")
+
+
 class Verdict(unittest.TestCase):
     def test_identical_names_both_fingerprints_and_counts_the_books(self):
         v = sc.verdict_of([" book A ...", "snapshot code 3986ffef323b (2026-11-20 10:00:00)  now c64cb648b6fa", "IDENTICAL",

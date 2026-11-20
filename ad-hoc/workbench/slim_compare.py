@@ -187,15 +187,50 @@ def prepare(args: argparse.Namespace) -> int:
     return check_tree(old)
 
 
+SKIP_DIRS = {".venv", "__pycache__", ".git", "node_modules", "output", "for_test", "databooks", "pptx_previews", "logs", "docs", "site-packages"}
+
+
+def code_files(root: Path) -> Dict[str, bytes]:
+    """The .py/.yml files of a tree, by relative path, line endings normalised (the config.yml of a machine is not code)."""
+    found: Dict[str, bytes] = {}
+    for folder, dirs, files in os.walk(root):
+        here = Path(folder)
+        dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and not (here / d / "pyvenv.cfg").exists())
+        for name in files:
+            if name.endswith((".py", ".yml")):
+                rel = (here / name).relative_to(root).as_posix()
+                if rel not in LOCAL_FILES:
+                    found[rel] = (here / name).read_bytes().replace(b"\r\n", b"\n")
+    return found
+
+
+def files_that_differ(old: Path, root: Path) -> List[str]:
+    """The code files that are in one tree and not the other, or differ."""
+    a, b = code_files(old), code_files(root)
+    return sorted(rel for rel in set(a) | set(b) if a.get(rel) != b.get(rel))
+
+
+def tree_problems(old: Path, tag: str) -> List[str]:
+    """What is wrong with the old tree. For the pre-slim tag, two files tell the old code from today's; for any other tag the tree is the tag's
+    zip as it came, and the question is only whether it differs from this folder."""
+    problems = []
+    if tag == TAG:
+        if not (old / ONLY_OLD).exists():
+            problems.append(f"{ONLY_OLD} is missing: this is not the old code")
+        if (old / ONLY_NEW).exists():
+            problems.append(f"{ONLY_NEW} is there: this is not the old code")
+    return problems
+
+
 def check_tree(old: Path) -> int:
     """Is it the old code, and does it start under this Python?"""
-    problems = []
-    if not (old / ONLY_OLD).exists():
-        problems.append(f"{ONLY_OLD} is missing: this is not the old code")
-    if (old / ONLY_NEW).exists():
-        problems.append(f"{ONLY_NEW} is there: this is not the old code")
-    print(f"  {ONLY_OLD} (only the old code has it): {'yes' if (old / ONLY_OLD).exists() else 'NO'}")
-    print(f"  {ONLY_NEW} (only the code of today has it): {'yes, WRONG' if (old / ONLY_NEW).exists() else 'no'}")
+    tag = (old / MARKER).read_text(encoding="utf-8").strip() if (old / MARKER).exists() else ""
+    problems = tree_problems(old, tag)
+    if tag == TAG:
+        print(f"  {ONLY_OLD} (only the old code has it): {'yes' if (old / ONLY_OLD).exists() else 'NO'}")
+        print(f"  {ONLY_NEW} (only the code of today has it): {'yes, WRONG' if (old / ONLY_NEW).exists() else 'no'}")
+    differing = files_that_differ(old, ROOT)
+    print(f"  code files that differ from this folder: {len(differing)}" + ("   (this folder is that code: there is nothing to compare)" if not differing else ""))
     probe = ("import sys; sys.path[:0] = ['.', 'ad-hoc/workbench']; import entity_trial, baseline_snapshot; "
              "from fdd_utils.agent.workspace import WorkSession; print('imports ok')")
     done = subprocess.run([sys.executable, "-c", probe], cwd=str(old), env=utf8_env(), capture_output=True, text=True, encoding="utf-8", errors="replace")
@@ -212,7 +247,7 @@ def check_tree(old: Path) -> int:
 
 def run(args: argparse.Namespace) -> int:
     old = Path(args.old).resolve() if args.old else default_old_tree()
-    if not (old / MARKER).exists() or not (old / ONLY_OLD).exists():
+    if not (old / MARKER).exists():
         print(f"{old} is not built: run `python ad-hoc/workbench/slim_compare.py prepare` first")
         return 2
     books = Path(args.dir).resolve() if args.dir else ((ROOT / "databooks") if (ROOT / "databooks").exists() else ROOT)
@@ -234,8 +269,8 @@ def run(args: argparse.Namespace) -> int:
     print(f"code that took the snapshot: {verdict['old']}   code now: {verdict['new']}")
     if verdict["identical"]:
         print(f"books compared: {verdict['compared']}   left out (they do not run on their own): {verdict['left_out']}")
-    if verdict["old"] and verdict["old"] == verdict["new"]:
-        print("NOT A COMPARISON: both fingerprints are the same code. The old tree was not used.")
+    if verdict["old"] and verdict["old"] == verdict["new"] and not files_that_differ(old, ROOT):
+        print("NOT A COMPARISON: the old tree is the same code as this folder.")
         return 1
     if verdict["identical"]:
         print("IDENTICAL" + ("" if args.deck else " (contracts, sentence verdicts, saved sessions; decks not taken: add --deck)"))

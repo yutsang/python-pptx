@@ -129,7 +129,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             code, lines = run_and_show(slim + ["prepare", "--tag", args.since, "--again"] + (["--old", args.old] if args.old else []), ROOT,
                                        lambda l: l.startswith(("OLD TREE", "  files of tag", "PROBLEM", "OK.", "the download", "put the zip")), log)
             if code != 0:
-                results["SINCE"] = (False, f"the old code of {args.since} could not be built (see the log)")
+                problem = next((l for l in lines if l.startswith(("PROBLEM", "the download", "put the zip"))), "see the log")
+                results["SINCE"] = (False, f"the old code of {args.since} could not be built: {problem}")
             else:
                 print(f"=== 3  SINCE {args.since}: both sides read the databooks (a book per line)", flush=True)
                 flags = (["--deck"] if args.deck else []) + (["--dir", args.dir] if args.dir else []) + (["--old", args.old] if args.old else [])
