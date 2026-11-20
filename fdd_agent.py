@@ -71,12 +71,32 @@ def _session(args):
                               financials_sheet=args.financials_sheet, base_run=getattr(args, "base_run", None))
 
 
+def _default_choice(args):
+    """(provider, model id) this command writes with: --model / --model-name when given, else the model a new session of the app starts
+    on (config.yml default.ai_provider and default.model, the dropdown's first choice when neither is set), else local. Without this
+    the command wrote with `local` whatever the app's dropdown said."""
+    if args.model:
+        return args.model, args.model_name
+    try:
+        from fdd_utils.ai import default_model_choice_key, get_default_config_path, list_model_choices, load_yaml_config
+        config = load_yaml_config(get_default_config_path())
+        choices = list_model_choices(config)
+        key = default_model_choice_key(config, choices)
+        for choice in choices:
+            if choice["key"] == key:
+                return choice["model_type"], args.model_name or choice["model_name"]
+    except Exception:                                                    # noqa: BLE001
+        pass
+    return "local", args.model_name
+
+
 def _model(args, session):
     if args.scripted:
         with open(args.scripted, encoding="utf-8") as fh:
             return ScriptedModel(json.load(fh))
     from fdd_utils.agent.controller import AIClientModel
-    return AIClientModel(model_type=args.model or "local", model_name=args.model_name, language=session.language)
+    model_type, model_name = _default_choice(args)
+    return AIClientModel(model_type=model_type, model_name=model_name, language=session.language)
 
 
 def _print_run(run, as_json: bool) -> int:
@@ -412,14 +432,19 @@ def cmd_book(args) -> int:
         with open(args.scripted, encoding="utf-8") as fh:
             model = ScriptedModel(json.load(fh))
     overrides = dict(x.split("=", 1) for x in (args.mapping_override or []) if "=" in x) or None
+    model_type, model_name = (args.model or "", args.model_name) if model is not None else _default_choice(args)
     work = B.open_book(args.databook, entity=args.entity or "", sheet=args.sheet, financials_from=args.financials_from,
-                       financials_sheet=args.financials_sheet, mapping_overrides=overrides, model_type=args.model or "",
-                       model_name=args.model_name, model=model,
+                       financials_sheet=args.financials_sheet, mapping_overrides=overrides, model_type=model_type,
+                       model_name=model_name, model=model,
                        escalation=parse_role(args.escalation_model) if args.escalation_model else None,
                        policy=agent_policy(mode=args.routing), thinking=args.thinking or "", session_path=args.session)
     accounts = work.entity_accounts()
     if args.limit:
         accounts = accounts[:args.limit]
+    if args.dry_run or args.ping:
+        lines, ok = B.preflight(work, accounts, max_calls=args.max_calls, max_tokens=args.max_tokens, ping=args.ping)
+        print("\n".join(lines))
+        return 0 if ok else 2
     bar = None
     try:
         from tqdm import tqdm
@@ -565,7 +590,7 @@ def main(argv=None) -> int:
         p.add_argument("--json", action="store_true")
 
     def model_args(p):
-        p.add_argument("--model", default=None, help="local | workbench | dashscope | deepseek | openai (default: local, or the session's)")
+        p.add_argument("--model", default=None, help="local | workbench | dashscope | deepseek | openai (default: the model the app starts on, config.yml default.model)")
         p.add_argument("--model-name", default=None)
         p.add_argument("--scripted", default=None, metavar="FILE", help="replay these replies instead of calling a model")
         p.add_argument("--max-model-calls", type=int, default=None, help="a hard cap on model calls over the whole session")
@@ -584,7 +609,7 @@ def main(argv=None) -> int:
                        help="read ACCOUNT from SHEET (yours to set; repeatable; kept in the session file)")
 
     b = sub.add_parser("book"); common(b)
-    b.add_argument("--model", default=None, help="local | workbench | dashscope | deepseek | openai (agent.models.primary in config.yml wins when set)")
+    b.add_argument("--model", default=None, help="local | workbench | dashscope | deepseek | openai (default: the model the app starts on, config.yml default.model; agent.models.primary wins when set)")
     b.add_argument("--model-name", default=None, help="the model within the provider, e.g. the id of Flash in the dropdown")
     b.add_argument("--scripted", default=None, metavar="FILE", help="replay these replies instead of calling a model")
     b.add_argument("--routing", choices=("single", "escalate"), default=None)
@@ -594,6 +619,8 @@ def main(argv=None) -> int:
     b.add_argument("--max-calls", type=int, default=None, help="a ceiling on model calls over the whole book (default: agent.max_calls_per_account x accounts)")
     b.add_argument("--max-tokens", type=int, default=None, help="a ceiling on charged tokens over the whole book (default: agent.max_tokens_per_account x accounts)")
     b.add_argument("--no-deck", action="store_true", help="write the paragraphs and stop: no overview, no deck")
+    b.add_argument("--dry-run", action="store_true", help="say which model would write, the ceilings and what they allow at its price, then stop: no model call")
+    b.add_argument("--ping", action="store_true", help="like --dry-run, plus one tiny call to the model (a few tokens) to see that the key and gateway answer; writes nothing")
     b.add_argument("--out", default=None, metavar="DECK")
     b.add_argument("--mapping-override", action="append", default=None, metavar="ACCOUNT=SHEET", help="read ACCOUNT from SHEET (yours to set; repeatable)")
     b.add_argument("--session", default=None, metavar="FILE", help="keep the session in this file (figures and commentary: a path git does not track), "

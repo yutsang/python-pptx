@@ -57,6 +57,111 @@ def finishes_one_account(system, user, n):
     return {"draft": {"claims": [claim, wrong], "unresolved": []}}
 
 
+class Preflight(unittest.TestCase):
+    """Said before anything is spent: which model, the ceilings, what they allow at its price; one tiny call only when asked."""
+
+    def work(self, fn=None):
+        return two_account_work(fn or finishes_one_account)
+
+    def test_without_a_ping_no_call_is_made_and_the_model_the_ceilings_and_the_accounts_are_said(self):
+        work = self.work()
+        lines, ok = B.preflight(work, [ACCOUNT, OTHER])
+        text = "\n".join(lines)
+        self.assertTrue(ok)
+        self.assertEqual(work.model_calls, 0)
+        self.assertIn(ACCOUNT, text)
+        self.assertIn("model  m on", text)
+        self.assertIn(f"model calls <= {B.book_cap({'agent': {}}, 2)}", text)
+        self.assertIn("price  none written in config.yml", text)
+        self.assertIn("nothing was written", text)
+
+    def test_the_worst_case_at_the_models_price_is_computed_from_the_ceiling(self):
+        work = self.work()
+        spec = R.RoleSpec(R.ROLE_PRIMARY, lambda s, u, n: {}, provider="dashscope", model="flash", price=(1.0, 2.0))
+
+        class Router:
+            roles = {R.ROLE_PRIMARY: spec}
+        work._router = lambda: Router()
+        lines, ok = B.preflight(work, [ACCOUNT, OTHER], max_tokens=1_000_000)
+        text = "\n".join(lines)
+        self.assertIn("flash on dashscope", text)
+        self.assertIn("1 in / 2 out yuan per million tokens", text)
+        self.assertIn("at most 2.00 yuan", text, "1,000,000 tokens at the dearer of the two prices")
+
+    def test_a_ping_is_one_small_call_and_says_what_answered(self):
+        calls = []
+
+        def answers(system, user, n):
+            calls.append((system, user, n))
+            return {"content": "OK", "prompt_tokens": 12, "completion_tokens": 1, "model_reported": "flash-0731"}
+        work = two_account_work(finishes_one_account)
+        spec = R.RoleSpec(R.ROLE_PRIMARY, answers, provider="dashscope", model="flash")
+
+        class Router:
+            roles = {R.ROLE_PRIMARY: spec}
+        work._router = lambda: Router()
+        lines, ok = B.preflight(work, [ACCOUNT], ping=True)
+        self.assertTrue(ok)
+        self.assertEqual(len(calls), 1)
+        self.assertLessEqual(calls[0][2], 64)
+        self.assertIn("flash-0731", "\n".join(lines))
+
+    def test_a_failed_or_empty_ping_and_a_model_that_cannot_be_built_are_problems_not_exceptions(self):
+        def boom(system, user, n):
+            raise ConnectionError("gateway refused")
+
+        def empty(system, user, n):
+            return {"content": ""}
+        for call, needle in ((boom, "PING FAILED  ConnectionError: gateway refused"), (empty, "PROBLEM the reply is empty")):
+            work = two_account_work(finishes_one_account)
+            spec = R.RoleSpec(R.ROLE_PRIMARY, call, provider="dashscope", model="flash")
+
+            class Router:
+                roles = {R.ROLE_PRIMARY: spec}
+            work._router = lambda: Router()
+            lines, ok = B.preflight(work, [ACCOUNT], ping=True)
+            self.assertFalse(ok)
+            self.assertIn(needle, "\n".join(lines))
+        work = two_account_work(finishes_one_account)
+
+        def cannot():
+            raise ValueError("the primary model asks for provider 'x', which is not configured here")
+        work._router = cannot
+        lines, ok = B.preflight(work, [ACCOUNT])
+        self.assertFalse(ok)
+        self.assertIn("PROBLEM the model cannot be built: ValueError", "\n".join(lines))
+
+
+class CommandLineDefault(unittest.TestCase):
+    """`fdd_agent.py book` writes with the model the app starts on, not with `local` whatever the dropdown says."""
+
+    def choice(self, yaml_text, **named):
+        import argparse
+        import fdd_agent
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.yml"
+            path.write_text(yaml_text, encoding="utf-8")
+            with mock.patch("fdd_utils.ai.get_default_config_path", return_value=str(path)):
+                return fdd_agent._default_choice(argparse.Namespace(**{"model": None, "model_name": None, **named}))
+
+    CONFIG = ("default:\n  ai_provider: dashscope\n  model: flash-id\n"
+              "dashscope:\n  api_base: x\n  api_key: y\n  chat_model: other-id\n  available_models:\n"
+              "    - {id: other-id, label: Other, kind: chat}\n    - {id: flash-id, label: Flash, kind: chat}\n")
+
+    def test_no_flags_means_the_apps_default_model(self):
+        self.assertEqual(self.choice(self.CONFIG), ("dashscope", "flash-id"))
+
+    def test_a_named_provider_or_model_wins(self):
+        self.assertEqual(self.choice(self.CONFIG, model="local"), ("local", None))
+        self.assertEqual(self.choice(self.CONFIG, model_name="other-id"), ("dashscope", "other-id"))
+
+    def test_with_no_readable_config_it_is_local_as_it_always_was(self):
+        with mock.patch("fdd_utils.ai.get_default_config_path", return_value="/nonexistent/config.yml"):
+            import argparse
+            import fdd_agent
+            self.assertEqual(fdd_agent._default_choice(argparse.Namespace(model=None, model_name=None)), ("local", None))
+
+
 class RunBook(unittest.TestCase):
     def test_every_account_in_scope_is_written_the_refused_one_is_carried_marked_and_the_session_says_it_wrote_the_book(self):
         work = two_account_work(finishes_one_account)
@@ -74,6 +179,14 @@ class RunBook(unittest.TestCase):
         lines = result.summary_lines("wb.xlsx")
         self.assertIn("accounts in scope 2   finished 1", lines[1])
         self.assertIn("drafts carried with marked sentences 1", lines[1])
+        self.assertTrue(any(l.strip().startswith("primary: m on") and "calls" in l for l in lines), "the model that wrote is named in the summary")
+        self.assertTrue(any(l.strip().startswith(f"{OTHER}: a draft carried with marked sentences") for l in lines), lines)
+
+    def test_the_summary_names_why_an_account_was_not_drafted(self):
+        work = two_account_work(finishes_one_account)
+        result = B.run_book(work, overview=False, deck=False, issues_dir=None, max_calls=1)
+        lines = "\n".join(result.summary_lines("wb.xlsx"))
+        self.assertIn("not drafted (budget_session", lines)
 
     def test_the_guard_on_model_calls_is_per_account_not_the_ask_and_edit_cap(self):
         self.assertEqual(B.book_cap({}, 10), 40 * 12)

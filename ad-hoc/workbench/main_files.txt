@@ -109,12 +109,14 @@ ad-hoc/workbench/test_sheet_visibility.py
 ad-hoc/workbench/test_slim_compare.py
 ad-hoc/workbench/test_stale_files.py
 ad-hoc/workbench/test_text_transfer.py
+ad-hoc/workbench/test_verify_update.py
 ad-hoc/workbench/test_workbench_connectivity.py
 ad-hoc/workbench/test_workspace.py
 ad-hoc/workbench/test_workspace_flows.py
 ad-hoc/workbench/text_transfer.py
 ad-hoc/workbench/trial_digest.py
 ad-hoc/workbench/usage_summary.py
+ad-hoc/workbench/verify_update.py
 admin_code.py
 apply_private_settings.py
 check_config_path.py

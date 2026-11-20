@@ -19,7 +19,7 @@ import hashlib
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 #: where an account that ends with a refused sentence is kept as one case (issues.py); git-ignored with the rest of fdd_utils/output
@@ -182,9 +182,63 @@ class BookResult:
                 lines.append(f"NO DECK: [{self.error.get('code')}] {str(self.error.get('message'))[:200]}")
         lines.append(f"model calls {books['calls']}   charged tokens {books['charged_tokens']:,}"
                      + (f"   cost {books['cost']:.2f} yuan" if books.get("cost") is not None else "") + f"   {self.seconds}s")
+        for role, row in (books.get("by_role") or {}).items():
+            named = f", the provider names it {', '.join(row['models_reported'])}" if row.get("models_reported") else ""
+            reasoning = f" (reasoning {row['reasoning']:,})" if row.get("reasoning") else ""
+            lines.append(f"  {role}: {row.get('model') or '?'} on {row.get('provider') or '?'}{named}   calls {row['calls']} (failed {row['failed']})   "
+                         f"tokens in {row['prompt_provider']:,} out {row['completion_provider']:,}{reasoning}")
+        unfinished = [a for a in self.accounts if a not in finished]
+        if unfinished:
+            by_account = {r.get("account"): r for r in self.rows}
+            for account in unfinished[:12]:
+                row = by_account.get(account) or {}
+                lines.append(f"  {account}: " + ("a draft carried with marked sentences" if account in marked
+                                                  else f"not drafted ({row.get('stop_reason') or 'not reached'}" + (f": {str(row['error'])[:100]}" if row.get("error") else "") + ")"))
+            if len(unfinished) > 12:
+                lines.append(f"  ... and {len(unfinished) - 12} more")
         if self.issue_cases:
             lines.append(f"{self.issue_cases} account(s) with a refused sentence kept as cases (free to re-check: python ad-hoc/workbench/issue_cases.py replay)")
         return lines
+
+
+def preflight(work: Any, accounts: List[str], *, max_calls: Optional[int] = None, max_tokens: Optional[int] = None,
+              ping: bool = False) -> Tuple[List[str], bool]:
+    """What a run of these accounts would use, said before it spends anything: the accounts, the model that would write (the one the
+    session builds, so a provider that is not configured is found here), the ceilings, and what the ceilings allow at the model's price.
+    With `ping`, one tiny call to that model (a few tokens) to see that the key and the gateway answer and which model it names.
+    Returns (lines, ok)."""
+    lines = [f"PREFLIGHT  {len(accounts)} account(s) in scope: " + ", ".join(accounts[:40]) + (" ..." if len(accounts) > 40 else "")]
+    try:
+        primary = work._router().roles["primary"]
+    except Exception as exc:                                                    # noqa: BLE001
+        return lines + [f"PROBLEM the model cannot be built: {type(exc).__name__}: {str(exc)[:300]}"], False
+    lines.append(f"model  {primary.model or '?'} on {primary.provider or '?'}"
+                 + (f"   (asked for {primary.provider_requested}, not configured: the client fell back)" if primary.provider_requested else ""))
+    if primary.price:
+        lines.append(f"price  {primary.price[0]:g} in / {primary.price[1]:g} out yuan per million tokens (config.yml)")
+    else:
+        lines.append("price  none written in config.yml for this model, so no cost can be shown")
+    calls = max_calls if max_calls is not None else book_cap(work.config, len(accounts))
+    tokens = max_tokens if max_tokens is not None else book_token_cap(work.config, len(accounts))
+    lines.append(f"guards  model calls <= {calls if calls else 'no cap'}   charged tokens <= {format(tokens, ',') if tokens else 'no cap'}")
+    if tokens and primary.price:
+        lines.append(f"worst case  every account using its whole allowance: {tokens:,} tokens, at most {tokens * max(primary.price) / 1e6:.2f} yuan "
+                     f"(a run that goes well uses far less; the run's own last lines give the real figure)")
+    ok = True
+    if ping:
+        started = time.perf_counter()
+        try:
+            reply = primary.call("Answer with the single word OK.", "OK?", 64) or {}
+        except Exception as exc:                                                # noqa: BLE001
+            return lines + [f"PING FAILED  {type(exc).__name__}: {str(exc)[:300]}"], False
+        said = str(reply.get("content") or "").strip()
+        lines.append(f"ping  answered in {time.perf_counter() - started:.1f}s with {said[:30]!r}   tokens {reply.get('prompt_tokens')} in, "
+                     f"{reply.get('completion_tokens')} out   the provider names the model: {reply.get('model_reported') or 'not stated'}")
+        if not said:
+            lines.append("PROBLEM the reply is empty: the key and the gateway answered, but no text came back")
+            ok = False
+    lines.append("nothing was written" if ok else "stopped before writing anything")
+    return lines, ok
 
 
 def results_for_deck(work: Any) -> Dict[str, Any]:
