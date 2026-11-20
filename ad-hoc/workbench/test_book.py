@@ -182,6 +182,19 @@ class RunBook(unittest.TestCase):
         self.assertTrue(any(l.strip().startswith("primary: m on") and "calls" in l for l in lines), "the model that wrote is named in the summary")
         self.assertTrue(any(l.strip().startswith(f"{OTHER}: a draft carried with marked sentences") for l in lines), lines)
 
+    def test_a_deck_that_needs_review_says_why_even_when_informational_findings_come_first(self):
+        work = two_account_work(finishes_one_account)
+        findings = [{"code": "SELECTION_UNCHECKED_HISTORY", "severity": "info", "account": f"A{i}", "message": "history not checked"} for i in range(12)]
+        findings += [{"code": "SOURCE_GAP", "severity": "review", "account": "X", "message": "the workbook does not give: ageing"},
+                     {"code": "TOTAL", "severity": "blocked", "account": "Y", "message": "a total does not tie"}]
+        result = B.BookResult(work=work, accounts=[ACCOUNT, OTHER],
+                              export={"data": {"path": "d.pptx", "delivery": {"status": "blocked", "findings": findings}}})
+        lines = result.summary_lines("wb.xlsx")
+        blocked = next(i for i, l in enumerate(lines) if "[blocked] Y" in l)
+        review = next(i for i, l in enumerate(lines) if "[review] X" in l)
+        self.assertLess(blocked, review, "what blocks comes before what only needs a look")
+        self.assertFalse(any("history not checked" in l for l in lines), "informational findings do not decide the status")
+
     def test_the_summary_names_why_an_account_was_not_drafted(self):
         work = two_account_work(finishes_one_account)
         result = B.run_book(work, overview=False, deck=False, issues_dir=None, max_calls=1)

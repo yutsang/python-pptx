@@ -175,9 +175,14 @@ class BookResult:
         if self.export is not None:
             if self.deck_path:
                 lines.append(f"deck: {self.deck_path}   delivery: {self.delivery.get('status')}")
-                for finding in (self.delivery.get("findings") or [])[:8]:
-                    if finding.get("severity") in ("blocked", "review"):
-                        lines.append(f"  [{finding['severity']}] {finding.get('account') or 'deck'}: {str(finding.get('message'))[:160]}")
+                # the ones that decide the status, the blocking first: taken before any cut, because a book with eighteen informational findings
+                # ahead of its review ones showed a deck that needs review and not one word of why (2026-11-20, first real run of a whole book)
+                gating = sorted((f for f in (self.delivery.get("findings") or []) if f.get("severity") in ("blocked", "review")),
+                                key=lambda f: 0 if f.get("severity") == "blocked" else 1)
+                for finding in gating[:8]:
+                    lines.append(f"  [{finding['severity']}] {finding.get('account') or 'deck'}: {str(finding.get('message'))[:160]}")
+                if len(gating) > 8:
+                    lines.append(f"  ... and {len(gating) - 8} more that decide it")
             else:
                 lines.append(f"NO DECK: [{self.error.get('code')}] {str(self.error.get('message'))[:200]}")
         lines.append(f"model calls {books['calls']}   charged tokens {books['charged_tokens']:,}"
