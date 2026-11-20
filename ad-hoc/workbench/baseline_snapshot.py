@@ -185,9 +185,11 @@ def book_part(book: str) -> Dict[str, Any]:
     """The same scripted flow through the product path (fdd_utils/agent/book.py, which the app and fdd_agent.py book use), in the
     fields scripted_part reads from the trial's report: it must equal it, for the app and the trial write the same deck."""
     import tempfile
+    try:
+        from fdd_utils.agent import book as B
+    except ImportError:
+        return {}           # the code of before 2026-11-19 has no book.py: this tool can still take its snapshot, which then holds no product-path part
     import entity_trial
-    from fdd_utils.agent import book as B
-    from fdd_utils.agent.flag import agent_budget
     tmp = tempfile.mkdtemp(prefix="baseline_book_")          # not a TemporaryDirectory: on Windows a workbook still held open would fail its removal
     try:
         # the trial works on a copy named after its arm and the deck's title is the workbook's name: the same name here
@@ -227,11 +229,17 @@ def snapshot(only: str = "", was: Optional[Dict[str, Any]] = None) -> Dict[str, 
         if only and only not in name:
             continue
         print(f"  {name} ...", flush=True)
-        work = open_work(book)
-        files = ((was or {}).get("books", {}).get(name, {}).get("sessions", {}).get("files")) if was else None
-        books[name] = {"contracts": contracts_part(work), "generated": generated_part(work.source.contracts, name),
-                       "sessions": sessions_part(work, book, sha_book, files), "scripted": scripted_part(book),
-                       "book": book_part(book)}
+        try:
+            work = open_work(book)
+            files = ((was or {}).get("books", {}).get(name, {}).get("sessions", {}).get("files")) if was else None
+            books[name] = {"contracts": contracts_part(work), "generated": generated_part(work.source.contracts, name),
+                           "sessions": sessions_part(work, book, sha_book, files), "scripted": scripted_part(book),
+                           "book": book_part(book)}
+        except Exception as exc:                                                  # noqa: BLE001
+            # A file that cannot be read on its own (a roll-up master needs an entity picked, 2026-11-20 on the company machine) must not
+            # end the run for the books after it. The reason is kept in the snapshot, so check holds the new code to the same answer.
+            books[name] = {"error": f"{type(exc).__name__}: {str(exc)[:160]}"}
+            print(f"    left out of the comparison, it does not run on its own: {books[name]['error']}", flush=True)
     import entity_trial
     return {"code": entity_trial.code_fingerprint()["short"], "taken": time.strftime("%Y-%m-%d %H:%M:%S"), "books": books}
 
@@ -242,6 +250,10 @@ def diff(a: Dict[str, Any], b: Dict[str, Any], limit: int = 12) -> List[str]:
         x, y = a["books"].get(name), b["books"].get(name)
         if x is None or y is None:
             lines.append(f"{name}: only in {'the snapshot' if y is None else 'the check'}")
+            continue
+        if "error" in x or "error" in y:
+            if x.get("error") != y.get("error"):
+                lines.append(f"{name}: ERROR was {x.get('error') or 'none, it ran'}  now {y.get('error') or 'none, it ran'}")
             continue
         for part in ("contracts", "generated", "sessions"):
             if x[part]["sha"] != y[part]["sha"]:
@@ -302,6 +314,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         if lines:
             return 1
     for name, b in snap["books"].items():
+        if "error" in b:
+            print(f"  {name[:30]:30s} not in the comparison: {b['error'][:90]}")
+            continue
         s = b["scripted"]
         print(f"  {name[:30]:30s} contracts {b['contracts']['n']:3d} {b['contracts']['sha'][:8]}  sentences {b['generated']['claims']:5d} "
               f"{b['generated']['sha'][:8]}  paid sessions {b['sessions']['sessions']:2d}/{b['sessions']['claims']:4d} {b['sessions']['sha'][:8]}  scripted {s.get('ok')}/{s.get('accounts')} "

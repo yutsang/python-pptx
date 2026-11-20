@@ -23,6 +23,22 @@ class Audit(unittest.TestCase):
         self.assertIsNone(ia.check("fdd_utils.ai.claims", ["verify_claim"], cache))
         self.assertIsNone(ia.check("fdd_utils.agent", ["controller"], cache), "a module inside a package is a name that resolves")
 
+    def test_an_import_that_fails_is_named_with_the_file_its_statement_is_in(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / "audit_probe_bad.py").write_text("from fdd_utils.financial_common import a_name_that_is_not_there\n", encoding="utf-8")
+            (Path(folder) / "audit_probe_good.py").write_text("import json\n", encoding="utf-8")
+            sys.path.insert(0, folder)
+            try:
+                message = ia.import_failure("audit_probe_bad")
+                self.assertIn("a_name_that_is_not_there", message)
+                self.assertIn("audit_probe_bad.py line 1", message)
+                self.assertIsNone(ia.import_failure("audit_probe_good"))
+            finally:
+                sys.path.remove(folder)
+                sys.modules.pop("audit_probe_bad", None)
+                sys.modules.pop("audit_probe_good", None)
+
     def test_every_import_in_the_repo_resolves(self):
         problems = ia.audit(include_scripts=True)
         self.assertEqual(problems, {}, "\n".join(f"{f}: {p}" for f, ps in problems.items() for p in ps))

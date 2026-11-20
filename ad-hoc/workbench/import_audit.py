@@ -136,6 +136,18 @@ if __name__ == "__main__":
     raise SystemExit(main())
 
 
+def import_failure(name: str) -> Optional[str]:
+    """Why importing this module fails, with the file and line the failing statement is in, or None."""
+    import traceback
+    try:
+        importlib.import_module(name)
+    except Exception as exc:                                                  # noqa: BLE001
+        frames = [f for f in traceback.extract_tb(exc.__traceback__) if "importlib" not in f.filename and "<frozen" not in f.filename]
+        where = f" (statement at {Path(frames[-1].filename).name} line {frames[-1].lineno})" if frames else ""
+        return f"cannot be imported: {type(exc).__name__}: {str(exc)[:140]}{where}"
+    return None
+
+
 def method_audit() -> Dict[str, List[str]]:
     """{file: [problems]}: every `self.name(...)` / `cls.name(...)` call in a class of fdd_utils names a method the class has (its bases and
     the deck generator's other mixins included) or an attribute the class assigns. Pyflakes cannot see these, and a deleted method
@@ -148,6 +160,10 @@ def method_audit() -> Dict[str, List[str]]:
     for path in py_files():
         rel = path.relative_to(ROOT).as_posix()
         if not rel.startswith("fdd_utils/"):
+            continue
+        failure = import_failure(module_name(path))
+        if failure:                                                           # named by its file: a folder that holds a file main does not have
+            problems.setdefault(rel, []).append(failure)                      # (a copy laid over an older folder) would otherwise stop the audit
             continue
         module = importlib.import_module(module_name(path))
         try:
