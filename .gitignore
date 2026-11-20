@@ -10,6 +10,7 @@ final_report*
 !*.ipynb
 FDD.Draft Report.For AI solution purpose Only.pptx
 *.txt
+!ad-hoc/workbench/main_files.txt
 
 # old backups
 archive/

@@ -129,6 +129,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"    {item}")
     count = sum(len(v) for v in problems.values())
     print(f"{count} import(s) in {len(problems)} file(s) do not resolve" if problems else "every import resolves")
+    if problems:
+        print("a file here that main does not have (one it removed, or work done in this folder) is not a fault of main: "
+              "`python ad-hoc/workbench/stale_files.py` names those files")
     return 1 if problems else 0
 
 

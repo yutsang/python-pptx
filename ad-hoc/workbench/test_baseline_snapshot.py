@@ -39,6 +39,16 @@ class Unopenable(unittest.TestCase):
         self.assertEqual(len(lines), 1)
         self.assertIn("A.xlsx: ERROR was none, it ran", lines[0])
 
+    def test_a_snapshot_without_decks_is_held_to_one_with_decks_on_what_both_have(self):
+        part = {"n": 1, "sha": "a", "items": {"k": 1}}
+        full = {"books": {"A.xlsx": {"contracts": part, "generated": part, "sessions": part,
+                                     "scripted": {"accounts": 3, "ok": 3, "deck": {"sha": "d", "slides": 2, "per_slide": []}}, "book": {}}}}
+        quick = {"books": {"A.xlsx": {"contracts": part, "generated": part, "sessions": part, "scripted": {}, "book": {}}}}
+        self.assertEqual(bs.diff(full, quick), [])
+        self.assertEqual(bs.diff(quick, full), [])
+        changed = {"books": {"A.xlsx": {**quick["books"]["A.xlsx"], "contracts": {"n": 1, "sha": "b", "items": {"k": 2}}}}}
+        self.assertIn("CONTRACTS differ", bs.diff(full, changed)[0])
+
 
 if __name__ == "__main__":
     unittest.main()

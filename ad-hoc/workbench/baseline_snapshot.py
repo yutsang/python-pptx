@@ -20,9 +20,12 @@ holds hashes plus the codes, never a sentence. Run `check` after each step of a 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import glob
 import hashlib
+import io
 import json
+import os
 import shutil
 import sys
 import time
@@ -165,7 +168,8 @@ def deck_digest(path: str) -> Dict[str, Any]:
 def scripted_part(book: str) -> Dict[str, Any]:
     import entity_trial
     started = time.time()
-    entity_trial.main(["run", "--databook", book, "--arms", "flash", "--scripted", "--skip-gate"])
+    with contextlib.redirect_stdout(io.StringIO()):          # the trial prints its whole report per book: 17 books of it is not what a person pastes back
+        entity_trial.main(["run", "--databook", book, "--arms", "flash", "--scripted", "--skip-gate"])
     reports = [p for p in TRIALS.glob("trial_2*.json") if p.stat().st_mtime >= started - 1 and ".progress" not in p.name]
     report = json.loads(max(reports, key=lambda p: p.stat().st_mtime).read_text(encoding="utf-8"))
     arm = report["arms"]["flash"]
@@ -195,8 +199,9 @@ def book_part(book: str) -> Dict[str, Any]:
         # the trial works on a copy named after its arm and the deck's title is the workbook's name: the same name here
         copy = Path(tmp) / "flash.xlsx"
         shutil.copyfile(book, copy)
-        work = B.open_book(str(copy), model=entity_trial.ScriptedWriter("flash"), model_name="scripted-flash")
-        result = B.run_book(work, issues_dir=None, out_path=str(Path(tmp) / "book.pptx"))
+        with contextlib.redirect_stdout(io.StringIO()):
+            work = B.open_book(str(copy), model=entity_trial.ScriptedWriter("flash"), model_name="scripted-flash")
+            result = B.run_book(work, issues_dir=None, out_path=str(Path(tmp) / "book.pptx"))
         data = result.deck
         findings: Dict[str, int] = {}
         for f in (data.get("delivery") or {}).get("findings") or []:
@@ -222,7 +227,7 @@ def book_part(book: str) -> Dict[str, Any]:
     return out
 
 
-def snapshot(only: str = "", was: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def snapshot(only: str = "", was: Optional[Dict[str, Any]] = None, deck: bool = True) -> Dict[str, Any]:
     books: Dict[str, Any] = {}
     for sha_book, book in local_books().items():
         name = Path(book).name
@@ -233,8 +238,8 @@ def snapshot(only: str = "", was: Optional[Dict[str, Any]] = None) -> Dict[str, 
             work = open_work(book)
             files = ((was or {}).get("books", {}).get(name, {}).get("sessions", {}).get("files")) if was else None
             books[name] = {"contracts": contracts_part(work), "generated": generated_part(work.source.contracts, name),
-                           "sessions": sessions_part(work, book, sha_book, files), "scripted": scripted_part(book),
-                           "book": book_part(book)}
+                           "sessions": sessions_part(work, book, sha_book, files),
+                           "scripted": scripted_part(book) if deck else {}, "book": book_part(book) if deck else {}}
         except Exception as exc:                                                  # noqa: BLE001
             # A file that cannot be read on its own (a roll-up master needs an entity picked, 2026-11-20 on the company machine) must not
             # end the run for the books after it. The reason is kept in the snapshot, so check holds the new code to the same answer.
@@ -264,9 +269,9 @@ def diff(a: Dict[str, Any], b: Dict[str, Any], limit: int = 12) -> List[str]:
                     lines.append(f"    {k}: was {ix.get(k)}  now {iy.get(k)}")
                     if f"{name}|{k}" in TEXTS:
                         lines.append(f"        sentence: {TEXTS[f'{name}|{k}'][:140]}")
-        sx, sy = x["scripted"], y["scripted"]
+        sx, sy = x.get("scripted") or {}, y.get("scripted") or {}     # empty when that snapshot was taken with --no-deck: nothing to compare then
         for field in ("accounts", "ok", "delivery", "findings", "marked", "export_error", "session"):
-            if sx.get(field) != sy.get(field):
+            if sx and sy and sx.get(field) != sy.get(field):
                 lines.append(f"{name}: SCRIPTED {field} was {sx.get(field)}  now {sy.get(field)}")
         # the product path (book.py) writes what the trial writes: the fresh one is held to the saved trial's, field by field
         sb = y.get("book") or {}
@@ -276,7 +281,7 @@ def diff(a: Dict[str, Any], b: Dict[str, Any], limit: int = 12) -> List[str]:
         if sb and (sb.get("deck") or {}).get("sha") != (sx.get("deck") or {}).get("sha"):
             lines.append(f"{name}: BOOK PATH deck differs from the saved trial's deck")
         dx, dy = sx.get("deck"), sy.get("deck")
-        if (dx or {}).get("sha") != (dy or {}).get("sha"):
+        if sx and sy and (dx or {}).get("sha") != (dy or {}).get("sha"):
             slides = [i + 1 for i, (p, q) in enumerate(zip((dx or {}).get("per_slide", []), (dy or {}).get("per_slide", []))) if p != q]
             lines.append(f"{name}: DECK differs: slides {(dx or {}).get('slides')} -> {(dy or {}).get('slides')}, changed slides {slides[:limit]}")
     return lines
@@ -287,6 +292,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("action", choices=["save", "check"])
     ap.add_argument("label")
     ap.add_argument("--books", default="", help="only the books whose file name contains this")
+    ap.add_argument("--no-deck", action="store_true", help="leave out the scripted whole-book run and its deck (minutes for a whole folder instead of hours): "
+                                                          "contracts, the verdict on every generated sentence and the saved paid sessions only")
     ap.add_argument("--dir", default="", help="the folder of databooks (default: the repo root; the company machine's is databooks)")
     args = ap.parse_args(argv)
     global BOOKS_DIR
@@ -294,7 +301,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     path = OUT / f"{args.label}.json"
     print(f"BASELINE {args.action} {args.label}")
     saved_snapshot = json.loads(path.read_text(encoding="utf-8")) if args.action == "check" and path.exists() else None
-    snap = json.loads(json.dumps(snapshot(args.books, saved_snapshot), default=str))      # as a saved one reads back: lists, not tuples
+    snap = json.loads(json.dumps(snapshot(args.books, saved_snapshot, deck=not args.no_deck), default=str))      # as a saved one reads back: lists, not tuples
     if args.action == "save":
         OUT.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(snap, ensure_ascii=False, indent=1), encoding="utf-8")
@@ -313,14 +320,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             print("  " + ln)
         if lines:
             return 1
+    prefix = os.path.commonprefix(list(snap["books"]))
+    prefix = prefix[: max(prefix.rfind("."), prefix.rfind(" ")) + 1] if len(snap["books"]) > 1 else ""      # what every file name starts with is not what tells them apart
+    short = {name: name[len(prefix):][:38] for name in snap["books"]}
     for name, b in snap["books"].items():
         if "error" in b:
-            print(f"  {name[:30]:30s} not in the comparison: {b['error'][:90]}")
+            print(f"  {short[name]:38s} not in the comparison: {b['error'][:90]}")
             continue
-        s = b["scripted"]
-        print(f"  {name[:30]:30s} contracts {b['contracts']['n']:3d} {b['contracts']['sha'][:8]}  sentences {b['generated']['claims']:5d} "
-              f"{b['generated']['sha'][:8]}  paid sessions {b['sessions']['sessions']:2d}/{b['sessions']['claims']:4d} {b['sessions']['sha'][:8]}  scripted {s.get('ok')}/{s.get('accounts')} "
-              f"deck {((s.get('deck') or {}).get('slides'))} slides {((s.get('deck') or {}).get('sha') or '-')[:8]}")
+        s = b.get("scripted") or {}
+        print(f"  {short[name]:38s} contracts {b['contracts']['n']:3d} {b['contracts']['sha'][:8]}  sentences {b['generated']['claims']:5d} "
+              f"{b['generated']['sha'][:8]}  paid sessions {b['sessions']['sessions']:2d}/{b['sessions']['claims']:4d} {b['sessions']['sha'][:8]}  "
+              + (f"scripted {s.get('ok')}/{s.get('accounts')} deck {((s.get('deck') or {}).get('slides'))} slides {((s.get('deck') or {}).get('sha') or '-')[:8]}"
+                 if s else "no deck taken"))
     return 0
 
 
